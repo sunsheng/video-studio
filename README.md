@@ -47,7 +47,10 @@ cd ~/videos/千岛湖.studio && codex                      # 打开它
 
 ## 文档
 
+- **[完整设计](docs/design.md)** —— 背景、核心决策、验收标准
+  （[在线排版版](https://claude.ai/code/artifact/8a3fe961-bcec-4f92-9c38-183d2d4a4ade)）
 - [架构](docs/architecture.md) · [状态机](docs/state-machine.md) · [工具面](docs/tool-surface.md) · [部署](docs/deployment.md)
+- [端到端验收](docs/e2e.md) —— 在生产环境怎么跑，报告怎么读
 - [ADR-0001 为什么是 bundle 模型](docs/decisions/ADR-0001-bundle-model.md)
 
 ## License
