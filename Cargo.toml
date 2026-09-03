@@ -6,6 +6,7 @@ members = [
     "crates/studio-engine",
     "crates/studio-mcp",
     "crates/studio-media",
+    "crates/studio-comfy",
 ]
 
 [workspace.package]
