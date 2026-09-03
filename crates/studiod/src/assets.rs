@@ -311,9 +311,7 @@ fn skill_md(doc: &SkillDoc) -> String {
             }
         }
         s.push('\n');
-        s.push_str(&format!(
-            "上游产物由 `studio.status` 的 `next_action.inputs` 给出，不需要你去别处找。\n\n"
-        ));
+        s.push_str("上游产物由 `studio.status` 的 `next_action.inputs` 给出，不需要你去别处找。\n\n");
 
         s.push_str("## 确认点\n\n");
         match stage.gate() {
