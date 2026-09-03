@@ -81,11 +81,22 @@ impl Pipeline {
                         detail: format!("{shot_id} 没有指定 workflow"),
                     })?;
 
-            ctx.say(format!("{}/{} {shot_id} 选节点", i + 1, shots.len()));
-            let node = comfy.pick_node()?;
+            let node = ctx
+                .progress_and_step(
+                    format!("{}/{} {shot_id} 选节点", i + 1, shots.len()),
+                    "pick_node",
+                )
+                .shot(&shot_id)
+                .done(comfy.pick_node())?;
 
-            let wf = Workflow::load(&self.baselines, wf_name)?;
-            wf.require_verified()?;
+            let wf = ctx
+                .step("load_baseline")
+                .shot(&shot_id)
+                .with("workflow", json!(wf_name))
+                .done(Workflow::load(&self.baselines, wf_name).and_then(|w| {
+                    w.require_verified()?;
+                    Ok(w)
+                }))?;
             let mut params = Map::new();
             if let Some(o) = shot.as_object() {
                 for (k, v) in o {
@@ -94,8 +105,14 @@ impl Pipeline {
             }
             let graph = wf.apply(&params)?;
 
-            ctx.say(format!("{}/{} {shot_id} 提交到 {node}", i + 1, shots.len()));
-            let sub = comfy.submit(&node, &graph, "video-studio")?;
+            let sub = ctx
+                .progress_and_step(
+                    format!("{}/{} {shot_id} 提交到 {node}", i + 1, shots.len()),
+                    "submit",
+                )
+                .shot(&shot_id)
+                .node(&node)
+                .done(comfy.submit(&node, &graph, "video-studio"))?;
 
             ctx.say(format!(
                 "{}/{} {shot_id} 渲染中（{}）",
@@ -115,9 +132,18 @@ impl Pipeline {
                 .unwrap_or_else(|| "mp4".into());
             let rel = format!("media/{shot_id}.{ext}");
             let dest = ctx.bundle.resolve(&rel)?;
-            ctx.say(format!("{}/{} {shot_id} 下载", i + 1, shots.len()));
-            comfy.download(&node, first, &dest)?;
+            let bytes = ctx
+                .progress_and_step(
+                    format!("{}/{} {shot_id} 下载", i + 1, shots.len()),
+                    "download",
+                )
+                .shot(&shot_id)
+                .node(&node)
+                .prompt(&sub.prompt_id)
+                .with("path", json!(rel))
+                .done(comfy.download(&node, first, &dest))?;
 
+            let _ = bytes;
             results.push(json!({
                 "shot_id": shot_id,
                 "node": node,
@@ -149,8 +175,13 @@ impl Pipeline {
 
         // 先用 ffprobe 判断能不能直接 copy —— 五个镜头本来就是同一套参数出的，
         // 一致的话没必要让 ffmpeg 重编码一遍。
-        ctx.say(format!("检查 {} 个镜头能否直接拼接", parts.len()));
-        let stream_copy = media.can_stream_copy(&parts)?;
+        let stream_copy = ctx
+            .progress_and_step(
+                format!("检查 {} 个镜头能否直接拼接", parts.len()),
+                "probe_parts",
+            )
+            .with("parts", json!(parts.len()))
+            .done(media.can_stream_copy(&parts))?;
         ctx.say(format!(
             "拼接 {} 个镜头（{}）",
             parts.len(),
@@ -162,23 +193,29 @@ impl Pipeline {
         ));
         let final_rel = "media/final.mp4";
         let final_path = ctx.bundle.resolve(final_rel)?;
-        media.concat(&parts, &final_path, !stream_copy)?;
+        ctx.step("concat")
+            .with("parts", json!(parts.len()))
+            .with("stream_copied", json!(stream_copy))
+            .done(media.concat(&parts, &final_path, !stream_copy))?;
 
-        ctx.say("抽取封面");
         let cover_rel = "media/cover.jpg";
-        media.extract_frame(&final_path, 0.5, &ctx.bundle.resolve(cover_rel)?)?;
+        let cover_path = ctx.bundle.resolve(cover_rel)?;
+        ctx.progress_and_step("抽取封面", "cover")
+            .done(media.extract_frame(&final_path, 0.5, &cover_path))?;
 
         let mut out = json!({ "video": final_rel, "cover": cover_rel });
 
         if let Some(srt) = subtitles::from_script(script) {
-            ctx.say("写入字幕");
             let srt_rel = "media/subtitles.srt";
-            ctx.bundle.write(srt_rel, &srt)?;
+            ctx.progress_and_step("写入字幕", "subtitles")
+                .with("bytes", json!(srt.len()))
+                .done(ctx.bundle.write(srt_rel, &srt))?;
             out["subtitles"] = json!(srt_rel);
         }
 
-        ctx.say("核对成片元数据");
-        let info = media.probe(&final_path)?;
+        let info = ctx
+            .progress_and_step("核对成片元数据", "probe_final")
+            .done(media.probe(&final_path))?;
         out["duration_seconds"] = json!(info.duration_seconds);
         out["aspect_ratio"] = json!(info.aspect_ratio());
         out["stream_copied"] = json!(stream_copy);
@@ -196,8 +233,9 @@ impl Pipeline {
         let video_rel = post["video"]
             .as_str()
             .ok_or_else(|| StudioError::internal("后期结果里没有 video"))?;
-        ctx.say("读取成片实测元数据");
-        let info = media.probe(&ctx.bundle.resolve(video_rel)?)?;
+        let info = ctx
+            .progress_and_step("读取成片实测元数据", "probe_final")
+            .done(media.probe(&ctx.bundle.resolve(video_rel)?))?;
 
         let want_duration = script["total_duration_seconds"].as_f64().unwrap_or(0.0);
         let want_ratio = brief["aspect_ratio"].as_str().unwrap_or("9:16");

@@ -4,6 +4,7 @@
 //! 拷到哪儿都能打开，不需要起服务。
 
 use crate::e2e::{human_ms, Report};
+use crate::exec_report::Report as ExecReport;
 
 pub fn render(r: &Report) -> String {
     let mut h = String::with_capacity(32 * 1024);
@@ -341,6 +342,222 @@ const HEAD: &str = r#"<!doctype html>
 </head>
 "#;
 
+/// 执行侧的 HTML。跟 Agent 侧是两份独立的报告，因为读者不同：
+/// 那份看协作，这份看吞吐。
+pub fn render_exec(r: &ExecReport) -> String {
+    let mut h = String::with_capacity(16 * 1024);
+    h.push_str(&HEAD.replace("video-studio 端到端报告", "video-studio 执行侧报告"));
+    h.push_str(&format!(
+        r#"<body class="bg-slate-50 text-slate-800 dark:bg-slate-950 dark:text-slate-200">
+<div class="mx-auto max-w-6xl px-6 py-10">
+<header class="mb-8 border-b border-slate-200 pb-6 dark:border-slate-800">
+  <div class="flex flex-wrap items-baseline justify-between gap-3">
+    <div>
+      <p class="font-mono text-xs uppercase tracking-widest text-indigo-700 dark:text-indigo-400">执行侧报告 · ComfyUI 与后期</p>
+      <h1 class="mt-1 text-2xl font-semibold tracking-tight">{title}</h1>
+    </div>
+    <span class="rounded px-3 py-1 text-sm font-semibold {badge}">{verdict}</span>
+  </div>
+  <p class="mt-3 text-sm text-slate-500 dark:text-slate-400">
+    这份看吞吐：镜头排在哪个节点、GPU 等了多久、后期哪一步慢。
+    Agent 那一侧（阶段推进、确认门、修订、token）是另一份独立报告。
+  </p>
+</header>
+"#,
+        title = esc(&title_of(&r.bundle)),
+        badge = if !r.has_data {
+            "bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300"
+        } else if r.passed {
+            "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/50 dark:text-emerald-300"
+        } else {
+            "bg-rose-100 text-rose-800 dark:bg-rose-900/50 dark:text-rose-300"
+        },
+        verdict = if !r.has_data {
+            "尚未执行"
+        } else if r.passed {
+            "全部成功"
+        } else {
+            "有失败"
+        },
+    ));
+
+    if !r.has_data {
+        h.push_str(
+            r#"<div class="rounded-lg border border-dashed border-slate-300 p-6 text-sm text-slate-500 dark:border-slate-700 dark:text-slate-400">
+这部作品还没跑过确定性阶段（渲染 / 后期 / 验收）。提示词包确认之后控制面会自动开始，跑完再来看这份报告。
+</div></div></body>"#,
+        );
+        return h;
+    }
+
+    // 耗时构成
+    let denom = r.total_ms.max(1);
+    h.push_str(&format!(
+        r#"<section class="mb-10">
+<div class="grid grid-cols-2 gap-3 sm:grid-cols-4">
+  {c1}{c2}{c3}{c4}
+</div>
+<div class="mt-4 rounded-lg border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
+  <div class="flex h-6 overflow-hidden rounded">
+    <div class="bg-indigo-600" style="width:{p1:.2}%" title="渲染"></div>
+    <div class="bg-violet-500" style="width:{p2:.2}%" title="后期"></div>
+    <div class="bg-slate-300 dark:bg-slate-700" style="width:{p3:.2}%" title="验收"></div>
+  </div>
+  <div class="mt-3 grid gap-2 text-sm sm:grid-cols-3">
+    <p><span class="mr-2 inline-block h-2 w-2 rounded-full bg-indigo-600"></span>渲染（GPU）<span class="ml-1 font-mono tabular-nums">{v1}</span></p>
+    <p><span class="mr-2 inline-block h-2 w-2 rounded-full bg-violet-500"></span>后期（ffmpeg）<span class="ml-1 font-mono tabular-nums">{v2}</span></p>
+    <p><span class="mr-2 inline-block h-2 w-2 rounded-full bg-slate-300 dark:bg-slate-700"></span>验收（ffprobe）<span class="ml-1 font-mono tabular-nums">{v3}</span></p>
+  </div>
+</div>
+</section>"#,
+        c1 = metric("执行总耗时", &human_ms(r.total_ms as i64), "三个确定性阶段之和"),
+        c2 = metric("渲染", &human_ms(r.render_ms as i64), "通常是大头"),
+        c3 = metric("镜头数", &r.shots.len().to_string(), "逐镜头明细见下"),
+        c4 = metric("用到节点", &r.nodes_used.to_string(), "并行度"),
+        p1 = r.render_ms as f64 * 100.0 / denom as f64,
+        p2 = r.post_ms as f64 * 100.0 / denom as f64,
+        p3 = r.review_ms as f64 * 100.0 / denom as f64,
+        v1 = human_ms(r.render_ms as i64),
+        v2 = human_ms(r.post_ms as i64),
+        v3 = human_ms(r.review_ms as i64),
+    ));
+
+    // 逐镜头
+    if !r.shots.is_empty() {
+        let slowest = r.shots.iter().map(|s| s.total_ms).max().unwrap_or(1).max(1);
+        h.push_str(r#"<section class="mb-10"><h2 class="mb-3 text-sm font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">逐镜头</h2>
+<div class="overflow-x-auto rounded-lg border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900"><table class="w-full text-sm">
+<thead class="border-b border-slate-200 text-left font-mono text-[11px] uppercase tracking-wider text-slate-500 dark:border-slate-800 dark:text-slate-400">
+<tr><th class="p-3">镜头</th><th class="p-3">节点</th><th class="p-3 text-right">选节点</th><th class="p-3 text-right">提交</th>
+<th class="p-3 text-right">渲染</th><th class="p-3 text-right">下载</th><th class="p-3">占比</th></tr></thead><tbody>"#);
+        for s in &r.shots {
+            h.push_str(&format!(
+                r#"<tr class="border-b border-slate-100 last:border-0 dark:border-slate-800">
+<td class="p-3 font-mono font-medium">{id}{flag}</td>
+<td class="p-3 font-mono text-xs text-slate-500 dark:text-slate-400">{node}</td>
+<td class="p-3 text-right tabular-nums text-slate-500">{pick}</td>
+<td class="p-3 text-right tabular-nums text-slate-500">{submit}</td>
+<td class="p-3 text-right font-medium tabular-nums">{render}</td>
+<td class="p-3 text-right tabular-nums text-slate-500">{dl}</td>
+<td class="p-3 w-40"><div class="h-1.5 rounded bg-slate-100 dark:bg-slate-800"><div class="h-1.5 rounded bg-indigo-600" style="width:{pct:.1}%"></div></div></td></tr>"#,
+                id = esc(&s.shot_id),
+                flag = if s.ok {
+                    String::new()
+                } else {
+                    format!(
+                        r#" <span class="rounded bg-rose-100 px-1 text-[10px] text-rose-800 dark:bg-rose-900/50 dark:text-rose-300">{}</span>"#,
+                        esc(s.error_code.as_deref().unwrap_or("失败"))
+                    )
+                },
+                node = esc(s.node.as_deref().unwrap_or("—")),
+                pick = esc(&human_ms(s.pick_ms as i64)),
+                submit = esc(&human_ms(s.submit_ms as i64)),
+                render = esc(&human_ms(s.render_ms as i64)),
+                dl = esc(&human_ms(s.download_ms as i64)),
+                pct = s.total_ms as f64 * 100.0 / slowest as f64,
+            ));
+        }
+        h.push_str("</tbody></table></div></section>");
+    }
+
+    // 节点负载
+    if !r.nodes.is_empty() {
+        let busiest = r
+            .nodes
+            .iter()
+            .map(|n| n.render_ms)
+            .max()
+            .unwrap_or(1)
+            .max(1);
+        h.push_str(r#"<section class="mb-10"><h2 class="mb-3 text-sm font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">节点负载</h2><div class="grid gap-2 sm:grid-cols-2">"#);
+        for n in &r.nodes {
+            h.push_str(&format!(
+                r#"<div class="rounded-lg border border-slate-200 bg-white p-3 dark:border-slate-800 dark:bg-slate-900">
+<div class="flex items-baseline justify-between"><span class="font-mono text-xs">{node}</span>
+<span class="text-sm"><span class="font-semibold tabular-nums">{shots}</span> 个镜头 · <span class="tabular-nums">{t}</span></span></div>
+<div class="mt-2 h-1.5 rounded bg-slate-100 dark:bg-slate-800"><div class="h-1.5 rounded bg-indigo-600" style="width:{pct:.1}%"></div></div></div>"#,
+                node = esc(&n.node),
+                shots = n.shots,
+                t = esc(&human_ms(n.render_ms as i64)),
+                pct = n.render_ms as f64 * 100.0 / busiest as f64
+            ));
+        }
+        h.push_str("</div></section>");
+    }
+
+    // 步骤
+    h.push_str(r#"<section class="mb-10"><h2 class="mb-3 text-sm font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">各步骤</h2>
+<div class="overflow-x-auto rounded-lg border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900"><table class="w-full text-sm">
+<thead class="border-b border-slate-200 text-left font-mono text-[11px] uppercase tracking-wider text-slate-500 dark:border-slate-800 dark:text-slate-400">
+<tr><th class="p-3">阶段</th><th class="p-3">步骤</th><th class="p-3 text-right">次数</th><th class="p-3 text-right">耗时</th><th class="p-3">详情</th></tr></thead><tbody>"#);
+    for st in &r.steps {
+        h.push_str(&format!(
+            r#"<tr class="border-b border-slate-100 last:border-0 dark:border-slate-800">
+<td class="p-3 font-mono text-xs">{stage}</td><td class="p-3 font-mono text-xs {cls}">{step}</td>
+<td class="p-3 text-right tabular-nums">{calls}</td><td class="p-3 text-right tabular-nums">{t}</td>
+<td class="p-3 font-mono text-xs text-slate-500 dark:text-slate-400">{detail}</td></tr>"#,
+            stage = esc(&st.stage),
+            step = esc(&st.step),
+            cls = if st.ok {
+                ""
+            } else {
+                "text-rose-700 dark:text-rose-400"
+            },
+            calls = st.calls,
+            t = esc(&human_ms(st.total_ms as i64)),
+            detail = esc(st.detail.as_deref().unwrap_or("")),
+        ));
+    }
+    h.push_str("</tbody></table></div></section>");
+
+    if !r.failures.is_empty() {
+        h.push_str(r#"<section class="mb-10"><h2 class="mb-3 text-sm font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">失败</h2><ul class="space-y-2">"#);
+        for f in &r.failures {
+            h.push_str(&format!(
+                r#"<li class="rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm dark:border-rose-900 dark:bg-rose-950/40">
+<span class="font-mono text-xs text-slate-500">{at}</span>
+<span class="ml-2 font-mono">{stage}/{step}</span>
+<span class="ml-2 font-mono text-xs">{shot}</span>
+<code class="ml-2 rounded bg-rose-100 px-1.5 py-0.5 text-xs text-rose-900 dark:bg-rose-900/60 dark:text-rose-200">{code}</code></li>"#,
+                at = esc(&f.at),
+                stage = esc(&f.stage),
+                step = esc(&f.step),
+                shot = esc(f.shot_id.as_deref().unwrap_or("")),
+                code = esc(f.error_code.as_deref().unwrap_or("未知")),
+            ));
+        }
+        h.push_str("</ul></section>");
+    }
+
+    h.push_str(&format!(
+        r#"<footer class="border-t border-slate-200 pt-6 text-xs text-slate-400 dark:border-slate-800 dark:text-slate-500">
+video-studio {ver} · 数据来自作品的 .studio/exec.jsonl · Agent 侧报告见 studiod e2e report
+</footer></div></body>"#,
+        ver = env!("CARGO_PKG_VERSION")
+    ));
+    h
+}
+
+fn metric(label: &str, value: &str, note: &str) -> String {
+    format!(
+        r#"<div class="rounded-lg border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
+  <p class="font-mono text-[11px] uppercase tracking-wider text-slate-500 dark:text-slate-400">{}</p>
+  <p class="mt-1 text-xl font-semibold tabular-nums">{}</p>
+  <p class="mt-0.5 text-xs text-slate-400 dark:text-slate-500">{}</p>
+</div>"#,
+        esc(label),
+        esc(value),
+        esc(note)
+    )
+}
+
+fn title_of(bundle: &str) -> String {
+    std::path::Path::new(bundle)
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| bundle.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -430,6 +647,46 @@ mod tests {
         let html = render(&r);
         assert!(!html.contains("<script>alert"));
         assert!(html.contains("&lt;script&gt;"));
+    }
+
+    #[test]
+    fn the_exec_report_is_a_separate_page_that_points_at_the_other_one() {
+        let d = tempfile::tempdir().unwrap();
+        let r = crate::exec_report::build(d.path());
+        let h = render_exec(&r);
+        assert!(h.starts_with("<!doctype html>"));
+        assert!(h.contains("执行侧报告"));
+        assert!(h.contains("尚未执行"));
+        assert!(h.contains("另一份独立报告"), "两份报告要互相指认");
+        assert_eq!(h.matches("src=\"http").count(), 1);
+    }
+
+    #[test]
+    fn exec_html_shows_per_shot_and_node_load() {
+        let d = tempfile::tempdir().unwrap();
+        let rec = studio_engine::ExecRecorder::at(d.path());
+        for (shot, node, ms) in [
+            ("sh01", "http://n1:9001", 40_000u64),
+            ("sh02", "http://n2:9002", 25_000),
+        ] {
+            rec.append(&studio_engine::ExecRecord {
+                at: "2026-09-03T00:00:00.000Z".into(),
+                stage: "render".into(),
+                step: "render".into(),
+                shot_id: Some(shot.into()),
+                node: Some(node.into()),
+                prompt_id: Some(format!("p-{shot}")),
+                duration_ms: ms,
+                ok: true,
+                error_code: None,
+                extra: serde_json::Map::new(),
+            });
+        }
+        let h = render_exec(&crate::exec_report::build(d.path()));
+        assert!(h.contains("sh01") && h.contains("sh02"));
+        assert!(h.contains("http://n1:9001"));
+        assert!(h.contains("节点负载"));
+        assert!(h.contains("全部成功"));
     }
 
     #[test]

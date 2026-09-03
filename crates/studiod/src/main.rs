@@ -11,7 +11,7 @@
 use clap::{Parser, Subcommand};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use studiod::{assets, doctor, e2e, html, list, pack, rollout};
+use studiod::{assets, doctor, e2e, exec_report, html, list, pack, rollout};
 
 #[derive(Parser)]
 #[command(
@@ -80,12 +80,32 @@ enum Command {
         #[arg(long)]
         into: PathBuf,
     },
-    /// 端到端留痕相关
+    /// Agent 侧的端到端留痕
     #[command(subcommand)]
     E2e(E2eCommand),
+    /// 执行侧留痕：ComfyUI 调度与后期
+    #[command(subcommand)]
+    Exec(ExecCommand),
     /// 已验证 workflow 基线相关
     #[command(subcommand)]
     Workflows(WorkflowCommand),
+}
+
+#[derive(Subcommand)]
+enum ExecCommand {
+    /// 汇总 ComfyUI 调度与后期各步骤的耗时。与 e2e 是两份独立的报告：
+    /// 那份看协作，这份看吞吐
+    Report {
+        /// 作品目录，默认当前目录
+        #[arg(long)]
+        bundle: Option<PathBuf>,
+        /// 写 JSON 报告到文件
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+        /// 同时生成单文件 HTML 报告
+        #[arg(long)]
+        html: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -163,6 +183,7 @@ fn run(cli: Cli) -> Result<(), String> {
             html,
             rollout,
         }) => cmd_e2e(bundle, out, html, rollout),
+        Command::Exec(ExecCommand::Report { bundle, out, html }) => cmd_exec(bundle, out, html),
         Command::Workflows(WorkflowCommand::Check { dir }) => cmd_workflows_check(dir),
     }
 }
@@ -287,6 +308,41 @@ fn cmd_list(paths: Vec<PathBuf>, depth: usize, json: bool) -> Result<(), String>
     Ok(())
 }
 
+fn cmd_exec(
+    bundle: Option<PathBuf>,
+    out: Option<PathBuf>,
+    html_out: Option<PathBuf>,
+) -> Result<(), String> {
+    let root = resolve_bundle(bundle)?;
+    let report = exec_report::build(&root);
+
+    if let Some(path) = &html_out {
+        std::fs::write(path, html::render_exec(&report))
+            .map_err(|e| format!("写 HTML 失败：{e}"))?;
+        println!("HTML 报告已写入 {}", path.display());
+    }
+    if let Some(path) = &out {
+        let json = serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;
+        std::fs::write(path, json).map_err(|e| format!("写报告失败：{e}"))?;
+        println!("报告已写入 {}", path.display());
+    }
+    print!("{}", exec_report::render(&report));
+    if report.passed || !report.has_data {
+        Ok(())
+    } else {
+        Err(String::new())
+    }
+}
+
+fn resolve_bundle(bundle: Option<PathBuf>) -> Result<PathBuf, String> {
+    match bundle {
+        Some(b) => Ok(b),
+        None => studio_engine::Bundle::discover(cwd())
+            .map(|b| b.root().to_path_buf())
+            .map_err(|_| "不在作品目录里。用 --bundle 指定，或 cd 进作品目录。".to_string()),
+    }
+}
+
 fn cmd_workflows_check(dir: Option<PathBuf>) -> Result<(), String> {
     let dir = dir
         .or_else(|| program_dir().map(|p| p.join("assets/workflows")))
@@ -402,12 +458,7 @@ fn cmd_e2e(
     html_out: Option<PathBuf>,
     rollout_path: Option<PathBuf>,
 ) -> Result<(), String> {
-    let root = match bundle {
-        Some(b) => b,
-        None => studio_engine::Bundle::discover(cwd())
-            .map(|b| b.root().to_path_buf())
-            .map_err(|_| "不在作品目录里。用 --bundle 指定，或 cd 进作品目录。".to_string())?,
-    };
+    let root = resolve_bundle(bundle)?;
     let session = match &rollout_path {
         None => None,
         Some(p) => Some(rollout::parse(p).map_err(|e| format!("读 {} 失败：{e}", p.display()))?),

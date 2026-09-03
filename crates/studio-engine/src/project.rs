@@ -5,7 +5,7 @@
 
 use crate::bundle::{Bundle, LockGuard};
 use crate::config::Settings;
-use crate::executor::{ExecContext, NotWired, ProgressNote, SharedExecutor};
+use crate::executor::{ExecContext, ExecRecorder, NotWired, ProgressNote, SharedExecutor};
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -702,6 +702,7 @@ fn run_deterministic(
     progress: Arc<ProgressNote>,
     cancelled: Arc<AtomicBool>,
 ) {
+    let recorder = ExecRecorder::at(&root);
     let Ok(bundle) = Bundle::open(&root) else {
         return;
     };
@@ -722,6 +723,7 @@ fn run_deterministic(
             return;
         }
 
+        recorder.set_stage(stage);
         progress.set(format!("{stage} 开始"));
         let _ = store.append_event(stage, "started", &format!("控制面开始执行 {stage}"), None);
 
@@ -731,6 +733,7 @@ fn run_deterministic(
             settings: &settings,
             inputs,
             progress: &progress,
+            recorder: &recorder,
             cancelled: &cancelled,
         };
 

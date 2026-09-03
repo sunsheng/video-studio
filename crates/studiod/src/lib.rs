@@ -3,6 +3,7 @@
 pub mod assets;
 pub mod doctor;
 pub mod e2e;
+pub mod exec_report;
 pub mod html;
 pub mod list;
 pub mod pack;

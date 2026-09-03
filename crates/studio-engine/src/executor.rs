@@ -8,9 +8,168 @@
 
 use crate::config::Settings;
 use crate::Bundle;
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
+use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use studio_core::{Outputs, Result, StageId};
+use std::time::Instant;
+use studio_core::{Outputs, Result, StageId, StudioError};
+
+/// 执行面的一步留痕。
+///
+/// MCP 那一侧的留痕记的是「Agent 调了什么」；这一份记的是「控制面做了什么」——
+/// 哪个镜头提交到了哪个节点、排队渲染等了多久、下载多大、后期哪一步慢。
+/// 两者分开是因为读者不同：前者看协作，后者看吞吐。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecRecord {
+    pub at: String,
+    pub stage: String,
+    /// 这一步干了什么，例如 `pick_node` / `submit` / `render` / `download` / `concat`。
+    pub step: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shot_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_id: Option<String>,
+    pub duration_ms: u64,
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+    /// 这一步特有的信息，例如下载字节数、是否直接复制流。
+    #[serde(default, skip_serializing_if = "Map::is_empty")]
+    pub extra: Map<String, Value>,
+}
+
+pub const EXEC_TRACE_FILE: &str = ".studio/exec.jsonl";
+
+/// 往 `.studio/exec.jsonl` 追加执行留痕。写失败不影响主流程。
+#[derive(Debug)]
+pub struct ExecRecorder {
+    path: std::path::PathBuf,
+    stage: Mutex<String>,
+}
+
+impl ExecRecorder {
+    pub fn at(bundle_root: &std::path::Path) -> ExecRecorder {
+        ExecRecorder {
+            path: bundle_root.join(EXEC_TRACE_FILE),
+            stage: Mutex::new(String::new()),
+        }
+    }
+
+    pub fn set_stage(&self, stage: StageId) {
+        if let Ok(mut g) = self.stage.lock() {
+            *g = stage.as_str().to_string();
+        }
+    }
+
+    pub fn append(&self, rec: &ExecRecord) {
+        if let Some(parent) = self.path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(line) = serde_json::to_string(rec) {
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.path)
+            {
+                let _ = writeln!(f, "{line}");
+            }
+        }
+    }
+
+    pub fn read(bundle_root: &std::path::Path) -> Vec<ExecRecord> {
+        let Ok(text) = std::fs::read_to_string(bundle_root.join(EXEC_TRACE_FILE)) else {
+            return Vec::new();
+        };
+        text.lines()
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .collect()
+    }
+
+    fn stage_name(&self) -> String {
+        self.stage.lock().map(|g| g.clone()).unwrap_or_default()
+    }
+}
+
+/// 一步的计时器。`done` / `ok` / `fail` 落一条留痕；忘了调就在 drop 时记成中断。
+pub struct Step<'a> {
+    rec: &'a ExecRecorder,
+    step: String,
+    shot_id: Option<String>,
+    node: Option<String>,
+    prompt_id: Option<String>,
+    extra: Map<String, Value>,
+    started: Instant,
+    finished: bool,
+}
+
+impl Step<'_> {
+    pub fn shot(mut self, id: impl Into<String>) -> Self {
+        self.shot_id = Some(id.into());
+        self
+    }
+    pub fn node(mut self, url: impl Into<String>) -> Self {
+        self.node = Some(url.into());
+        self
+    }
+    pub fn prompt(mut self, id: impl Into<String>) -> Self {
+        self.prompt_id = Some(id.into());
+        self
+    }
+    pub fn with(mut self, key: &str, value: Value) -> Self {
+        self.extra.insert(key.to_string(), value);
+        self
+    }
+
+    /// 记一条成功，并把值原样传回去。
+    pub fn ok<T>(mut self, value: T) -> T {
+        self.write(true, None);
+        value
+    }
+
+    /// 记一条失败，并把错误原样传回去。
+    pub fn fail(mut self, e: StudioError) -> StudioError {
+        self.write(false, Some(e.code().to_string()));
+        e
+    }
+
+    /// 按 `Result` 自动记，最常用。
+    pub fn done<T>(self, r: Result<T>) -> Result<T> {
+        match r {
+            Ok(v) => Ok(self.ok(v)),
+            Err(e) => Err(self.fail(e)),
+        }
+    }
+
+    fn write(&mut self, ok: bool, error_code: Option<String>) {
+        if self.finished {
+            return;
+        }
+        self.finished = true;
+        self.rec.append(&ExecRecord {
+            at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            stage: self.rec.stage_name(),
+            step: self.step.clone(),
+            shot_id: self.shot_id.clone(),
+            node: self.node.clone(),
+            prompt_id: self.prompt_id.clone(),
+            duration_ms: self.started.elapsed().as_millis() as u64,
+            ok,
+            error_code,
+            extra: std::mem::take(&mut self.extra),
+        });
+    }
+}
+
+impl Drop for Step<'_> {
+    fn drop(&mut self) {
+        // 没显式结束就当中断——比悄悄丢掉一步好。
+        self.write(false, Some("interrupted".into()));
+    }
+}
 
 /// 执行一个确定性阶段所需的一切。
 pub struct ExecContext<'a> {
@@ -20,6 +179,8 @@ pub struct ExecContext<'a> {
     pub inputs: serde_json::Value,
     /// 进度回报。写进去的字符串会出现在 `studio.status` 的信封里。
     pub progress: &'a ProgressNote,
+    /// 执行留痕。逐步计时落进 `.studio/exec.jsonl`。
+    pub recorder: &'a ExecRecorder,
     /// 被要求停止时变 true，长任务应当在安全点检查它。
     pub cancelled: &'a AtomicBool,
 }
@@ -31,6 +192,27 @@ impl ExecContext<'_> {
 
     pub fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::Relaxed)
+    }
+
+    /// 开始计时一步。用 `.done(结果)` 或 `.ok(值)` / `.fail(错误)` 结束。
+    pub fn step(&self, name: &str) -> Step<'_> {
+        Step {
+            rec: self.recorder,
+            step: name.to_string(),
+            shot_id: None,
+            node: None,
+            prompt_id: None,
+            extra: Map::new(),
+            started: Instant::now(),
+            finished: false,
+        }
+    }
+
+    /// 说一句进度，同时它也会成为下一步留痕的上下文。
+    pub fn progress_and_step(&self, msg: impl Into<String>, step: &str) -> Step<'_> {
+        let msg = msg.into();
+        self.say(msg);
+        self.step(step)
     }
 }
 
@@ -107,6 +289,87 @@ mod tests {
     }
 
     #[test]
+    fn steps_are_timed_and_appended() {
+        let d = tempfile::tempdir().unwrap();
+        let rec = ExecRecorder::at(d.path());
+        rec.set_stage(StageId::Render);
+        let bundle = Bundle::scaffold(d.path()).unwrap();
+        let ctx = ExecContext {
+            bundle: &bundle,
+            settings: &Settings::load(None, None),
+            inputs: serde_json::Value::Null,
+            progress: &ProgressNote::default(),
+            recorder: &rec,
+            cancelled: &AtomicBool::new(false),
+        };
+
+        ctx.step("submit")
+            .shot("sh01")
+            .node("http://127.0.0.1:9001")
+            .prompt("abc-123")
+            .ok(());
+        let e = ctx
+            .step("download")
+            .shot("sh02")
+            .fail(StudioError::ComfyUnavailable { tried: vec![] });
+        assert_eq!(e.code(), "comfy_unavailable");
+
+        let records = ExecRecorder::read(d.path());
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].stage, "render");
+        assert_eq!(records[0].step, "submit");
+        assert_eq!(records[0].prompt_id.as_deref(), Some("abc-123"));
+        assert!(records[0].ok);
+        assert!(!records[1].ok);
+        assert_eq!(records[1].error_code.as_deref(), Some("comfy_unavailable"));
+    }
+
+    /// 忘了结束的一步不该悄悄消失。
+    #[test]
+    fn an_abandoned_step_is_recorded_as_interrupted() {
+        let d = tempfile::tempdir().unwrap();
+        let rec = ExecRecorder::at(d.path());
+        rec.set_stage(StageId::Post);
+        {
+            let bundle = Bundle::scaffold(d.path()).unwrap();
+            let ctx = ExecContext {
+                bundle: &bundle,
+                settings: &Settings::load(None, None),
+                inputs: serde_json::Value::Null,
+                progress: &ProgressNote::default(),
+                recorder: &rec,
+                cancelled: &AtomicBool::new(false),
+            };
+            let _ = ctx.step("concat");
+        }
+        let records = ExecRecorder::read(d.path());
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].error_code.as_deref(), Some("interrupted"));
+    }
+
+    #[test]
+    fn extra_fields_ride_along() {
+        let d = tempfile::tempdir().unwrap();
+        let rec = ExecRecorder::at(d.path());
+        let bundle = Bundle::scaffold(d.path()).unwrap();
+        let ctx = ExecContext {
+            bundle: &bundle,
+            settings: &Settings::load(None, None),
+            inputs: serde_json::Value::Null,
+            progress: &ProgressNote::default(),
+            recorder: &rec,
+            cancelled: &AtomicBool::new(false),
+        };
+        ctx.step("concat")
+            .with("stream_copied", serde_json::json!(true))
+            .with("parts", serde_json::json!(5))
+            .ok(());
+        let r = &ExecRecorder::read(d.path())[0];
+        assert_eq!(r.extra["stream_copied"], serde_json::json!(true));
+        assert_eq!(r.extra["parts"], serde_json::json!(5));
+    }
+
+    #[test]
     fn the_unwired_executor_explains_itself() {
         let e = NotWired
             .execute(
@@ -116,6 +379,7 @@ mod tests {
                     settings: &Settings::load(None, None),
                     inputs: serde_json::Value::Null,
                     progress: &ProgressNote::default(),
+                    recorder: &ExecRecorder::at(std::path::Path::new("/tmp/studio-unwired")),
                     cancelled: &AtomicBool::new(false),
                 },
             )
