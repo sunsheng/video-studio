@@ -60,7 +60,3 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 - 生产环境集成验收在宿主机跑 `scripts/smoke.sh`
 - 不得用 mock 通过来宣称链路跑通
-
-## 提交
-
-按实现节点提交，直接进 `main`，不走 PR。消息用中文，首行 `<类型>: <做了什么>`。
