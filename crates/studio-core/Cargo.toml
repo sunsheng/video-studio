@@ -1,0 +1,12 @@
+[package]
+name = "studio-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "video-studio 领域层：阶段图、typestate 状态机、错误契约、schema 校验。零 I/O。"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
