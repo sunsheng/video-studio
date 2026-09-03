@@ -16,9 +16,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
+      - name: 工具链
+        # 版本只写在 rust-toolchain.toml 一处，这里按它安装（components 也在那里）。
+        # 不用 dtolnay/rust-toolchain@stable：它会装一个当前 stable 再设为默认，
+        # 而工具链文件的优先级更高，装的那个根本用不上；stable 走在钉死版本前面时
+        # 反而白下一个工具链。
+        # 版本打印出来——2026-09-03 那次 CI 红而本地绿，就是因为日志里看不出
+        # 两边跑的不是同一个 clippy。
+        run: |
+          rustup toolchain install --profile minimal
+          rustc --version
+          cargo clippy --version
+          cargo fmt --version
 
       - uses: Swatinem/rust-cache@v2
 

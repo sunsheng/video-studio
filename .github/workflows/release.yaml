@@ -49,9 +49,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
+      - name: 工具链
+        # 同 ci.yaml：版本由 rust-toolchain.toml 决定，不用浮动的 stable。
+        shell: bash
+        run: |
+          rustup toolchain install --profile minimal
+          rustup target add ${{ matrix.target }}
+          rustc --version
 
       - uses: Swatinem/rust-cache@v2
         with:
