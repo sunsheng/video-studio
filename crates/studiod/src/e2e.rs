@@ -7,11 +7,38 @@
 //! 报告要能回答验收标准：每个阶段用了几次调用、修订往返是不是一次过、
 //! 有没有出现过不带 remedy 的阻塞、有没有 state_drift。
 
+use crate::rollout::Rollout;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
 use studio_core::StageId;
 use studio_mcp::trace::{Trace, TraceRecord};
+
+/// 全流程耗时拆解。**等待用户确认不算进有效耗时**——那是人在想，不是系统在跑。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Timing {
+    /// 从第一次调用开始到最后一次调用结束的墙上时间。
+    pub wall_ms: i64,
+    /// 扣掉等待用户之后的时间，衡量系统与 Agent 的实际开销。
+    pub effective_ms: i64,
+    /// 控制面自己处理的时间。
+    pub server_ms: i64,
+    /// 两次调用之间、且上一次不是在等用户——Agent 在想和在写。
+    pub agent_ms: i64,
+    /// 挂在确认门上等人的时间。
+    pub waiting_user_ms: i64,
+}
+
+/// 按 Skill（能力）汇总。这是能观测到的 skill 维度。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SkillStat {
+    pub capability: String,
+    pub stages: Vec<String>,
+    pub calls: usize,
+    pub server_ms: i64,
+    pub agent_ms: i64,
+    pub waiting_user_ms: i64,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Verdict {
@@ -34,17 +61,28 @@ pub struct Report {
     pub stages_reached: Vec<String>,
     pub verdicts: Vec<Verdict>,
     pub passed: bool,
+    pub timing: Timing,
+    pub skills: Vec<SkillStat>,
+    /// 合并进来的 Codex 会话记录。没给 --rollout 时为 None，
+    /// 报告里相应把 token 与绕行两列标成不可观测。
+    pub rollout: Option<Rollout>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErrorSighting {
     pub at: String,
     pub tool: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stage: Option<String>,
     pub code: String,
     pub remedy_present: bool,
 }
 
 pub fn build(bundle: &Path) -> Report {
+    build_with(bundle, None)
+}
+
+pub fn build_with(bundle: &Path, rollout: Option<Rollout>) -> Report {
     let records = Trace::read(bundle);
     let mut calls_by_tool: BTreeMap<String, usize> = BTreeMap::new();
     let mut calls_by_stage: BTreeMap<String, usize> = BTreeMap::new();
@@ -59,6 +97,7 @@ pub fn build(bundle: &Path) -> Report {
             errors.push(ErrorSighting {
                 at: r.at.clone(),
                 tool: r.tool.clone(),
+                stage: r.stage.clone(),
                 code: r.error_code.clone().unwrap_or_else(|| "unknown".into()),
                 remedy_present: r.remedy_present.unwrap_or(false),
             });
@@ -130,6 +169,24 @@ pub fn build(bundle: &Path) -> Report {
         detail: format!("走到过：{}", stages_reached.join(" → ")),
     });
 
+    let (timing, skills) = measure(&records);
+
+    // 有 rollout 就能多守一条：整个会话不该出现绕过 MCP 的动作。
+    if let Some(r) = &rollout {
+        verdicts.push(Verdict {
+            name: "全程没有绕过 MCP".into(),
+            passed: r.bypasses.is_empty(),
+            detail: if r.bypasses.is_empty() {
+                format!(
+                    "Codex 侧 {} 次本地命令，没有一次碰状态库或试图用 CLI 推进阶段",
+                    r.calls.shell
+                )
+            } else {
+                format!("发现绕行：{}", r.bypasses.join("；"))
+            },
+        });
+    }
+
     let passed = verdicts.iter().all(|v| v.passed);
     Report {
         generated_at: studio_mcp::trace::now(),
@@ -143,6 +200,78 @@ pub fn build(bundle: &Path) -> Report {
         stages_reached,
         verdicts,
         passed,
+        timing,
+        skills,
+        rollout,
+    }
+}
+
+/// 从留痕还原耗时。
+///
+/// 每条记录的 `at` 是调用**结束**的时刻，`duration_ms` 是控制面处理时长，
+/// 所以调用开始 ≈ `at - duration`。两次调用之间的空档归给谁，取决于上一次
+/// 调用之后轮到谁：`waiting_on == user` 就是人在看，否则是 Agent 在想。
+fn measure(records: &[TraceRecord]) -> (Timing, Vec<SkillStat>) {
+    let mut t = Timing::default();
+    let mut by_cap: BTreeMap<String, SkillStat> = BTreeMap::new();
+
+    let parsed: Vec<(i64, &TraceRecord)> = records
+        .iter()
+        .filter_map(|r| epoch_ms(&r.at).map(|ms| (ms, r)))
+        .collect();
+
+    for (i, (end, r)) in parsed.iter().enumerate() {
+        let cap = r.capability.clone().unwrap_or_else(|| "（未知）".into());
+        let entry = by_cap.entry(cap.clone()).or_insert_with(|| SkillStat {
+            capability: cap,
+            ..Default::default()
+        });
+        entry.calls += 1;
+        entry.server_ms += r.duration_ms as i64;
+        if let Some(s) = &r.stage {
+            if !entry.stages.contains(s) {
+                entry.stages.push(s.clone());
+            }
+        }
+        t.server_ms += r.duration_ms as i64;
+
+        if let Some((next_end, next)) = parsed.get(i + 1) {
+            let next_start = next_end - next.duration_ms as i64;
+            let gap = (next_start - end).max(0);
+            if r.waiting_on.as_deref() == Some("user") {
+                t.waiting_user_ms += gap;
+                entry.waiting_user_ms += gap;
+            } else {
+                t.agent_ms += gap;
+                entry.agent_ms += gap;
+            }
+        }
+    }
+
+    if let (Some((first_end, first)), Some((last_end, _))) = (parsed.first(), parsed.last()) {
+        t.wall_ms = (last_end - (first_end - first.duration_ms as i64)).max(0);
+        t.effective_ms = (t.wall_ms - t.waiting_user_ms).max(0);
+    }
+
+    let mut skills: Vec<SkillStat> = by_cap.into_values().collect();
+    skills.sort_by(|a, b| (b.server_ms + b.agent_ms).cmp(&(a.server_ms + a.agent_ms)));
+    (t, skills)
+}
+
+/// RFC3339 → 毫秒。解析不了就跳过这条，不因为一行坏数据毁掉整份报告。
+fn epoch_ms(s: &str) -> Option<i64> {
+    chrono::DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|d| d.timestamp_millis())
+}
+
+pub fn human_ms(ms: i64) -> String {
+    if ms < 1000 {
+        format!("{ms} 毫秒")
+    } else if ms < 60_000 {
+        format!("{:.1} 秒", ms as f64 / 1000.0)
+    } else {
+        format!("{} 分 {} 秒", ms / 60_000, (ms % 60_000) / 1000)
     }
 }
 
@@ -173,7 +302,28 @@ pub fn render(r: &Report) -> String {
         "  调用总数  {}（失败 {}）\n",
         r.total_calls, r.failed_calls
     ));
-    s.push_str(&format!("  走到阶段  {}\n\n", r.stages_reached.join(" → ")));
+    s.push_str(&format!("  走到阶段  {}\n", r.stages_reached.join(" → ")));
+    s.push_str(&format!(
+        "  耗时      有效 {}（墙上 {}，其中等用户 {}）\n",
+        human_ms(r.timing.effective_ms),
+        human_ms(r.timing.wall_ms),
+        human_ms(r.timing.waiting_user_ms)
+    ));
+    if let Some(ro) = &r.rollout {
+        s.push_str(&format!(
+            "  token     输入 {} / 输出 {}（推理 {}，命中缓存 {}）\n",
+            ro.tokens.input, ro.tokens.output, ro.tokens.reasoning_output, ro.tokens.cached_input
+        ));
+        s.push_str(&format!(
+            "  读过 Skill {}\n",
+            if ro.skills_read.is_empty() {
+                "（会话里没有读取记录）".to_string()
+            } else {
+                ro.skills_read.join("、")
+            }
+        ));
+    }
+    s.push('\n');
 
     s.push_str("  各工具调用次数\n");
     for (tool, n) in &r.calls_by_tool {
@@ -233,6 +383,9 @@ mod tests {
             at: "2026-09-03T00:00:00.000Z".into(),
             tool: tool.into(),
             stage: stage.map(String::from),
+            capability: stage
+                .and_then(studio_core::StageId::parse)
+                .map(|s| s.capability().as_str().to_string()),
             ok,
             error_code: code.map(String::from),
             remedy_present: remedy,

@@ -46,10 +46,20 @@ cd ~/e2e/千岛湖.studio
 ### 3. 出报告
 
 ```bash
-/opt/video-studio/studiod e2e report -o ~/e2e/report.json
+studiod e2e report \
+  --rollout ~/.codex/sessions/<本次会话>.jsonl \
+  --html ~/e2e/report.html \
+  -o ~/e2e/report.json
 ```
 
 退出码非 0 表示未通过。报告同时打印人读的摘要。
+
+`--rollout` 是关键：MCP server 只看得见自己被调用了什么，
+**看不见 token 用量、Codex 读没读 SKILL.md、有没有绕过 MCP 直接跑命令**。
+这些只有 Codex 自己的会话记录里有。合并之后报告才完整，
+并且多一条验收「全程没有绕过 MCP」。
+
+`--html` 出一份单文件报告（Tailwind CDN，其余全内联），拷到哪儿都能打开。
 
 ### 4. 带回开发环境
 
@@ -57,6 +67,22 @@ cd ~/e2e/千岛湖.studio
 有全部结论所需的信息；确实要看产物时再带 `stages/*.json`。
 
 ## 报告里有什么
+
+### 可观测与不可观测
+
+| 想知道 | 从哪来 | 没有 rollout 时 |
+|---|---|---|
+| 走到哪个阶段、用了几次调用 | `.studio/trace.jsonl` | 有 |
+| 各阶段耗时（区分等待用户） | 同上 | 有 |
+| 每条阻塞有没有 remedy | 同上 | 有 |
+| token 用量 | Codex rollout | 不可观测 |
+| 读过哪些 SKILL.md | Codex rollout | 不可观测 |
+| 有没有绕过 MCP 跑命令 | Codex rollout | 不可观测 |
+
+耗时里**等待用户确认单独拆出来，不计入有效耗时**——那是人在看，不是系统在跑。
+剩下的分成两段：控制面自己处理的时间，和两次调用之间 Agent 在想在写的时间。
+
+## JSON 报告的结构
 
 ```jsonc
 {

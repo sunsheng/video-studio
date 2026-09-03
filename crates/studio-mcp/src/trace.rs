@@ -16,9 +16,12 @@ pub const TRACE_FILE: &str = ".studio/trace.jsonl";
 pub struct TraceRecord {
     pub at: String,
     pub tool: String,
-    /// 调用时的阶段（尽力而为，来自返回信封）。
+    /// 这次调用作用在哪个阶段。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stage: Option<String>,
+    /// 该阶段对应的能力，也就是 Skill 名。报告按它汇总。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capability: Option<String>,
     pub ok: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_code: Option<String>,
@@ -84,6 +87,7 @@ mod tests {
             at: now(),
             tool: "studio.submit_stage".into(),
             stage: Some("script".into()),
+            capability: Some("script".into()),
             ok: true,
             error_code: None,
             remedy_present: None,
@@ -94,6 +98,7 @@ mod tests {
             at: now(),
             tool: "studio.submit_stage".into(),
             stage: Some("script".into()),
+            capability: Some("script".into()),
             ok: false,
             error_code: Some("gate_pending".into()),
             remedy_present: Some(true),

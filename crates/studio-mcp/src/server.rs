@@ -142,6 +142,10 @@ impl Server {
         // 调用**之前**先记下作用在哪个阶段。用返回信封里的阶段是错的：
         // 提交 idea 成功之后信封已经指向 selection，idea 就永远不会被记上。
         let acted_stage = self.acted_stage(&args);
+        let acted_capability = acted_stage
+            .as_deref()
+            .and_then(StageId::parse)
+            .map(|s| s.capability().as_str().to_string());
 
         let started = std::time::Instant::now();
         let outcome = self.dispatch(&name, &args);
@@ -150,6 +154,7 @@ impl Server {
         let (payload, is_error, rec) = match outcome {
             Ok(v) => {
                 let stage = acted_stage.clone();
+                let capability = acted_capability.clone();
                 let waiting = v
                     .get("waiting_on")
                     .and_then(|s| s.as_str())
@@ -158,6 +163,7 @@ impl Server {
                     at: now(),
                     tool: name.clone(),
                     stage,
+                    capability,
                     ok: true,
                     error_code: None,
                     remedy_present: None,
@@ -184,6 +190,7 @@ impl Server {
                     at: now(),
                     tool: name.clone(),
                     stage: acted_stage.clone(),
+                    capability: acted_capability.clone(),
                     ok: false,
                     error_code: Some(e.code().to_string()),
                     remedy_present: Some(!e.remedy().trim().is_empty()),
