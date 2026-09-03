@@ -32,3 +32,4 @@ walkdir.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
+studio-core = { path = "../studio-core", features = ["fixtures"] }

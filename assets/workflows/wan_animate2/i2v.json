@@ -1,0 +1,413 @@
+{
+  "_studio": {
+    "bindings": {
+      "seed": [
+        "19.inputs.noise_seed"
+      ]
+    },
+    "source": "douyin-video-studio/validated_workflows/wan_animate2/i2v_api.json",
+    "bindings_verified": false
+  },
+  "239": {
+    "inputs": {
+      "unet_name": "wan_animate_2_int8_convrot.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader"
+  },
+  "11": {
+    "inputs": {
+      "lora_name": "lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16.safetensors",
+      "model": [
+        "239",
+        0
+      ],
+      "strength_model": 1.0
+    },
+    "class_type": "LoraLoaderModelOnly"
+  },
+  "9": {
+    "inputs": {
+      "clip_name": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+      "type": "wan",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader"
+  },
+  "4": {
+    "inputs": {
+      "text": "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走",
+      "clip": [
+        "9",
+        0
+      ]
+    },
+    "class_type": "CLIPTextEncode"
+  },
+  "3": {
+    "inputs": {
+      "text": "Character Description: Cartoon character lost\nBackground description: The background is an empty white room",
+      "clip": [
+        "9",
+        0
+      ]
+    },
+    "class_type": "CLIPTextEncode"
+  },
+  "75": {
+    "inputs": {
+      "clip_name": "clip_vision_h.safetensors"
+    },
+    "class_type": "CLIPVisionLoader"
+  },
+  "7": {
+    "inputs": {
+      "vae_name": "Wan2_1_VAE_bf16.safetensors"
+    },
+    "class_type": "VAELoader"
+  },
+  "222": {
+    "inputs": {
+      "text": "一只穿着制服的小猫做动作的参考视频",
+      "clip": [
+        "9",
+        0
+      ]
+    },
+    "class_type": "CLIPTextEncode"
+  },
+  "257": {
+    "inputs": {
+      "model": [
+        "11",
+        0
+      ],
+      "context_length": 21,
+      "context_overlap": 8,
+      "context_schedule": "standard_static",
+      "context_stride": 1,
+      "closed_loop": false,
+      "fuse_method": "pyramid",
+      "dim": 2,
+      "freenoise": true,
+      "cond_retain_index_list": "0",
+      "split_conds_to_windows": false,
+      "latent_retain_index_list": "",
+      "causal_window_fix": true
+    },
+    "class_type": "ContextWindowsManual"
+  },
+  "247": {
+    "inputs": {
+      "width": 512,
+      "height": 288,
+      "length": 17,
+      "video_frame_offset": 0,
+      "pose_strength": 1.0,
+      "pose_start_percent": 0.0,
+      "pose_end_percent": 1.0,
+      "reference_image_strength": 1.0,
+      "positive": [
+        "3",
+        0
+      ],
+      "negative": [
+        "4",
+        0
+      ],
+      "vae": [
+        "7",
+        0
+      ],
+      "reference_image": [
+        "244",
+        0
+      ],
+      "pose_video": [
+        "243",
+        0
+      ],
+      "clip_vision_output": [
+        "76",
+        0
+      ],
+      "positive_pose": [
+        "222",
+        0
+      ],
+      "clip_vision_output_pose": [
+        "220",
+        0
+      ],
+      "batch_size": 1
+    },
+    "class_type": "WanAnimate2ToVideo"
+  },
+  "258": {
+    "inputs": {
+      "switch": false,
+      "on_false": [
+        "11",
+        0
+      ],
+      "on_true": [
+        "257",
+        0
+      ]
+    },
+    "class_type": "ComfySwitchNode"
+  },
+  "76": {
+    "inputs": {
+      "clip_vision": [
+        "75",
+        0
+      ],
+      "image": [
+        "244",
+        0
+      ],
+      "crop": "center"
+    },
+    "class_type": "CLIPVisionEncode"
+  },
+  "244": {
+    "inputs": {
+      "resize_type.width": 512,
+      "resize_type.height": 288,
+      "resize_type": "scale dimensions",
+      "input": [
+        "10000",
+        0
+      ],
+      "scale_method": "area",
+      "resize_type.crop": "center"
+    },
+    "class_type": "ResizeImageMaskNode"
+  },
+  "18": {
+    "inputs": {
+      "model": [
+        "224",
+        0
+      ],
+      "scheduler": "simple",
+      "steps": 6,
+      "denoise": 1.0
+    },
+    "class_type": "BasicScheduler"
+  },
+  "95": {
+    "inputs": {
+      "model": [
+        "224",
+        0
+      ],
+      "shift": 5
+    },
+    "class_type": "ModelSamplingSD3"
+  },
+  "27": {
+    "inputs": {
+      "sampler_name": "lcm"
+    },
+    "class_type": "KSamplerSelect"
+  },
+  "224": {
+    "inputs": {
+      "device": "cpu",
+      "dtype": "int8",
+      "model": [
+        "258",
+        0
+      ]
+    },
+    "class_type": "WanAnimate2Cache"
+  },
+  "241": {
+    "inputs": {
+      "video": [
+        "10002",
+        0
+      ]
+    },
+    "class_type": "GetVideoComponents"
+  },
+  "256": {
+    "inputs": {
+      "image": [
+        "243",
+        0
+      ]
+    },
+    "class_type": "GetImageSize"
+  },
+  "19": {
+    "inputs": {
+      "noise_seed": 42,
+      "model": [
+        "95",
+        0
+      ],
+      "positive": [
+        "247",
+        0
+      ],
+      "negative": [
+        "247",
+        1
+      ],
+      "sampler": [
+        "27",
+        0
+      ],
+      "sigmas": [
+        "18",
+        0
+      ],
+      "latent_image": [
+        "247",
+        2
+      ],
+      "add_noise": true,
+      "cfg": 1.0
+    },
+    "class_type": "SamplerCustom"
+  },
+  "220": {
+    "inputs": {
+      "clip_vision": [
+        "75",
+        0
+      ],
+      "image": [
+        "236",
+        0
+      ],
+      "crop": "center"
+    },
+    "class_type": "CLIPVisionEncode"
+  },
+  "236": {
+    "inputs": {
+      "image": [
+        "243",
+        0
+      ],
+      "batch_index": 0,
+      "length": 1
+    },
+    "class_type": "ImageFromBatch"
+  },
+  "243": {
+    "inputs": {
+      "resize_type.width": 512,
+      "resize_type.height": 288,
+      "resize_type": "scale dimensions",
+      "input": [
+        "241",
+        0
+      ],
+      "scale_method": "area",
+      "resize_type.crop": "center"
+    },
+    "class_type": "ResizeImageMaskNode"
+  },
+  "6": {
+    "inputs": {
+      "samples": [
+        "223",
+        0
+      ],
+      "vae": [
+        "7",
+        0
+      ]
+    },
+    "class_type": "VAEDecode"
+  },
+  "223": {
+    "inputs": {
+      "trim_amount": [
+        "247",
+        3
+      ],
+      "samples": [
+        "19",
+        0
+      ]
+    },
+    "class_type": "TrimVideoLatent"
+  },
+  "297": {
+    "inputs": {
+      "value": false
+    },
+    "class_type": "PrimitiveBoolean"
+  },
+  "298": {
+    "inputs": {
+      "image": [
+        "6",
+        0
+      ],
+      "batch_index": 0,
+      "length": 4096
+    },
+    "class_type": "ImageFromBatch"
+  },
+  "299": {
+    "inputs": {
+      "switch": [
+        "297",
+        0
+      ],
+      "on_true": [
+        "298",
+        0
+      ],
+      "on_false": [
+        "6",
+        0
+      ]
+    },
+    "class_type": "ComfySwitchNode"
+  },
+  "10000": {
+    "inputs": {
+      "image": "pink_hair_mech_arms_ref.png"
+    },
+    "class_type": "LoadImage"
+  },
+  "10001": {
+    "inputs": {
+      "video": [
+        "10003",
+        0
+      ],
+      "filename_prefix": "video/douyin_video_studio/wan_animate2",
+      "format": "auto",
+      "format.codec": "auto",
+      "codec": "auto"
+    },
+    "class_type": "SaveVideo"
+  },
+  "10002": {
+    "class_type": "LoadVideo",
+    "inputs": {
+      "file": "street_dance_drive.mp4"
+    }
+  },
+  "10003": {
+    "class_type": "CreateVideo",
+    "inputs": {
+      "images": [
+        "6",
+        0
+      ],
+      "fps": 24,
+      "bit_depth": "auto",
+      "color_space": "sRGB"
+    }
+  }
+}

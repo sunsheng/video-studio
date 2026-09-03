@@ -11,7 +11,7 @@
 use clap::{Parser, Subcommand};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use studiod::{assets, doctor, e2e, pack};
+use studiod::{assets, doctor, e2e, list, pack};
 
 #[derive(Parser)]
 #[command(
@@ -55,14 +55,24 @@ enum Command {
         #[arg(long)]
         check: bool,
     },
-    /// 打包成单个 .dvs 文件
+    /// 列出作品。目录就是事实源，没有中央注册表
+    List {
+        /// 在哪些目录下面找，默认当前目录
+        paths: Vec<PathBuf>,
+        /// 往下找几层，默认 2
+        #[arg(long, default_value_t = 2)]
+        depth: usize,
+        #[arg(long)]
+        json: bool,
+    },
+    /// 打包成单个 .dvs 文件。**默认不带媒体**
     Pack {
         bundle: PathBuf,
         #[arg(short, long)]
         out: PathBuf,
-        /// 不带媒体，用来做轻量分叉
+        /// 连媒体一起打包（成片和中间片段，通常很大）
         #[arg(long)]
-        no_media: bool,
+        media: bool,
     },
     /// 解包成一个作品目录
     Unpack {
@@ -73,6 +83,19 @@ enum Command {
     /// 端到端留痕相关
     #[command(subcommand)]
     E2e(E2eCommand),
+    /// 已验证 workflow 基线相关
+    #[command(subcommand)]
+    Workflows(WorkflowCommand),
+}
+
+#[derive(Subcommand)]
+enum WorkflowCommand {
+    /// 逐份检查基线：是不是 API 格式、绑定指向的节点存不存在、有没有核验过
+    Check {
+        /// 基线目录，默认程序目录下的 assets/workflows
+        #[arg(long)]
+        dir: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -124,13 +147,11 @@ fn run(cli: Cli) -> Result<(), String> {
         Command::Serve => cmd_serve(),
         Command::Doctor { json, fix } => cmd_doctor(json, fix),
         Command::EmitAssets { out, check } => cmd_emit(&out, check),
-        Command::Pack {
-            bundle,
-            out,
-            no_media,
-        } => cmd_pack(&bundle, &out, !no_media),
+        Command::List { paths, depth, json } => cmd_list(paths, depth, json),
+        Command::Pack { bundle, out, media } => cmd_pack(&bundle, &out, media),
         Command::Unpack { archive, into } => cmd_unpack(&archive, &into),
         Command::E2e(E2eCommand::Report { bundle, out }) => cmd_e2e(bundle, out),
+        Command::Workflows(WorkflowCommand::Check { dir }) => cmd_workflows_check(dir),
     }
 }
 
@@ -240,6 +261,101 @@ fn cmd_emit(out: &Path, check: bool) -> Result<(), String> {
     Ok(())
 }
 
+fn cmd_list(paths: Vec<PathBuf>, depth: usize, json: bool) -> Result<(), String> {
+    let roots = if paths.is_empty() { vec![cwd()] } else { paths };
+    let entries = list::scan(&roots, depth);
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&entries).map_err(|e| e.to_string())?
+        );
+    } else {
+        print!("{}", list::render(&entries));
+    }
+    Ok(())
+}
+
+fn cmd_workflows_check(dir: Option<PathBuf>) -> Result<(), String> {
+    let dir = dir
+        .or_else(|| program_dir().map(|p| p.join("assets/workflows")))
+        .unwrap_or_else(|| PathBuf::from("assets/workflows"));
+    if !dir.is_dir() {
+        return Err(format!(
+            "{} 不存在。基线目录见 assets/workflows/README.md。",
+            dir.display()
+        ));
+    }
+
+    let mut checked = 0;
+    let mut unverified = Vec::new();
+    let mut broken = Vec::new();
+
+    let mut stack = vec![dir.clone()];
+    while let Some(d) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+                continue;
+            }
+            if p.extension().and_then(|x| x.to_str()) != Some("json") {
+                continue;
+            }
+            let rel = p.strip_prefix(&dir).unwrap_or(&p).with_extension("");
+            let name = rel.to_string_lossy().replace('\\', "/");
+            // FORMAT-EXAMPLE 是格式样例，SOURCE-* 是从前身仓库带过来的参考件，
+            // 都不是可提交的基线。
+            let base = rel
+                .file_name()
+                .map(|f| f.to_string_lossy().to_string())
+                .unwrap_or_default();
+            if base.starts_with("FORMAT-EXAMPLE") || base.starts_with("SOURCE-") {
+                continue;
+            }
+            checked += 1;
+            match studio_pipeline::workflow::Workflow::load(&dir, &name) {
+                Err(err) => broken.push(format!("{name}: {}", err.message())),
+                Ok(wf) => {
+                    if let Err(err) = wf.check() {
+                        broken.push(format!("{name}: {}", err.message()));
+                    } else if !wf.is_verified() {
+                        unverified.push(format!("{name}（参数：{}）", wf.parameters().join("、")));
+                    } else {
+                        println!("  可用    {name}  参数：{}", wf.parameters().join("、"));
+                    }
+                }
+            }
+        }
+    }
+
+    for u in &unverified {
+        println!("  待核验  {u}");
+    }
+    for b in &broken {
+        println!("  损坏    {b}");
+    }
+    println!();
+    println!(
+        "共 {checked} 份：可用 {}，待核验 {}，损坏 {}",
+        checked - unverified.len() - broken.len(),
+        unverified.len(),
+        broken.len()
+    );
+    if !unverified.is_empty() {
+        println!();
+        println!("待核验的基线不会被用来渲染。真机跑通之后，把它的");
+        println!("_studio.bindings_verified 改成 true，并补齐 bindings。");
+    }
+    if broken.is_empty() {
+        Ok(())
+    } else {
+        Err(String::new())
+    }
+}
+
 fn cmd_pack(bundle: &Path, out: &Path, include_media: bool) -> Result<(), String> {
     let stats = pack::pack(bundle, out, include_media).map_err(|e| format!("打包失败：{e}"))?;
     println!(
@@ -249,7 +365,10 @@ fn cmd_pack(bundle: &Path, out: &Path, include_media: bool) -> Result<(), String
         out.display()
     );
     if stats.skipped_media > 0 {
-        println!("  跳过 {} 个媒体文件（--no-media）", stats.skipped_media);
+        println!(
+            "  跳过 {} 个媒体文件。要连媒体一起打包加 --media",
+            stats.skipped_media
+        );
     }
     Ok(())
 }

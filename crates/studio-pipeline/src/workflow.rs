@@ -18,6 +18,10 @@ pub struct Workflow {
     /// 参数名 → 若干个 `<节点 id>.inputs.<输入名>` 路径。
     bindings: Map<String, Value>,
     name: String,
+    /// 绑定是否已经真机跑通核验过。未核验的基线不允许用来渲染——
+    /// 绑错节点会静默产出错的画面，比直接报错难查得多。
+    verified: bool,
+    source: Option<String>,
 }
 
 impl Workflow {
@@ -66,10 +70,20 @@ impl Workflow {
             }
         }
 
+        let verified = meta
+            .get("bindings_verified")
+            .and_then(|b| b.as_bool())
+            .unwrap_or(false);
+        let source = meta
+            .get("source")
+            .and_then(|s| s.as_str())
+            .map(String::from);
         Ok(Workflow {
             graph: v,
             bindings,
             name: name.to_string(),
+            verified,
+            source,
         })
     }
 
@@ -79,6 +93,37 @@ impl Workflow {
 
     pub fn parameters(&self) -> Vec<String> {
         self.bindings.keys().cloned().collect()
+    }
+
+    pub fn is_verified(&self) -> bool {
+        self.verified
+    }
+
+    pub fn source(&self) -> Option<&str> {
+        self.source.as_deref()
+    }
+
+    /// 用来渲染之前必须核验过。
+    pub fn require_verified(&self) -> Result<()> {
+        if self.verified {
+            return Ok(());
+        }
+        Err(StudioError::ModelContractViolation {
+            detail: format!(
+                "基线 {} 的参数绑定尚未核验。绑错节点会静默产出错的画面，\
+                 所以在真机跑通并把 _studio.bindings_verified 改成 true 之前不允许用它渲染",
+                self.name
+            ),
+        })
+    }
+
+    /// 逐条检查绑定指向的节点确实存在。真机跑之前先把打字错误挡掉。
+    pub fn check(&self) -> Result<()> {
+        let mut probe = Map::new();
+        for k in self.bindings.keys() {
+            probe.insert(k.clone(), Value::Null);
+        }
+        self.apply(&probe).map(|_| ())
     }
 
     /// 把逐镜头参数写进图里，返回可直接提交给 `/prompt` 的副本。
@@ -191,6 +236,39 @@ mod tests {
             json!(512),
             "基线必须保持原样，逐镜头之间不能串味"
         );
+    }
+
+    /// 绑错节点会静默产出错的画面。未核验的基线宁可报错也不渲染。
+    #[test]
+    fn an_unverified_baseline_refuses_to_render() {
+        let w = Workflow::parse(&baseline(), "wan2_2/i2v").unwrap();
+        assert!(!w.is_verified(), "没写 bindings_verified 就默认未核验");
+        let e = w.require_verified().unwrap_err();
+        assert_eq!(e.code(), "model_contract_violation");
+        assert!(e.message().contains("尚未核验"));
+
+        let mut v: Value = serde_json::from_str(&baseline()).unwrap();
+        v["_studio"]["bindings_verified"] = json!(true);
+        let w = Workflow::parse(&v.to_string(), "minimax_h3/t2v").unwrap();
+        assert!(w.is_verified());
+        w.require_verified().unwrap();
+    }
+
+    #[test]
+    fn check_catches_a_typo_in_a_binding_path() {
+        let bad = json!({
+            "_studio": { "bindings": { "seed": ["3.inputs.seed"], "width": ["nope.inputs.width"] } },
+            "3": { "class_type": "KSampler", "inputs": { "seed": 0 } }
+        })
+        .to_string();
+        let w = Workflow::parse(&bad, "b").unwrap();
+        let e = w.check().unwrap_err();
+        assert!(e.message().contains("没有节点 nope"));
+    }
+
+    #[test]
+    fn check_passes_on_a_sound_baseline() {
+        Workflow::parse(&baseline(), "ok").unwrap().check().unwrap();
     }
 
     #[test]

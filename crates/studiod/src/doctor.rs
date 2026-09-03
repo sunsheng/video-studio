@@ -61,11 +61,13 @@ pub fn run(program_dir: Option<&std::path::Path>, bundle: Option<&std::path::Pat
             });
         } else {
             checks.push(Check {
+                // 前六个阶段（创意到提示词）不碰媒体，所以这不是硬阻塞。
                 name: format!("{tool} 缺失"),
-                level: Level::Fail,
+                level: Level::Warn,
                 detail: format!("找过：{}", st.looked_in.join("、")),
                 remedy: Some(format!(
-                    "装好 {tool} 后，或者把它的完整路径写进 .env：\n    {}_PATH=/你的路径/{tool}\n  \
+                    "后期阶段才需要它，创作阶段不受影响。装好 {tool} 后，\n  \
+                     或者把它的完整路径写进 .env：\n    {}_PATH=/你的路径/{tool}\n  \
                      它不要求在 PATH 中。bundle 里的 .env 优先于程序目录的 .env。",
                     tool.to_uppercase()
                 )),
@@ -190,10 +192,20 @@ pub fn render(report: &Report) -> String {
         }
         s.push('\n');
     }
-    s.push_str(if report.healthy {
-        "结论：可以开始。\n"
+    let warnings = report
+        .checks
+        .iter()
+        .filter(|c| c.level == Level::Warn)
+        .count();
+    if !report.healthy {
+        s.push_str("结论：有必须先解决的问题，见上面的「缺失」项。\n");
+    } else if warnings > 0 {
+        s.push_str("结论：现在就可以开始创作。\n");
+        s.push_str("      上面 ");
+        s.push_str(&warnings.to_string());
+        s.push_str(" 项「注意」只影响渲染和后期，可以边做边补。\n");
     } else {
-        "结论：有必须先解决的问题，见上面的「缺失」项。\n"
-    });
+        s.push_str("结论：全流程就绪。\n");
+    }
     s
 }

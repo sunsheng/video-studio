@@ -3,4 +3,5 @@
 pub mod assets;
 pub mod doctor;
 pub mod e2e;
+pub mod list;
 pub mod pack;

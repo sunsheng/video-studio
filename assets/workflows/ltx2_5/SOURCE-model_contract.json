@@ -1,0 +1,26 @@
+{
+  "family": "ltx2.5",
+  "node": "http://127.0.0.1:9001",
+  "validation_run": "20260830T213000Z-ltx25-validated",
+  "workflows": {
+    "t2v": "t2v_api.json",
+    "i2v": "i2v_api.json",
+    "flf2v": "flf2v_api.json"
+  },
+  "models": {
+    "diffusion": "ltx-2.5-22b-distilled-transformer-comfy-int8-convrot.safetensors",
+    "prompt_encoder": "gemma4_e2b_it_int8_convrot.safetensors",
+    "conditioning_encoder": "gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors",
+    "video_vae": "ltx-2.5-video-vae-bf16.safetensors",
+    "audio_vae": "ltx-2.5-audio-vae-bf16.safetensors",
+    "latent_upscaler": "ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors"
+  },
+  "validation": {
+    "status": "render_smoke_passed",
+    "modes": {
+      "t2v": {"run_id": "20260831T035154Z-29b70a", "prompt_id": "5e61ef26-89e8-400f-bd3d-b11f87c72a1f", "duration_seconds": 1.04},
+      "i2v": {"run_id": "20260830T213000Z-ltx25-validated", "prompt_id": "1ffd2799-e4cb-426b-82e8-c90d0432f376", "resolution": [256, 144], "duration_seconds": 2},
+      "flf2v": {"run_id": "20260831T035154Z-29b70a", "prompt_id": "b873f754-292a-406b-9db8-652c10368c75", "resolution": [160, 288], "duration_seconds": 1.04}
+    }
+  }
+}

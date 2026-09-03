@@ -1,0 +1,273 @@
+{
+  "_studio": {
+    "bindings": {
+      "positive": [
+        "89.inputs.text"
+      ],
+      "negative": [
+        "72.inputs.text"
+      ],
+      "width": [
+        "74.inputs.width"
+      ],
+      "height": [
+        "74.inputs.height"
+      ],
+      "length_frames": [
+        "74.inputs.length"
+      ],
+      "fps": [
+        "125.inputs.value"
+      ],
+      "seed": [
+        "81.inputs.noise_seed"
+      ]
+    },
+    "source": "douyin-video-studio/validated_workflows/wan2_2/t2v_api.json",
+    "bindings_verified": true
+  },
+  "71": {
+    "inputs": {
+      "clip_name": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+      "type": "wan",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader"
+  },
+  "73": {
+    "inputs": {
+      "vae_name": "wan_2.1_vae.safetensors"
+    },
+    "class_type": "VAELoader"
+  },
+  "76": {
+    "inputs": {
+      "unet_name": "wan2.2_t2v_low_noise_14B_fp8_scaled.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader"
+  },
+  "75": {
+    "inputs": {
+      "unet_name": "wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader"
+  },
+  "86": {
+    "inputs": {
+      "shift": 5.000000000000001,
+      "model": [
+        "76",
+        0
+      ]
+    },
+    "class_type": "ModelSamplingSD3"
+  },
+  "82": {
+    "inputs": {
+      "shift": 5.000000000000001,
+      "model": [
+        "75",
+        0
+      ]
+    },
+    "class_type": "ModelSamplingSD3"
+  },
+  "89": {
+    "inputs": {
+      "text": "A single red paper lantern sways gently in a quiet dark studio, cinematic soft light, no text, no logo.",
+      "clip": [
+        "71",
+        0
+      ]
+    },
+    "class_type": "CLIPTextEncode"
+  },
+  "81": {
+    "inputs": {
+      "steps": [
+        "114",
+        0
+      ],
+      "cfg": [
+        "116",
+        0
+      ],
+      "end_at_step": [
+        "115",
+        0
+      ],
+      "add_noise": "enable",
+      "noise_seed": 923510416338945,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "start_at_step": 0,
+      "return_with_leftover_noise": "enable",
+      "model": [
+        "82",
+        0
+      ],
+      "positive": [
+        "89",
+        0
+      ],
+      "negative": [
+        "72",
+        0
+      ],
+      "latent_image": [
+        "74",
+        0
+      ]
+    },
+    "class_type": "KSamplerAdvanced"
+  },
+  "88": {
+    "inputs": {
+      "fps": [
+        "125",
+        0
+      ],
+      "images": [
+        "87",
+        0
+      ]
+    },
+    "class_type": "CreateVideo"
+  },
+  "87": {
+    "inputs": {
+      "samples": [
+        "78",
+        0
+      ],
+      "vae": [
+        "73",
+        0
+      ]
+    },
+    "class_type": "VAEDecode"
+  },
+  "72": {
+    "inputs": {
+      "text": "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走，裸露，NSFW",
+      "clip": [
+        "71",
+        0
+      ]
+    },
+    "class_type": "CLIPTextEncode"
+  },
+  "74": {
+    "inputs": {
+      "width": 144,
+      "height": 256,
+      "length": [
+        "127",
+        1
+      ],
+      "batch_size": 1
+    },
+    "class_type": "EmptyHunyuanLatentVideo"
+  },
+  "78": {
+    "inputs": {
+      "steps": [
+        "114",
+        0
+      ],
+      "cfg": [
+        "116",
+        0
+      ],
+      "start_at_step": [
+        "115",
+        0
+      ],
+      "end_at_step": [
+        "114",
+        0
+      ],
+      "add_noise": "disable",
+      "noise_seed": 0,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "return_with_leftover_noise": "disable",
+      "model": [
+        "86",
+        0
+      ],
+      "positive": [
+        "89",
+        0
+      ],
+      "negative": [
+        "72",
+        0
+      ],
+      "latent_image": [
+        "81",
+        0
+      ]
+    },
+    "class_type": "KSamplerAdvanced"
+  },
+  "114": {
+    "inputs": {
+      "value": 20
+    },
+    "class_type": "PrimitiveInt"
+  },
+  "115": {
+    "inputs": {
+      "value": 10
+    },
+    "class_type": "PrimitiveInt"
+  },
+  "116": {
+    "inputs": {
+      "value": 3.5
+    },
+    "class_type": "PrimitiveFloat"
+  },
+  "125": {
+    "inputs": {
+      "value": 16
+    },
+    "class_type": "PrimitiveFloat"
+  },
+  "126": {
+    "inputs": {
+      "value": 1.0
+    },
+    "class_type": "PrimitiveFloat"
+  },
+  "127": {
+    "inputs": {
+      "expression": "floor(a * b) + 1",
+      "values.a": [
+        "126",
+        0
+      ],
+      "values.b": [
+        "125",
+        0
+      ]
+    },
+    "class_type": "ComfyMathExpression"
+  },
+  "output": {
+    "class_type": "SaveVideo",
+    "inputs": {
+      "video": [
+        "88",
+        0
+      ],
+      "filename_prefix": "validation/wan2_2/t2v",
+      "format": "auto",
+      "format.codec": "auto",
+      "codec": "auto"
+    }
+  }
+}

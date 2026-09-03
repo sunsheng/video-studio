@@ -1,0 +1,80 @@
+{
+  "family": "wan2_2",
+  "display_name": "Wan2.2 14B",
+  "node": "http://127.0.0.1:9001",
+  "validation_run": "20260831T035154Z-29b70a",
+  "workflow_policy": "official_template_project_local_adaptation_non_turbo_20_step",
+  "workflows": {
+    "t2v": "t2v_api.json",
+    "i2v": "i2v_api.json",
+    "flf2v": "flf2v_api.json"
+  },
+  "official_sources": {
+    "t2v": {
+      "path": "/data1/video-ai/workflow_templates-main/templates/video_wan2_2_14B_t2v.json",
+      "sha256": "c07feedfb87de638cb34bd517d916fc7afa7786be453e433a7bb49833a0c2801"
+    },
+    "i2v": {
+      "path": "/data1/video-ai/workflow_templates-main/templates/video_wan2_2_14B_i2v.json",
+      "sha256": "455337c85e3fb0c7da9b2e3e6408f02f4be3615ec9b77c0f18c4262b931dd650"
+    },
+    "flf2v": {
+      "path": "/data1/video-ai/workflow_templates-main/templates/video_wan2_2_14B_flf2v.json",
+      "sha256": "9fb579e07caff9081c14a4c0e3b983e210aa7d976f83f1c2758d2ad6ed949fdf"
+    }
+  },
+  "models": {
+    "t2v_high_noise": {
+      "file": "wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors",
+      "size": 14293923632,
+      "sha256": "cad711ae211c8b23455ec68cd6a190a33a3d874234a77eb57266d73f8f0e6c9f"
+    },
+    "t2v_low_noise": {
+      "file": "wan2.2_t2v_low_noise_14B_fp8_scaled.safetensors",
+      "size": 14293923632,
+      "sha256": "e71b96d7c82e638694c5e7fb98fac4bfb0e4ddc5fbbb4b1df40da8f0f1278a97"
+    },
+    "i2v_high_noise": {
+      "file": "wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors",
+      "size": 14294742832,
+      "sha256": "6122e79d55e0f235698d11d657f3b196c5273c830da00b2b013c5a048d5e6a42"
+    },
+    "i2v_low_noise": {
+      "file": "wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors",
+      "size": 14294742832,
+      "sha256": "5471a457b6ac404202a5fbe6c11595a3d5641fc766b00f38763f72303fffc21e"
+    },
+    "text_encoder": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+    "vae": {
+      "file": "wan_2.1_vae.safetensors",
+      "size": 253815318,
+      "sha256": "2fc39d31359a4b0a64f55876d8ff7fa8d780956ae2cb13463b0223e15148976b"
+    }
+  },
+  "validation": {
+    "status": "render_smoke_passed",
+    "modes": {
+      "t2v": {
+        "prompt_id": "d2ff2105-69b2-4a3f-9924-918343eddbe1",
+        "resolution": [144, 256],
+        "duration_seconds": 1.063,
+        "fps": 16,
+        "audio": false
+      },
+      "i2v": {
+        "prompt_id": "58e715a3-22dc-428e-a5c5-70cb17c1d7c2",
+        "resolution": [144, 256],
+        "duration_seconds": 1.063,
+        "fps": 16,
+        "audio": false
+      },
+      "flf2v": {
+        "prompt_id": "d4733c66-611e-4e41-bb8f-70023735d743",
+        "resolution": [144, 256],
+        "duration_seconds": 1.063,
+        "fps": 16,
+        "audio": false
+      }
+    }
+  }
+}

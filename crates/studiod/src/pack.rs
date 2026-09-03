@@ -14,6 +14,9 @@ pub struct PackStats {
 }
 
 /// 打包一部作品。锁文件与 trace 不进包。
+///
+/// `include_media` 默认由调用方给 false：媒体动辄几十 GB，日常打包用来
+/// 归档结构化产物和状态，要连成片一起带走才加 `--media`。
 pub fn pack(bundle: &Path, out: &Path, include_media: bool) -> std::io::Result<PackStats> {
     let file = std::fs::File::create(out)?;
     let mut zip = zip::ZipWriter::new(file);
@@ -125,7 +128,7 @@ mod tests {
     }
 
     #[test]
-    fn no_media_leaves_the_heavy_files_behind() {
+    fn media_is_left_behind_by_default() {
         let b = fake_bundle();
         let out = b.path().parent().unwrap().join("b.dvs");
         let stats = pack(b.path(), &out, false).unwrap();

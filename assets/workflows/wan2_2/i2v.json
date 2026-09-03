@@ -1,0 +1,279 @@
+{
+  "_studio": {
+    "bindings": {
+      "seed": [
+        "86.inputs.noise_seed",
+        "85.inputs.noise_seed"
+      ]
+    },
+    "source": "douyin-video-studio/validated_workflows/wan2_2/i2v_api.json",
+    "bindings_verified": false
+  },
+  "98": {
+    "inputs": {
+      "width": 144,
+      "height": 256,
+      "length": [
+        "163",
+        1
+      ],
+      "batch_size": 1,
+      "positive": [
+        "93",
+        0
+      ],
+      "negative": [
+        "89",
+        0
+      ],
+      "vae": [
+        "90",
+        0
+      ],
+      "start_image": [
+        "input_image_1",
+        0
+      ]
+    },
+    "class_type": "WanImageToVideo"
+  },
+  "94": {
+    "inputs": {
+      "fps": [
+        "162",
+        0
+      ],
+      "bit_depth": 8,
+      "images": [
+        "87",
+        0
+      ]
+    },
+    "class_type": "CreateVideo"
+  },
+  "104": {
+    "inputs": {
+      "shift": 5.000000000000001,
+      "model": [
+        "95",
+        0
+      ]
+    },
+    "class_type": "ModelSamplingSD3"
+  },
+  "89": {
+    "inputs": {
+      "text": "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走",
+      "clip": [
+        "84",
+        0
+      ]
+    },
+    "class_type": "CLIPTextEncode"
+  },
+  "128": {
+    "inputs": {
+      "value": 20
+    },
+    "class_type": "PrimitiveInt"
+  },
+  "87": {
+    "inputs": {
+      "samples": [
+        "85",
+        0
+      ],
+      "vae": [
+        "90",
+        0
+      ]
+    },
+    "class_type": "VAEDecode"
+  },
+  "93": {
+    "inputs": {
+      "text": "A single red paper lantern sways gently in a quiet dark studio, cinematic soft light, no text, no logo.",
+      "clip": [
+        "84",
+        0
+      ]
+    },
+    "class_type": "CLIPTextEncode"
+  },
+  "90": {
+    "inputs": {
+      "vae_name": "wan_2.1_vae.safetensors"
+    },
+    "class_type": "VAELoader"
+  },
+  "84": {
+    "inputs": {
+      "clip_name": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+      "type": "wan",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader"
+  },
+  "96": {
+    "inputs": {
+      "unet_name": "wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader"
+  },
+  "95": {
+    "inputs": {
+      "unet_name": "wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader"
+  },
+  "127": {
+    "inputs": {
+      "value": 10
+    },
+    "class_type": "PrimitiveInt"
+  },
+  "126": {
+    "inputs": {
+      "value": 3.5
+    },
+    "class_type": "PrimitiveFloat"
+  },
+  "86": {
+    "inputs": {
+      "noise_seed": 44,
+      "steps": [
+        "128",
+        0
+      ],
+      "cfg": [
+        "126",
+        0
+      ],
+      "end_at_step": [
+        "127",
+        0
+      ],
+      "add_noise": "enable",
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "start_at_step": 0,
+      "return_with_leftover_noise": "enable",
+      "model": [
+        "104",
+        0
+      ],
+      "positive": [
+        "98",
+        0
+      ],
+      "negative": [
+        "98",
+        1
+      ],
+      "latent_image": [
+        "98",
+        2
+      ]
+    },
+    "class_type": "KSamplerAdvanced"
+  },
+  "85": {
+    "inputs": {
+      "steps": [
+        "128",
+        0
+      ],
+      "cfg": [
+        "126",
+        0
+      ],
+      "start_at_step": [
+        "127",
+        0
+      ],
+      "end_at_step": [
+        "128",
+        0
+      ],
+      "add_noise": "disable",
+      "noise_seed": 0,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "return_with_leftover_noise": "disable",
+      "model": [
+        "103",
+        0
+      ],
+      "positive": [
+        "98",
+        0
+      ],
+      "negative": [
+        "98",
+        1
+      ],
+      "latent_image": [
+        "86",
+        0
+      ]
+    },
+    "class_type": "KSamplerAdvanced"
+  },
+  "103": {
+    "inputs": {
+      "shift": 5.000000000000001,
+      "model": [
+        "96",
+        0
+      ]
+    },
+    "class_type": "ModelSamplingSD3"
+  },
+  "161": {
+    "inputs": {
+      "value": 1.0
+    },
+    "class_type": "PrimitiveFloat"
+  },
+  "162": {
+    "inputs": {
+      "value": 16
+    },
+    "class_type": "PrimitiveFloat"
+  },
+  "163": {
+    "inputs": {
+      "expression": "floor (a * b + 1)",
+      "values.a": [
+        "161",
+        0
+      ],
+      "values.b": [
+        "162",
+        0
+      ]
+    },
+    "class_type": "ComfyMathExpression"
+  },
+  "input_image_1": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "validation_start.png"
+    }
+  },
+  "output": {
+    "class_type": "SaveVideo",
+    "inputs": {
+      "video": [
+        "94",
+        0
+      ],
+      "filename_prefix": "validation/wan2_2/i2v",
+      "format": "auto",
+      "format.codec": "auto",
+      "codec": "auto"
+    }
+  }
+}

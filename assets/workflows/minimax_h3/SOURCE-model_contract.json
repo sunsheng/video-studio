@@ -1,0 +1,28 @@
+{
+  "family": "minimax_h3",
+  "node": "http://127.0.0.1:9001",
+  "workflows": {
+    "t2v": "t2v_api.json",
+    "i2v": "i2v_api.json",
+    "r2v": "ref2v_api.json"
+  },
+  "models": {
+    "t2v_i2v_diffusion": "minimax_h3_fl2va_int8_convrot.safetensors",
+    "r2v_diffusion": "minimax_h3_ref2va_int8_convrot.safetensors",
+    "text_encoder": "qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
+    "video_vae": "minimax_h3_video_vae_fp16.safetensors",
+    "audio_vae": "minimax_h3_audio_vae_fp32.safetensors"
+  },
+  "validation": {
+    "status": "render_smoke_passed",
+    "modes": {
+      "t2v": {"run_id": "20260830T204108Z-622bb0", "prompt_id": "1853143f-4bf7-4d71-afd8-247473e9b7ef"},
+      "i2v": {"run_id": "20260831T035154Z-29b70a", "prompt_id": "c667ea2b-5bf1-4436-80a2-bffd456cf226", "first_frame": true, "last_frame": true},
+      "r2v": {
+        "run_id": "20260831T035154Z-29b70a",
+        "prompt_id": "0dd46fbe-c90c-49e1-add0-b2ce6f3d59ca",
+        "references": ["image", "video", "video_audio", "audio"]
+      }
+    }
+  }
+}

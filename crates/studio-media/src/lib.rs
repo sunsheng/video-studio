@@ -105,6 +105,44 @@ impl<'a> Media<'a> {
         Ok(MediaInfo::from_ffprobe(&v))
     }
 
+    /// 各片段能否直接 copy 拼接：编码、分辨率、帧率、音轨都一致才行。
+    ///
+    /// 这个判断**只用 ffprobe**。判得出来就不必让 ffmpeg 重编码一遍——
+    /// 重编码既慢又掉画质，而且五个十秒片段本来就是同一套参数出的。
+    pub fn can_stream_copy(&self, parts: &[PathBuf]) -> Result<bool> {
+        let mut first: Option<MediaInfo> = None;
+        for p in parts {
+            let info = self.probe(p)?;
+            match &first {
+                None => first = Some(info),
+                Some(a) => {
+                    if !same_stream(a, &info) {
+                        return Ok(false);
+                    }
+                }
+            }
+        }
+        Ok(first.is_some())
+    }
+
+    /// 按分镜顺序拼接。
+    ///
+    /// `reencode` 为 None 时先用 ffprobe 看各片段是否一致：一致就 `-c copy`
+    /// 直接拼，不一致才重编码。给 Some 则强制。
+    pub fn concat_auto(
+        &self,
+        parts: &[PathBuf],
+        out: &Path,
+        reencode: Option<bool>,
+    ) -> Result<bool> {
+        let reencode = match reencode {
+            Some(v) => v,
+            None => !self.can_stream_copy(parts)?,
+        };
+        self.concat(parts, out, reencode)?;
+        Ok(reencode)
+    }
+
     /// 按分镜顺序拼接。用 concat demuxer，不重编码时最快。
     pub fn concat(&self, parts: &[PathBuf], out: &Path, reencode: bool) -> Result<()> {
         let ffmpeg = self.resolve("ffmpeg")?;
@@ -247,6 +285,16 @@ impl MediaInfo {
     }
 }
 
+/// 两段媒体的流参数是否一致到可以直接拼接。时长不参与——它本来就不同。
+fn same_stream(a: &MediaInfo, b: &MediaInfo) -> bool {
+    a.video_codec == b.video_codec
+        && a.audio_codec == b.audio_codec
+        && a.has_audio == b.has_audio
+        && a.width == b.width
+        && a.height == b.height
+        && (a.fps - b.fps).abs() < 0.01
+}
+
 fn parse_rational(s: &str) -> f64 {
     match s.split_once('/') {
         Some((n, d)) => {
@@ -325,6 +373,45 @@ mod tests {
         assert_eq!(info.aspect_ratio(), "9:16");
         assert!(info.has_audio);
         assert_eq!(info.video_codec.as_deref(), Some("h264"));
+    }
+
+    /// 判断能否直接拼接只用 ffprobe。没装 ffprobe 时报工具缺失而不是崩。
+    #[test]
+    fn stream_copy_decision_needs_only_ffprobe() {
+        let s = settings_without_tools();
+        let m = Media::new(&s);
+        let e = m
+            .can_stream_copy(&[PathBuf::from("/nope/a.mp4")])
+            .unwrap_err();
+        assert!(matches!(e.code(), "tool_unavailable" | "artifact_missing"));
+    }
+
+    #[test]
+    fn identical_streams_can_be_copied() {
+        let a = MediaInfo {
+            duration_seconds: 1.4,
+            width: 1080,
+            height: 1920,
+            fps: 30.0,
+            video_codec: Some("h264".into()),
+            audio_codec: Some("aac".into()),
+            has_audio: true,
+        };
+        let mut b = a.clone();
+        b.duration_seconds = 2.0; // 时长不同不影响能否 copy
+        assert!(same_stream(&a, &b));
+
+        let mut c = a.clone();
+        c.width = 720;
+        assert!(!same_stream(&a, &c), "分辨率不同必须重编码");
+
+        let mut d = a.clone();
+        d.fps = 24.0;
+        assert!(!same_stream(&a, &d), "帧率不同必须重编码");
+
+        let mut e = a.clone();
+        e.has_audio = false;
+        assert!(!same_stream(&a, &e), "有的有音轨有的没有，直接拼会出问题");
     }
 
     #[test]

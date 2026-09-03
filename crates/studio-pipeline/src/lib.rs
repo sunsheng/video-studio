@@ -85,6 +85,7 @@ impl Pipeline {
             let node = comfy.pick_node()?;
 
             let wf = Workflow::load(&self.baselines, wf_name)?;
+            wf.require_verified()?;
             let mut params = Map::new();
             if let Some(o) = shot.as_object() {
                 for (k, v) in o {
@@ -146,10 +147,22 @@ impl Pipeline {
             parts.push(ctx.bundle.resolve(rel)?);
         }
 
-        ctx.say(format!("拼接 {} 个镜头", parts.len()));
+        // 先用 ffprobe 判断能不能直接 copy —— 五个镜头本来就是同一套参数出的，
+        // 一致的话没必要让 ffmpeg 重编码一遍。
+        ctx.say(format!("检查 {} 个镜头能否直接拼接", parts.len()));
+        let stream_copy = media.can_stream_copy(&parts)?;
+        ctx.say(format!(
+            "拼接 {} 个镜头（{}）",
+            parts.len(),
+            if stream_copy {
+                "直接复制流"
+            } else {
+                "重编码"
+            }
+        ));
         let final_rel = "media/final.mp4";
         let final_path = ctx.bundle.resolve(final_rel)?;
-        media.concat(&parts, &final_path, true)?;
+        media.concat(&parts, &final_path, !stream_copy)?;
 
         ctx.say("抽取封面");
         let cover_rel = "media/cover.jpg";
@@ -168,6 +181,7 @@ impl Pipeline {
         let info = media.probe(&final_path)?;
         out["duration_seconds"] = json!(info.duration_seconds);
         out["aspect_ratio"] = json!(info.aspect_ratio());
+        out["stream_copied"] = json!(stream_copy);
 
         Ok(wrap(StageId::Post, out))
     }
