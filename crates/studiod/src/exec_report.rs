@@ -152,10 +152,10 @@ pub fn build(bundle: &Path) -> Report {
     r.shots = shots.into_values().collect();
     r.shots.sort_by(|a, b| a.shot_id.cmp(&b.shot_id));
     r.nodes = nodes.into_values().filter(|n| n.shots > 0).collect();
-    r.nodes.sort_by(|a, b| b.render_ms.cmp(&a.render_ms));
+    r.nodes.sort_by_key(|n| std::cmp::Reverse(n.render_ms));
     r.nodes_used = r.nodes.len();
     r.steps = steps.into_values().collect();
-    r.steps.sort_by(|a, b| b.total_ms.cmp(&a.total_ms));
+    r.steps.sort_by_key(|s| std::cmp::Reverse(s.total_ms));
     r.passed = r.has_data && r.failures.is_empty();
     r
 }

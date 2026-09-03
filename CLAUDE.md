@@ -31,6 +31,14 @@ studiod         唯一二进制：init / serve / doctor / emit-assets / pack / u
 4. **bundle 内一律相对路径。** 数据库、`project.toml`、stages JSON 里不得出现绝对路径。
 5. **不引入第二种运行时语言。** 没有 Python、没有 Node。`scripts/` 里的 shell 只做引导。
 
+## 工具链
+
+`rust-toolchain.toml` 钉死了具体版本，不是 `stable`。**不要改成浮动版本**：
+浮动之下「本地 clippy 过了」什么都不保证——CI 的 stable 可能比你新几个版本，
+多出来的 lint 只会在推上去之后才红。
+
+升级就改那一处，然后本地跑一遍 `cargo clippy --workspace --all-targets -- -D warnings`。
+
 ## 测试边界
 
 - 本机（Claude Code）：`cargo test` —— 单元测试、状态机、schema 校验、MCP 一致性。

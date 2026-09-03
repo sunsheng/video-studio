@@ -254,7 +254,7 @@ fn measure(records: &[TraceRecord]) -> (Timing, Vec<SkillStat>) {
     }
 
     let mut skills: Vec<SkillStat> = by_cap.into_values().collect();
-    skills.sort_by(|a, b| (b.server_ms + b.agent_ms).cmp(&(a.server_ms + a.agent_ms)));
+    skills.sort_by_key(|s| std::cmp::Reverse(s.server_ms + s.agent_ms));
     (t, skills)
 }
 

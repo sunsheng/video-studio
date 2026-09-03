@@ -1,3 +1,10 @@
+# 钉死版本，不用 "stable"。
+#
+# 起因：2026-09-03 有一次 CI 挂在 clippy::unnecessary_sort_by 上，而本地是干净的——
+# 本地 1.94.1，CI 装的 stable 已经是 1.98.0，新版多了这条 lint。
+# 「本地过了」在浮动版本下不构成任何保证。
+#
+# 升级时改这里一处，本地和 CI 一起动，冲突当场暴露而不是过几天在 CI 上突然红。
 [toolchain]
-channel = "stable"
+channel = "1.98.0"
 components = ["rustfmt", "clippy"]
