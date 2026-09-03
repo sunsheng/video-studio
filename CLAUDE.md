@@ -33,19 +33,30 @@ studiod         唯一二进制：init / serve / doctor / emit-assets / pack / u
 
 ## 工具链
 
-`rust-toolchain.toml` 钉死了具体版本，不是 `stable`。**不要改成浮动版本**：
-浮动之下「本地 clippy 过了」什么都不保证——CI 的 stable 可能比你新几个版本，
-多出来的 lint 只会在推上去之后才红。
-
-升级就改那一处，然后本地跑一遍 `cargo clippy --workspace --all-targets -- -D warnings`。
+`rust-toolchain.toml` 指定具体版本（不是 `stable`）。升级时改该文件，然后运行：
+```bash
+cargo clippy --workspace --all-targets -- -D warnings
+```
 
 ## 测试边界
 
-- 本机（Claude Code）：`cargo test` —— 单元测试、状态机、schema 校验、MCP 一致性。
-- **本机没有 GPU、没有 ComfyUI 节点、多半也没有 ffmpeg。**
-  因此**不得声称集成通过**。真实集成验收只能在宿主机跑 `scripts/smoke.sh`。
-- 不得用 mock 通过来宣称链路跑通。
+### 本机必能通过（无环境依赖）
 
-## 提交
+- `cargo test` —— 单元测试、状态机、schema 校验、MCP 一致性
 
-按实现节点提交，直接进 `main`，不走 PR。消息用中文，首行 `<类型>: <做了什么>`。
+### 本机有条件通过（需要外部依赖）
+
+- **ffmpeg / ffprobe：** 如果本机装有，可运行 `studio-media` 的集成测试
+- **ComfyUI + GPU：** 如果本机装有，可通过 HTTP 运行 `studio-comfy` 的集成测试
+- **Codex 环境：** 如果本机满足 Codex 部署条件，可跑完整端到端测试
+
+### 环境检测
+
+- `studiod doctor` 检查本机环境（Codex、ComfyUI、ffmpeg、ffprobe 是否可用）
+- 根据检测结果，选择性运行相应的集成测试
+- **不得声称集成通过而不说明环境前置条件**
+
+### 真实验收
+
+- 生产环境集成验收在宿主机跑 `scripts/smoke.sh`
+- 不得用 mock 通过来宣称链路跑通
