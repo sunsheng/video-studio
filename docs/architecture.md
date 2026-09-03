@@ -30,6 +30,17 @@ Agent 面永远不直接接触控制面的状态存储，也不直接接触推�
 
 缺失时 `studiod doctor` 报告缺什么、去哪配，相关阶段返回 `tool_unavailable` 并附 remedy。
 
+## 确定性阶段的执行
+
+`render` / `post` / `review` 由控制面在后台线程里执行，用自己的 SQLite 连接
+写状态（WAL + busy_timeout）。门一通过就开始，Agent 只需要 `studio.status`。
+
+`render` 逐镜头走：选队列最短的健康节点 → 加载已验证基线并注入逐镜头参数 →
+提交 `/prompt` → 轮询 `/history/{prompt_id}` → 下载到 `media/`。
+基线格式见 [assets/workflows/README.md](../assets/workflows/README.md)。
+
+`review` 的每一条检查都基于 `ffprobe` 的实测值，不靠推断。
+
 ## bundle 即文档
 
 一个文件夹就是一部作品，没有 `run_id`、没有 run 注册表。

@@ -22,6 +22,7 @@ studio-engine = { path = "../studio-engine" }
 studio-comfy = { path = "../studio-comfy" }
 studio-media = { path = "../studio-media" }
 studio-mcp = { path = "../studio-mcp" }
+studio-pipeline = { path = "../studio-pipeline" }
 serde.workspace = true
 serde_json.workspace = true
 clap.workspace = true

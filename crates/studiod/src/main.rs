@@ -163,7 +163,11 @@ fn cmd_init(path: &Path, title: Option<&str>) -> Result<(), String> {
 }
 
 fn cmd_serve() -> Result<(), String> {
-    let mut server = studio_mcp::Server::new(&cwd(), program_dir().as_deref());
+    // 确定性阶段接上真实实现：门一通过，控制面自己把 render / post / review 跑完。
+    let pipeline = std::sync::Arc::new(studio_pipeline::Pipeline::from_program_dir(
+        program_dir().as_deref(),
+    ));
+    let mut server = studio_mcp::Server::with_executor(&cwd(), program_dir().as_deref(), pipeline);
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     server

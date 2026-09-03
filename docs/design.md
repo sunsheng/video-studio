@@ -150,14 +150,23 @@ typestate 把状态编码进类型参数，转换消耗自身。`Stage<AwaitingC
 
 前身把 30 行 safetensors 文件名塞进每个会话的上下文，而前六个阶段一次都用不上。
 
+### 收敛点：确定性阶段怎么推进
+
+工具面上没有 `advance`。门一通过，控制面在后台线程里把 render → post → review
+一路跑完，Agent 用 `studio.status` 观察——信封里的 `note` 显示此刻在做什么
+（例如「3/5 sh03 提交到 http://127.0.0.1:9002」）。
+
+执行失败不会默默卡住：错误记进作品状态，`status` 把它变成带 remedy 的
+`blocked_by`，并且**不会闷头重试**——等 Agent 修订之后再来。
+
 ## 12. 路线与验收
 
 | | 范围 | 状态 |
 |---|---|---|
 | M0 | init / serve + idea → selection → script，含门与修订 | 完成 |
 | M1 | storyboard → visual_assets → prompt_pack | 完成 |
-| M2 | render（ComfyUI 接入、节点池、并行提交） | 待做 |
-| M3 | post → review → export | 待做 |
+| M2 | render（ComfyUI 接入、节点池、基线参数注入） | 完成 |
+| M3 | post → review → export | 完成 |
 | M4 | pack / unpack、doctor | 完成 |
 
 ### 验收：重放那次会话

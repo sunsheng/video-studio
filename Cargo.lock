@@ -955,6 +955,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "studio-pipeline"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "studio-comfy",
+ "studio-core",
+ "studio-engine",
+ "studio-media",
+ "tempfile",
+]
+
+[[package]]
 name = "studio-store"
 version = "0.1.0"
 dependencies = [
@@ -980,6 +993,7 @@ dependencies = [
  "studio-engine",
  "studio-mcp",
  "studio-media",
+ "studio-pipeline",
  "studio-store",
  "tempfile",
  "walkdir",

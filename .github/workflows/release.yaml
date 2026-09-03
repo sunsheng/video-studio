@@ -60,6 +60,9 @@ jobs:
           "$DIST/studiod" emit-assets --out "$DIST/assets"
           cp "$DIST/assets/.env.example" "$DIST/.env.example"
 
+          # 已验证 workflow 基线不是生成物，是仓库里的资产，单独带上。
+          cp -R assets/workflows "$DIST/assets/workflows"
+
           cd dist && zip -qr "../${NAME}.zip" video-studio && cd ..
           echo "name=$NAME" >> "$GITHUB_OUTPUT"
           unzip -l "${NAME}.zip" | tail -5

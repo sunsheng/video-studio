@@ -179,6 +179,9 @@ pub struct Envelope {
     pub pending_question: Option<Question>,
     pub next_action: Option<NextAction>,
     pub progress: Progress,
+    /// 控制面此刻在做什么。只有确定性阶段执行中才有，例如「sh03 提交到 9002」。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 impl Envelope {
@@ -270,6 +273,7 @@ mod tests {
                 completed: 2,
                 total: 9,
             },
+            note: None,
         };
         assert!(env.assert_consistent().is_err());
     }
@@ -290,6 +294,7 @@ mod tests {
                 completed: 2,
                 total: 9,
             },
+            note: None,
         };
         assert!(env.assert_consistent().is_ok());
     }

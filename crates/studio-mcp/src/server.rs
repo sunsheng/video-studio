@@ -22,8 +22,22 @@ pub struct Server {
 }
 
 impl Server {
+    /// 不接确定性阶段执行器（测试与只读用途）。
     pub fn new(cwd: &Path, program_dir: Option<&Path>) -> Server {
-        match Project::open(cwd, program_dir) {
+        Server::build(Project::open(cwd, program_dir), cwd)
+    }
+
+    /// 接上执行器：门一通过，控制面自己把 render / post / review 跑完。
+    pub fn with_executor(
+        cwd: &Path,
+        program_dir: Option<&Path>,
+        executor: studio_engine::SharedExecutor,
+    ) -> Server {
+        Server::build(Project::open_with(cwd, program_dir, executor), cwd)
+    }
+
+    fn build(opened: studio_core::Result<Project>, cwd: &Path) -> Server {
+        match opened {
             Ok(p) => {
                 let root = p.bundle().root().to_path_buf();
                 Server {

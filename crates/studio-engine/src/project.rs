@@ -5,7 +5,10 @@
 
 use crate::bundle::{Bundle, LockGuard};
 use crate::config::Settings;
+use crate::executor::{ExecContext, NotWired, ProgressNote, SharedExecutor};
 use serde_json::{json, Value};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use studio_core::contract::{
     ActionKind, Blocked, Envelope, NextAction, Outcome, Progress, ProjectInfo, ProjectStatus,
     WaitingOn,
@@ -24,9 +27,48 @@ pub struct Project {
     bundle: Bundle,
     store: Store,
     settings: Settings,
+    executor: SharedExecutor,
+    worker: Mutex<Option<Worker>>,
     // 持有期间独占本 bundle；drop 即释放。
     _lock: LockGuard,
 }
+
+/// 后台跑确定性阶段的线程。
+struct Worker {
+    handle: Option<std::thread::JoinHandle<()>>,
+    progress: Arc<ProgressNote>,
+    cancelled: Arc<AtomicBool>,
+}
+
+impl Worker {
+    fn finished(&self) -> bool {
+        self.handle
+            .as_ref()
+            .map(|h| h.is_finished())
+            .unwrap_or(true)
+    }
+
+    fn stop(&mut self) {
+        self.cancelled.store(true, Ordering::Relaxed);
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+    }
+}
+
+impl Drop for Project {
+    fn drop(&mut self) {
+        // 会话结束时不要留下还在跑的线程。
+        if let Ok(mut g) = self.worker.lock() {
+            if let Some(w) = g.as_mut() {
+                w.stop();
+            }
+        }
+    }
+}
+
+/// 控制面执行阶段时留下的失败记录，供 `status` 变成 `blocked_by`。
+const STAGE_ERROR_KEY: &str = "stage_error";
 
 /// `studio.export` 的结果。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -36,10 +78,19 @@ pub struct ExportResult {
 }
 
 impl Project {
-    /// 打开当前目录（或其祖先）里的作品。
+    /// 打开当前目录（或其祖先）里的作品。确定性阶段不接线。
     pub fn open(
         root: impl AsRef<std::path::Path>,
         program_dir: Option<&std::path::Path>,
+    ) -> Result<Project> {
+        Project::open_with(root, program_dir, Arc::new(NotWired))
+    }
+
+    /// 打开并接上确定性阶段的执行器。
+    pub fn open_with(
+        root: impl AsRef<std::path::Path>,
+        program_dir: Option<&std::path::Path>,
+        executor: SharedExecutor,
     ) -> Result<Project> {
         let bundle = Bundle::discover(root)?;
         let lock = bundle.lock()?;
@@ -49,6 +100,8 @@ impl Project {
             bundle,
             store,
             settings,
+            executor,
+            worker: Mutex::new(None),
             _lock: lock,
         })
     }
@@ -106,7 +159,15 @@ impl Project {
 
     /// 决策信封。Agent 只看这个就知道该干什么。
     pub fn status(&self) -> Result<Envelope> {
-        self.envelope(None)
+        self.ensure_worker();
+        let mut env = self.envelope(None)?;
+        if env.blocked_by.is_none() {
+            if let Some(b) = self.recorded_error() {
+                env.blocked_by = Some(b);
+                env.project.status = ProjectStatus::Blocked;
+            }
+        }
+        Ok(env)
     }
 
     fn envelope(&self, blocked: Option<&StudioError>) -> Result<Envelope> {
@@ -157,6 +218,7 @@ impl Project {
             pending_question: pending,
             next_action,
             progress: Progress { completed, total },
+            note: self.worker_note(),
         })
     }
 
@@ -354,6 +416,7 @@ impl Project {
     /// 这不是版本管理，是编辑器的 Ctrl+Z：一层，不留历史列表。
     pub fn revise(&self, stage: StageId, message: &str) -> Result<Envelope> {
         self.store.take_snapshot(&format!("修订 {stage} 之前"))?;
+        self.clear_recorded_error()?;
         self.revise_inner(stage, message)
     }
 
@@ -397,6 +460,7 @@ impl Project {
     /// 那版」时，旧剧本回来的同时，被退回的下游阶段也恢复已通过。
     pub fn undo(&self) -> Result<Envelope> {
         let label = self.store.restore_snapshot()?;
+        self.clear_recorded_error()?;
         let stage = self.current_stage()?.unwrap_or(StageId::Review);
         self.store
             .append_event(stage, "undone", &format!("已撤销：{label}"), None)?;
@@ -411,6 +475,75 @@ impl Project {
     /// 还能往回走几步。
     pub fn undo_depth(&self) -> Result<usize> {
         self.store.undo_depth()
+    }
+
+    // ---------- 确定性阶段的后台执行 ----------
+
+    /// 控制面此刻在做什么。
+    fn worker_note(&self) -> Option<String> {
+        self.worker.lock().ok()?.as_ref()?.progress.get()
+    }
+
+    /// 当前阶段是确定性的、没挂门、也没记着失败时，把执行器跑起来。
+    ///
+    /// 这就是工具面上没有 `advance` 的原因：门一通过控制面自己往下走，
+    /// Agent 只需要用 `studio.status` 观察。
+    fn ensure_worker(&self) {
+        if !self.executor.is_wired() {
+            return;
+        }
+        let Ok(Some(stage)) = self.current_stage() else {
+            return;
+        };
+        if stage.kind() != StageKind::Deterministic {
+            return;
+        }
+        if matches!(self.store.pending_question(), Ok(Some(_))) {
+            return;
+        }
+        if self.recorded_error().is_some() {
+            // 上一次失败还挂着，等 Agent 修订之后再重试，不要闷头重来。
+            return;
+        }
+
+        let Ok(mut slot) = self.worker.lock() else {
+            return;
+        };
+        if let Some(w) = slot.as_ref() {
+            if !w.finished() {
+                return;
+            }
+        }
+
+        let progress = Arc::new(ProgressNote::default());
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let root = self.bundle.root().to_path_buf();
+        let db = self.bundle.db_path();
+        let settings = self.settings.clone();
+        let executor = Arc::clone(&self.executor);
+        let p2 = Arc::clone(&progress);
+        let c2 = Arc::clone(&cancelled);
+
+        let handle = std::thread::Builder::new()
+            .name("studio-deterministic".into())
+            .spawn(move || run_deterministic(root, db, settings, executor, p2, c2))
+            .ok();
+
+        *slot = Some(Worker {
+            handle,
+            progress,
+            cancelled,
+        });
+    }
+
+    /// 控制面执行失败时留下的记录。
+    fn recorded_error(&self) -> Option<Blocked> {
+        let raw = self.store.meta(STAGE_ERROR_KEY).ok().flatten()?;
+        serde_json::from_str(&raw).ok()
+    }
+
+    fn clear_recorded_error(&self) -> Result<()> {
+        self.store.set_meta(STAGE_ERROR_KEY, "")
     }
 
     /// 把 `from` 之后的所有阶段退回未执行。
@@ -513,6 +646,7 @@ impl Project {
                 completed: 0,
                 total: STAGE_TOTAL,
             },
+            note: None,
         })
     }
 }
@@ -554,4 +688,108 @@ pub fn init_project(
 #[doc(hidden)]
 pub fn __draft(stage: StageId) -> Stage<studio_core::state::Draft> {
     Stage::new(stage)
+}
+
+/// 后台线程：把当前及其后的确定性阶段一路跑完。
+///
+/// 用自己的 SQLite 连接写状态——主连接同时在服务 MCP 调用，
+/// WAL 加 busy_timeout 足够应付这点并发。
+fn run_deterministic(
+    root: std::path::PathBuf,
+    db: std::path::PathBuf,
+    settings: Settings,
+    executor: SharedExecutor,
+    progress: Arc<ProgressNote>,
+    cancelled: Arc<AtomicBool>,
+) {
+    let Ok(bundle) = Bundle::open(&root) else {
+        return;
+    };
+    let Ok(store) = Store::open(&db) else { return };
+
+    for stage in StageId::all() {
+        if cancelled.load(Ordering::Relaxed) {
+            return;
+        }
+        let Ok(loaded) = store.load_stage(stage) else {
+            return;
+        };
+        if loaded.state() == StageState::Approved {
+            continue;
+        }
+        if stage.kind() != StageKind::Deterministic {
+            // 轮到需要 Agent 或用户的阶段了，交回去。
+            return;
+        }
+
+        progress.set(format!("{stage} 开始"));
+        let _ = store.append_event(stage, "started", &format!("控制面开始执行 {stage}"), None);
+
+        let inputs = collect_inputs(&store, stage).unwrap_or(Value::Null);
+        let ctx = ExecContext {
+            bundle: &bundle,
+            settings: &settings,
+            inputs,
+            progress: &progress,
+            cancelled: &cancelled,
+        };
+
+        match executor.execute(stage, &ctx) {
+            Ok(outputs) => {
+                if schema::validate(stage, &outputs).is_err() {
+                    record_failure(
+                        &store,
+                        stage,
+                        &StudioError::internal(format!(
+                            "{stage} 的执行结果不符合自身契约，这是实现缺陷"
+                        )),
+                    );
+                    return;
+                }
+                let _ = store.save_stage(
+                    stage,
+                    StageState::Approved,
+                    loaded.attempt(),
+                    Some(&outputs),
+                    None,
+                    None,
+                );
+                let text = serde_json::to_string_pretty(&outputs).unwrap_or_default();
+                let _ = bundle.write(&format!("stages/{stage}.json"), &format!("{text}\n"));
+                let _ = store.append_event(stage, "succeeded", &format!("{stage} 完成"), None);
+                progress.clear();
+            }
+            Err(e) => {
+                record_failure(&store, stage, &e);
+                return;
+            }
+        }
+    }
+    progress.clear();
+}
+
+fn record_failure(store: &Store, stage: StageId, e: &StudioError) {
+    let blocked = Blocked::from(e);
+    let _ = store.append_event(stage, "failed", &e.message(), Some(e.code()));
+    if let Ok(json) = serde_json::to_string(&blocked) {
+        let _ = store.set_meta(STAGE_ERROR_KEY, &json);
+    }
+}
+
+fn collect_inputs(store: &Store, stage: StageId) -> Result<Value> {
+    let mut map = serde_json::Map::new();
+    for prev in StageId::all() {
+        if prev.index() >= stage.index() {
+            break;
+        }
+        let loaded = store.load_stage(prev)?;
+        if loaded.state() == StageState::Approved {
+            if let Some(o) = loaded_outputs(&loaded) {
+                if let Some(v) = o.get(prev.output_key()) {
+                    map.insert(prev.output_key().to_string(), v.clone());
+                }
+            }
+        }
+    }
+    Ok(Value::Object(map))
 }

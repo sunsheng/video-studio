@@ -5,8 +5,10 @@
 
 pub mod bundle;
 pub mod config;
+pub mod executor;
 pub mod project;
 
 pub use bundle::{Bundle, LockGuard};
 pub use config::Settings;
+pub use executor::{ExecContext, ProgressNote, SharedExecutor, StageExecutor};
 pub use project::{init_project, ExportResult, Project};
