@@ -1,0 +1,17 @@
+[package]
+name = "studio-media"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "video-studio 的媒体处理：调用外部 ffmpeg / ffprobe。"
+
+[dependencies]
+studio-core = { path = "../studio-core" }
+studio-engine = { path = "../studio-engine" }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

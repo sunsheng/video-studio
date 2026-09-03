@@ -149,35 +149,46 @@ fn choosing_the_revise_option_sends_the_stage_back_not_forward() {
     assert!(env.pending_question.is_none());
 }
 
-/// 修订只退回被点名的那个阶段，下游一概不动。
+/// 修订让作品的进度整体退回到那个阶段：它之后的一律变回未执行。
 ///
-/// 后果是明确的：改完剧本再确认后，已经通过的分镜不会被自动作废，
-/// 流程会直接走到视觉资产。要重做分镜就再显式 revise 一次。
-/// 程序不替用户判断什么该作废——版本与备份由用户用 cp -r 或 studiod pack 管理。
+/// 分镜是照旧剧本做的，剧本一改它就不再成立。旧产物文件留着供参考，
+/// 但状态不再是「已通过」。
 #[test]
-fn revise_rewinds_only_the_named_stage() {
+fn revise_rewinds_the_whole_project_to_that_stage() {
     let (_d, p) = new_project();
-    for s in [StageId::Idea, StageId::Selection, StageId::Script, StageId::Storyboard] {
+    for s in [StageId::Idea, StageId::Selection, StageId::Script, StageId::Storyboard, StageId::VisualAssets] {
         advance(&p, s);
     }
-    assert_eq!(p.status().unwrap().project.stage, StageId::VisualAssets);
+    assert_eq!(p.status().unwrap().progress.completed, 5);
 
     p.revise(StageId::Script, "把碰杯换成拍照").unwrap();
     let env = p.status().unwrap();
-    assert_eq!(env.project.stage, StageId::Script, "当前位置退回剧本");
-    assert_eq!(env.progress.completed, 3, "只有剧本退回草稿，分镜仍算已通过");
+    assert_eq!(env.project.stage, StageId::Script);
+    assert_eq!(env.progress.completed, 2, "剧本及其之后全部退回未执行，只剩 idea 与 selection");
 
-    // 分镜的产物原封不动
-    let sb = p.stage_output(StageId::Storyboard).unwrap();
-    assert!(sb["storyboard"]["shots"].is_array());
-
-    // 重新提交剧本并确认后，流程接着往下走（不会重复要求做分镜）
+    // 重新提交剧本并确认后，仍然要按顺序重做分镜
     advance(&p, StageId::Script);
-    assert_eq!(p.status().unwrap().project.stage, StageId::VisualAssets);
-
-    // 想重做分镜是显式动作
-    p.revise(StageId::Storyboard, "按新剧本重画").unwrap();
     assert_eq!(p.status().unwrap().project.stage, StageId::Storyboard);
+
+    // 旧产物没被删，可以读出来参考着改
+    let sb = p.stage_output(StageId::Storyboard).unwrap();
+    assert!(sb["storyboard"]["shots"].is_array(), "旧产物应当留着供参考");
+
+    // 时间线记下了这次退回
+    let t = p.timeline(100).unwrap();
+    assert!(t.iter().any(|e| e.kind == "rewound" && e.summary.contains("storyboard")));
+}
+
+#[test]
+fn undo_rewinds_downstream_too() {
+    let (_d, p) = new_project();
+    for s in [StageId::Idea, StageId::Selection, StageId::Script] {
+        advance(&p, s);
+    }
+    p.undo(StageId::Selection).unwrap();
+    let env = p.status().unwrap();
+    assert_eq!(env.project.stage, StageId::Selection);
+    assert_eq!(env.progress.completed, 1, "选题回退后，剧本也不再算通过");
 }
 
 #[test]

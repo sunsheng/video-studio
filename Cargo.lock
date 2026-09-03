@@ -518,6 +518,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "studio-media"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "studio-core",
+ "studio-engine",
+ "tempfile",
+]
+
+[[package]]
 name = "studio-store"
 version = "0.1.0"
 dependencies = [

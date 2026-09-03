@@ -101,8 +101,8 @@ pub const TOOLS: [ToolSpec; 9] = [
     ToolSpec {
         name: "studio.revise",
         description: "用户提出修改意见时调它。阶段回到草稿，可以立刻重新提交。\
-                      它不会失败，也不需要先解除什么占用。只影响该阶段——若下游产物是照旧内容做的，\
-                      需要重做就对下游再调一次。",
+                      它不会失败，也不需要先解除什么占用。作品的进度会整体退回到该阶段，\
+                      它之后的阶段一律变回未执行——旧产物留着可以读出来参考。",
         input_schema: || json!({
             "type": "object",
             "properties": {
@@ -115,7 +115,7 @@ pub const TOOLS: [ToolSpec; 9] = [
     },
     ToolSpec {
         name: "studio.undo",
-        description: "把一个已通过的阶段打回草稿重做。只影响该阶段，下游不受牵连。",
+        description: "把一个已通过的阶段打回草稿重做。它之后的阶段同样退回未执行。",
         input_schema: || json!({
             "type": "object",
             "properties": { "stage": stage_arg("要回滚的阶段") },

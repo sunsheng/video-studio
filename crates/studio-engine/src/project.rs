@@ -290,9 +290,11 @@ impl Project {
     /// `ready_for_redo` 却不释放占用，紧接着的 submit 必然撞上
     /// `task already claimed`——用户要求改稿这条路径必然死锁。
     ///
-    /// **只动这一个阶段**。下游一概不处理——要重做分镜就再显式调一次
-    /// `revise("storyboard", ...)`。程序不替用户判断什么该作废，
-    /// 版本与备份由用户自己用 `cp -r` 或 `studiod pack` 管理。
+    /// 作品的进度整体退回到这个阶段：它之后的所有阶段一律变回未执行。
+    /// 分镜是照旧剧本做的，剧本改了它就不再成立，不该还算通过。
+    ///
+    /// 「不额外处理」的含义是不做版本管理：不留恢复点、不存历史副本。
+    /// 旧产物文件原地留着，重新提交时直接覆盖；要留版本请 `cp -r` 或 `studiod pack`。
     pub fn revise(&self, stage: StageId, message: &str) -> Result<Envelope> {
         let loaded = self.store.load_stage(stage)?;
         let (attempt, outputs) = match loaded {
@@ -312,6 +314,7 @@ impl Project {
 
         self.store.save_stage(stage, StageState::Draft, attempt, outputs.as_ref(), None, None)?;
         self.store.append_event(stage, "revised", message, None)?;
+        self.rewind_after(stage)?;
         self.status()
     }
 
@@ -323,6 +326,7 @@ impl Project {
                 let d = a.undo();
                 self.store.save_stage(stage, StageState::Draft, d.attempt(), d.outputs(), None, None)?;
                 self.store.append_event(stage, "undone", "已回滚到草稿", None)?;
+                self.rewind_after(stage)?;
                 self.status()
             }
             other => Err(StudioError::InvalidTransition {
@@ -332,6 +336,34 @@ impl Project {
                 allowed: other.allowed_actions(),
             }),
         }
+    }
+
+    /// 把 `from` 之后的所有阶段退回未执行。
+    ///
+    /// 只改状态，不删产物：旧的 `stages/*.json` 原地留着，Agent 可以
+    /// `studio.stage_output` 读到上一版参考着改，重新提交时覆盖。
+    fn rewind_after(&self, from: StageId) -> Result<()> {
+        let mut rewound = Vec::new();
+        for stage in StageId::all() {
+            if stage.index() <= from.index() {
+                continue;
+            }
+            let loaded = self.store.load_stage(stage)?;
+            if loaded.state() != StageState::Draft {
+                let keep = loaded_outputs(&loaded).cloned();
+                self.store.save_stage(stage, StageState::Draft, loaded.attempt(), keep.as_ref(), None, None)?;
+                rewound.push(stage.as_str());
+            }
+        }
+        if !rewound.is_empty() {
+            self.store.append_event(
+                from,
+                "rewound",
+                &format!("后续阶段已退回未执行：{}", rewound.join("、")),
+                None,
+            )?;
+        }
+        Ok(())
     }
 
     /// 把交付物投递到 `output/`。
