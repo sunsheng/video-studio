@@ -179,28 +179,47 @@ fn revise_rewinds_the_whole_project_to_that_stage() {
     assert!(t.iter().any(|e| e.kind == "rewound" && e.summary.contains("storyboard")));
 }
 
+/// 「改完发现还不如原来那版」——undo 把整部作品恢复到那次修订之前。
 #[test]
-fn undo_rewinds_downstream_too() {
+fn undo_restores_everything_to_before_the_revise() {
     let (_d, p) = new_project();
-    for s in [StageId::Idea, StageId::Selection, StageId::Script] {
+    for s in [StageId::Idea, StageId::Selection, StageId::Script, StageId::Storyboard] {
         advance(&p, s);
     }
-    p.undo(StageId::Selection).unwrap();
-    let env = p.status().unwrap();
-    assert_eq!(env.project.stage, StageId::Selection);
-    assert_eq!(env.progress.completed, 1, "选题回退后，剧本也不再算通过");
+    assert_eq!(p.status().unwrap().project.stage, StageId::VisualAssets);
+    let original = p.stage_output(StageId::Script).unwrap();
+
+    // 要求改剧本：剧本之后全部退回未执行
+    p.revise(StageId::Script, "把碰杯换成拍照").unwrap();
+    assert_eq!(p.status().unwrap().progress.completed, 2);
+
+    // 提交一版新剧本并确认，走到分镜
+    let mut changed = fixtures::outputs(StageId::Script);
+    changed["script"]["title"] = serde_json::json!("换了个标题的剧本");
+    let env = p.submit_stage(changed, Some("改后版本"), fixtures::confirmation(StageId::Script)).unwrap();
+    p.answer(&env.pending_question.unwrap().question_id, "approve").unwrap();
+    assert_eq!(p.status().unwrap().project.stage, StageId::Storyboard);
+
+    // 觉得还不如原来那版
+    assert!(p.undoable().unwrap().is_some());
+    let env = p.undo().unwrap();
+    assert_eq!(env.project.stage, StageId::VisualAssets, "分镜恢复已通过，下一步回到视觉资产");
+    assert_eq!(env.progress.completed, 4);
+    assert_eq!(p.stage_output(StageId::Script).unwrap(), original, "旧剧本内容应当原样回来");
+
+    // 只有一层：快照用掉就没了
+    assert!(p.undoable().unwrap().is_none());
+    let e = p.undo().unwrap_err();
+    assert_eq!(e.code(), "invalid_transition");
+    assert!(e.remedy().contains("studio.revise"));
 }
 
 #[test]
-fn undo_only_applies_to_an_approved_stage() {
+fn undo_without_a_prior_revise_explains_itself() {
     let (_d, p) = new_project();
-    advance(&p, StageId::Idea);
-    p.undo(StageId::Idea).unwrap();
-    assert_eq!(p.status().unwrap().project.stage, StageId::Idea);
-
-    let e = p.undo(StageId::Idea).unwrap_err();
+    let e = p.undo().unwrap_err();
     assert_eq!(e.code(), "invalid_transition");
-    assert!(e.remedy().contains("studio.submit_stage"));
+    assert!(!e.remedy().is_empty());
 }
 
 #[test]

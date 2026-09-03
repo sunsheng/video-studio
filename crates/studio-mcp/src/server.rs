@@ -201,7 +201,7 @@ impl Server {
                 let msg = str_arg(args, "message")?;
                 to_value(p.revise(stage, &msg)?)
             }
-            "studio.undo" => to_value(p.undo(stage_arg(args)?)?),
+            "studio.undo" => to_value(p.undo()?),
             "studio.stage_output" => p.stage_output(stage_arg(args)?),
             "studio.timeline" => {
                 let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;

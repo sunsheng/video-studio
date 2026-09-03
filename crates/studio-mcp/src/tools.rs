@@ -115,13 +115,9 @@ pub const TOOLS: [ToolSpec; 9] = [
     },
     ToolSpec {
         name: "studio.undo",
-        description: "把一个已通过的阶段打回草稿重做。它之后的阶段同样退回未执行。",
-        input_schema: || json!({
-            "type": "object",
-            "properties": { "stage": stage_arg("要回滚的阶段") },
-            "required": ["stage"],
-            "additionalProperties": false
-        }),
+        description: "撤销上一次修订，把作品整个恢复到那次 studio.revise 之前——\
+                      旧产物回来，被退回的下游阶段也恢复已通过。只有一层，且恢复后即失效。",
+        input_schema: no_args,
     },
     ToolSpec {
         name: "studio.stage_output",

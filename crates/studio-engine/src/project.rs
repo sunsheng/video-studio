@@ -293,9 +293,11 @@ impl Project {
     /// 作品的进度整体退回到这个阶段：它之后的所有阶段一律变回未执行。
     /// 分镜是照旧剧本做的，剧本改了它就不再成立，不该还算通过。
     ///
-    /// 「不额外处理」的含义是不做版本管理：不留恢复点、不存历史副本。
-    /// 旧产物文件原地留着，重新提交时直接覆盖；要留版本请 `cp -r` 或 `studiod pack`。
+    /// 修订前会存一份**单槽快照**，[`Project::undo`] 可以整个恢复回来——
+    /// 「改完发现还不如原来那版」时用得上。只保留最近一次，再修订一次就覆盖。
+    /// 这不是版本管理，是编辑器的 Ctrl+Z：一层，不留历史列表。
     pub fn revise(&self, stage: StageId, message: &str) -> Result<Envelope> {
+        self.store.take_snapshot(&format!("修订 {stage} 之前：{message}"))?;
         let loaded = self.store.load_stage(stage)?;
         let (attempt, outputs) = match loaded {
             LoadedStage::Awaiting(a) => {
@@ -318,24 +320,22 @@ impl Project {
         self.status()
     }
 
-    /// 回滚某个已通过的阶段。
-    pub fn undo(&self, stage: StageId) -> Result<Envelope> {
-        let loaded = self.store.load_stage(stage)?;
-        match loaded {
-            LoadedStage::Approved(a) => {
-                let d = a.undo();
-                self.store.save_stage(stage, StageState::Draft, d.attempt(), d.outputs(), None, None)?;
-                self.store.append_event(stage, "undone", "已回滚到草稿", None)?;
-                self.rewind_after(stage)?;
-                self.status()
-            }
-            other => Err(StudioError::InvalidTransition {
-                stage,
-                current: other.state().as_str(),
-                attempted: "undo",
-                allowed: other.allowed_actions(),
-            }),
-        }
+    /// 撤销上一次修订，把作品整个恢复到那次 `revise` 之前。
+    ///
+    /// 场景：改完剧本走到分镜，又觉得还不如原来那版——`undo` 之后旧剧本回来，
+    /// 分镜恢复已通过，下一步接着是视觉资产。
+    ///
+    /// 只有一层。恢复之后快照即被消耗，不能连着撤销两次。
+    pub fn undo(&self) -> Result<Envelope> {
+        let label = self.store.restore_snapshot()?;
+        let stage = self.current_stage()?.unwrap_or(StageId::Review);
+        self.store.append_event(stage, "undone", &format!("已撤销：{label}"), None)?;
+        self.status()
+    }
+
+    /// 当前是否有可撤销的修订。
+    pub fn undoable(&self) -> Result<Option<String>> {
+        self.store.snapshot_label()
     }
 
     /// 把 `from` 之后的所有阶段退回未执行。
