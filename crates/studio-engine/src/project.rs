@@ -290,7 +290,9 @@ impl Project {
     /// `ready_for_redo` 却不释放占用，紧接着的 submit 必然撞上
     /// `task already claimed`——用户要求改稿这条路径必然死锁。
     ///
-    /// 修订会连带把它之后的所有阶段重置为草稿：上游变了，下游的产物就不再成立。
+    /// **只动这一个阶段**。下游一概不处理——要重做分镜就再显式调一次
+    /// `revise("storyboard", ...)`。程序不替用户判断什么该作废，
+    /// 版本与备份由用户自己用 `cp -r` 或 `studiod pack` 管理。
     pub fn revise(&self, stage: StageId, message: &str) -> Result<Envelope> {
         let loaded = self.store.load_stage(stage)?;
         let (attempt, outputs) = match loaded {
@@ -310,7 +312,6 @@ impl Project {
 
         self.store.save_stage(stage, StageState::Draft, attempt, outputs.as_ref(), None, None)?;
         self.store.append_event(stage, "revised", message, None)?;
-        self.reset_downstream(stage)?;
         self.status()
     }
 
@@ -322,7 +323,6 @@ impl Project {
                 let d = a.undo();
                 self.store.save_stage(stage, StageState::Draft, d.attempt(), d.outputs(), None, None)?;
                 self.store.append_event(stage, "undone", "已回滚到草稿", None)?;
-                self.reset_downstream(stage)?;
                 self.status()
             }
             other => Err(StudioError::InvalidTransition {
@@ -332,31 +332,6 @@ impl Project {
                 allowed: other.allowed_actions(),
             }),
         }
-    }
-
-    /// 上游变了，下游要重做。
-    ///
-    /// 只把状态打回草稿，**产物文件留着**：Agent 可以 `studio.stage_output` 读到
-    /// 上一版参考着改，重新提交时直接覆盖。这里不存在「历史版本」的概念——
-    /// 一部作品只有一份，要留版本请 `cp -r` 或 `studiod pack`。
-    fn reset_downstream(&self, from: StageId) -> Result<()> {
-        for stage in StageId::all() {
-            if stage.index() <= from.index() {
-                continue;
-            }
-            let loaded = self.store.load_stage(stage)?;
-            if loaded.state() != StageState::Draft {
-                let keep = loaded_outputs(&loaded).cloned();
-                self.store.save_stage(stage, StageState::Draft, loaded.attempt() + 1, keep.as_ref(), None, None)?;
-                self.store.append_event(
-                    stage,
-                    "invalidated",
-                    &format!("上游阶段 {from} 被修订，本阶段产物作废"),
-                    None,
-                )?;
-            }
-        }
-        Ok(())
     }
 
     /// 把交付物投递到 `output/`。

@@ -149,8 +149,13 @@ fn choosing_the_revise_option_sends_the_stage_back_not_forward() {
     assert!(env.pending_question.is_none());
 }
 
+/// 修订只退回被点名的那个阶段，下游一概不动。
+///
+/// 后果是明确的：改完剧本再确认后，已经通过的分镜不会被自动作废，
+/// 流程会直接走到视觉资产。要重做分镜就再显式 revise 一次。
+/// 程序不替用户判断什么该作废——版本与备份由用户用 cp -r 或 studiod pack 管理。
 #[test]
-fn revising_an_upstream_stage_marks_downstream_for_redo_but_keeps_the_drafts() {
+fn revise_rewinds_only_the_named_stage() {
     let (_d, p) = new_project();
     for s in [StageId::Idea, StageId::Selection, StageId::Script, StageId::Storyboard] {
         advance(&p, s);
@@ -159,12 +164,20 @@ fn revising_an_upstream_stage_marks_downstream_for_redo_but_keeps_the_drafts() {
 
     p.revise(StageId::Script, "把碰杯换成拍照").unwrap();
     let env = p.status().unwrap();
-    assert_eq!(env.project.stage, StageId::Script, "上游被改，当前阶段回到剧本");
-    assert_eq!(env.progress.completed, 2);
+    assert_eq!(env.project.stage, StageId::Script, "当前位置退回剧本");
+    assert_eq!(env.progress.completed, 3, "只有剧本退回草稿，分镜仍算已通过");
 
-    // 下游产物留着，Agent 能读到上一版参考着改；重新提交时直接覆盖。
+    // 分镜的产物原封不动
     let sb = p.stage_output(StageId::Storyboard).unwrap();
-    assert!(sb["storyboard"]["shots"].is_array(), "下游旧产物应当保留供参考");
+    assert!(sb["storyboard"]["shots"].is_array());
+
+    // 重新提交剧本并确认后，流程接着往下走（不会重复要求做分镜）
+    advance(&p, StageId::Script);
+    assert_eq!(p.status().unwrap().project.stage, StageId::VisualAssets);
+
+    // 想重做分镜是显式动作
+    p.revise(StageId::Storyboard, "按新剧本重画").unwrap();
+    assert_eq!(p.status().unwrap().project.stage, StageId::Storyboard);
 }
 
 #[test]
