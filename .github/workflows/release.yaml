@@ -94,7 +94,7 @@ jobs:
         run: |
           cd dist
           if [ "${{ runner.os }}" = "Windows" ]; then
-            powershell -Command "Compress-Archive -Path video-studio -DestinationPath ../$NAME.zip"
+            powershell -NoProfile -Command "Compress-Archive -Path 'video-studio' -DestinationPath '../$NAME.zip' -Force"
           else
             zip -qr "../$NAME.zip" video-studio
           fi
@@ -105,14 +105,16 @@ jobs:
           set -euo pipefail
           mkdir -p smoke
           if [ "${{ runner.os }}" = "Windows" ]; then
-            powershell -Command "Expand-Archive -Path $NAME.zip -DestinationPath smoke -Force"
+            powershell -NoProfile -Command "Expand-Archive -Path '$NAME.zip' -DestinationPath 'smoke' -Force"
           else
             unzip -q "$NAME.zip" -d smoke
           fi
           BIN="smoke/video-studio/${{ matrix.binary }}"
           chmod +x "$BIN" || true
           "./$BIN" --version
-          "./$BIN" init smoke-work --title 冒烟
+          # 标题用 ASCII：Windows 控制台的代码页会把中文参数搅乱，
+          # 中文标题本身另有单元测试覆盖，这里只验证打包产物能跑。
+          "./$BIN" init smoke-work --title smoke
           test -f smoke-work/AGENTS.md
           test -f smoke-work/.agents/skills/script/SKILL.md
           test -f smoke-work/.codex/config.toml
@@ -120,10 +122,11 @@ jobs:
           # 基线校验：绑定指向的节点必须都存在
           "./$BIN" workflows check --dir smoke/video-studio/assets/workflows
           # list 能找到刚建的作品
-          "./$BIN" list . | tee /dev/stderr | grep -q 冒烟
+          "./$BIN" list . | grep -q smoke
           # doctor 在没有 ffmpeg/ComfyUI 的 runner 上只该是「注意」
           "./$BIN" doctor --json > doctor.json
-          python3 -c "import json;d=json.load(open('doctor.json'));assert d['healthy'],d;print('doctor ok:',len(d['checks']),'项检查')"
+          # windows runner 上 python3 未必在 PATH 里，用 node（两个平台都自带）。
+          node -e "const d=require('./doctor.json'); if(!d.healthy){console.error(d);process.exit(1)}; console.log('doctor ok:', d.checks.length, '项检查')"
 
       - uses: actions/upload-artifact@v4
         with:
