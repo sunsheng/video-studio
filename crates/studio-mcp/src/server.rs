@@ -62,9 +62,7 @@ impl Server {
         let params = msg.get("params").cloned().unwrap_or(json!({}));
 
         // 通知没有 id，不需要回应。
-        let Some(id) = id else {
-            return None;
-        };
+        let id = id?;
 
         let result = match method {
             "initialize" => Ok(self.initialize(&params)),
