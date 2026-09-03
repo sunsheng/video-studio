@@ -27,15 +27,38 @@ pub enum ProjectStatus {
     Completed,
 }
 
+/// 选项被选中之后会发生什么。
+///
+/// 让确认门自己说清楚「这个选项是通过还是打回」，Agent 就不必靠 id 的字面
+/// 意思去猜。前身项目的门里混着 `approve_script` 和 `revise_script`，
+/// 两者都只能走同一个 answer 接口，选中「修改」反而把阶段标成了通过。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Outcome {
+    /// 通过，进入下一阶段。
+    #[default]
+    Approve,
+    /// 打回重做：阶段回到草稿，等 Agent 重新提交。
+    Revise,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AnswerOption {
     pub id: String,
     pub label: String,
+    #[serde(default)]
+    pub outcome: Outcome,
 }
 
 impl AnswerOption {
+    /// 一个「通过」选项。
     pub fn new(id: impl Into<String>, label: impl Into<String>) -> Self {
-        AnswerOption { id: id.into(), label: label.into() }
+        AnswerOption { id: id.into(), label: label.into(), outcome: Outcome::Approve }
+    }
+
+    /// 一个「打回重做」选项。
+    pub fn revise(id: impl Into<String>, label: impl Into<String>) -> Self {
+        AnswerOption { id: id.into(), label: label.into(), outcome: Outcome::Revise }
     }
 }
 
@@ -73,6 +96,11 @@ impl Question {
 
     pub fn option_ids(&self) -> Vec<String> {
         self.options.iter().map(|o| o.id.clone()).collect()
+    }
+
+    /// 选中这个选项之后该发生什么。
+    pub fn outcome_of(&self, answer: &str) -> Option<Outcome> {
+        self.options.iter().find(|o| o.id == answer).map(|o| o.outcome)
     }
 }
 

@@ -27,7 +27,7 @@
 //! }
 //! ```
 
-use crate::contract::{Confirmation, Question, SelectionType};
+use crate::contract::{Confirmation, Outcome, Question, SelectionType};
 use crate::error::{Result, StudioError, Violation};
 use crate::stage::StageId;
 use crate::Outputs;
@@ -176,15 +176,26 @@ impl Stage<AwaitingConfirmation> {
         self.question.as_ref().expect("AwaitingConfirmation 必然携带 question")
     }
 
-    /// 用户确认通过。选项不在候选里则返回 [`StudioError::UnknownAnswer`]。
+    /// 用户确认通过。
+    ///
+    /// 选项不在候选里，或选中的是一个「打回重做」选项，都会返回
+    /// [`StudioError::UnknownAnswer`]——后者应当走 [`Stage::revise`]。
     pub fn approve(self, answer: &str) -> Result<Stage<Approved>> {
         let q = self.question();
-        if !q.accepts(answer) {
-            return Err(StudioError::UnknownAnswer {
-                question_id: q.question_id.clone(),
-                given: answer.to_string(),
-                options: q.option_ids(),
-            });
+        match q.outcome_of(answer) {
+            Some(Outcome::Approve) => {}
+            Some(Outcome::Revise) | None => {
+                return Err(StudioError::UnknownAnswer {
+                    question_id: q.question_id.clone(),
+                    given: answer.to_string(),
+                    options: q
+                        .options
+                        .iter()
+                        .filter(|o| o.outcome == Outcome::Approve)
+                        .map(|o| o.id.clone())
+                        .collect(),
+                });
+            }
         }
         Ok(Stage {
             id: self.id,
@@ -303,6 +314,12 @@ fn validate_confirmation(stage: StageId, c: &Confirmation) -> Result<()> {
     if c.selection_type == SelectionType::Single && c.options.len() < 2 {
         v.push(Violation::new("confirmation.options", "单选门至少要两个选项，否则用户没得选"));
     }
+    if !c.options.iter().any(|o| o.outcome == Outcome::Approve) {
+        v.push(Violation::new(
+            "confirmation.options",
+            "至少要有一个 outcome=approve 的选项，否则这道门永远过不去",
+        ));
+    }
     let mut seen = std::collections::HashSet::new();
     for (i, o) in c.options.iter().enumerate() {
         if o.id.trim().is_empty() {
@@ -333,7 +350,7 @@ mod tests {
             selection_type: SelectionType::Single,
             options: vec![
                 AnswerOption::new("approve", "确认剧本，进入分镜"),
-                AnswerOption::new("revise", "继续修改"),
+                AnswerOption::revise("revise", "继续修改"),
             ],
         }
     }
@@ -427,6 +444,37 @@ mod tests {
             _ => panic!("应当挂门"),
         };
         assert_eq!(approved.id().next(), Some(StageId::Storyboard));
+    }
+
+    /// 选中「打回重做」的选项不能把阶段标成通过——那正是前身项目的门做过的事。
+    #[test]
+    fn choosing_a_revise_option_is_not_an_approval() {
+        let awaiting = match Stage::<Draft>::new(StageId::Script).submit(outs("script"), Some(conf())).unwrap() {
+            Submitted::AwaitingConfirmation(s) => s,
+            _ => panic!("应当挂门"),
+        };
+        let e = awaiting.approve("revise").unwrap_err();
+        assert_eq!(e.code(), "unknown_answer");
+        match &e {
+            StudioError::UnknownAnswer { options, .. } => {
+                assert_eq!(options, &vec!["approve".to_string()], "只应把通过类选项列为候选");
+            }
+            other => panic!("实际 {other}"),
+        }
+    }
+
+    #[test]
+    fn a_gate_with_no_approving_option_is_rejected() {
+        let c = Confirmation {
+            prompt: "改还是改？".into(),
+            selection_type: SelectionType::Single,
+            options: vec![
+                crate::contract::AnswerOption::revise("revise_a", "这样改"),
+                crate::contract::AnswerOption::revise("revise_b", "那样改"),
+            ],
+        };
+        let e = Stage::<Draft>::new(StageId::Script).submit(outs("script"), Some(c)).unwrap_err();
+        assert_eq!(e.code(), "schema_violation");
     }
 
     #[test]

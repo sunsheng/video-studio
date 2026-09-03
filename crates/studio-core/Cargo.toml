@@ -7,6 +7,10 @@ license.workspace = true
 repository.workspace = true
 description = "video-studio 领域层：阶段图、typestate 状态机、错误契约、schema 校验。零 I/O。"
 
+[features]
+# 样例产物。测试与端到端用例需要，随二进制发布时不启用。
+fixtures = []
+
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true

@@ -488,3 +488,39 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod fixture_tests {
+    use super::*;
+    use crate::fixtures;
+
+    /// 样例产物必须真的能通过校验，否则测试与端到端用例都是自欺欺人。
+    #[test]
+    fn every_fixture_passes_its_own_schema() {
+        for stage in StageId::all() {
+            let outputs = fixtures::outputs(stage);
+            validate(stage, &outputs).unwrap_or_else(|e| panic!("阶段 {stage} 的样例不合规：{e}"));
+        }
+    }
+
+    /// 剧本各拍时长必须真的合计 10 秒——样例本身就该是一份说得通的作品。
+    #[test]
+    fn script_fixture_durations_add_up() {
+        let o = fixtures::outputs(StageId::Script);
+        let arc = o["script"]["story_arc"].as_array().unwrap();
+        let sum: f64 = arc.iter().map(|b| b["duration_seconds"].as_f64().unwrap()).sum();
+        assert!((sum - 10.0).abs() < 1e-9, "五拍合计应为 10 秒，实际 {sum}");
+        assert_eq!(arc.len(), 5);
+    }
+
+    #[test]
+    fn gated_stages_have_fixture_confirmations() {
+        for stage in StageId::all() {
+            assert_eq!(
+                fixtures::confirmation(stage).is_some(),
+                stage.gate().is_some(),
+                "阶段 {stage} 的样例确认门与阶段图不一致"
+            );
+        }
+    }
+}

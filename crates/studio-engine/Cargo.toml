@@ -1,0 +1,21 @@
+[package]
+name = "studio-engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "video-studio 控制面：bundle 布局、进程锁、配置解析、阶段循环。"
+
+[dependencies]
+studio-core = { path = "../studio-core" }
+studio-store = { path = "../studio-store" }
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+fs2.workspace = true
+chrono.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+studio-core = { path = "../studio-core", features = ["fixtures"] }
