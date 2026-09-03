@@ -127,10 +127,14 @@ fn check_codex_config(root: &std::path::Path) -> Check {
             remedy: Some("跑 `studiod doctor --fix` 重新生成。".into()),
         };
     };
-    let referenced = text
-        .lines()
-        .find_map(|l| l.trim().strip_prefix("command = "))
-        .map(|v| v.trim().trim_matches('"').to_string());
+    // 路径可能是双引号串也可能是单引号字面量串（Windows 路径用后者）。
+    let referenced = toml::from_str::<toml::Value>(&text).ok().and_then(|v| {
+        v.get("mcp_servers")?
+            .get("video-studio")?
+            .get("command")?
+            .as_str()
+            .map(String::from)
+    });
     match referenced {
         Some(p) if std::path::Path::new(&p).is_file() => Check {
             name: "作品的 Codex 配置".into(),

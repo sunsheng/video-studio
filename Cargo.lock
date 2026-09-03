@@ -996,6 +996,7 @@ dependencies = [
  "studio-pipeline",
  "studio-store",
  "tempfile",
+ "toml",
  "walkdir",
  "zip",
 ]

@@ -8,23 +8,36 @@
 
 ## 安装
 
+**Linux**
+
 ```bash
 # 一键安装（默认 /opt/video-studio，不自动 init）
 curl -fsSL https://raw.githubusercontent.com/sunsheng/video-studio/main/scripts/install.sh | bash
 
-# 指定目录 + 顺带初始化一个作品
+# 指定目录 + 顺带初始化一部作品
 curl -fsSL .../install.sh | bash -s -- --prefix ~/studio --init ~/videos/我的第一部.studio
 ```
 
+**Windows**（MSVC 构建）
+
+```powershell
+irm https://raw.githubusercontent.com/sunsheng/video-studio/main/scripts/install.ps1 | iex
+
+# 指定目录 + 顺带初始化
+.\install.ps1 -Prefix D:\video-studio -Init D:\videos\我的第一部.studio
+```
+
 也可以直接下载 [Releases](https://github.com/sunsheng/video-studio/releases) 里的
-`video-studio-<version>-linux-x86_64.zip`，解压到任意目录即可，程序不依赖安装位置。
+`video-studio-<版本>-linux-x86_64.zip` 或 `-windows-x86_64.zip`，
+解压到任意目录即可，程序不依赖安装位置。
 
 ## 快速开始
 
 ```bash
-/opt/video-studio/studiod doctor                       # 体检：ffmpeg / ComfyUI 可达性
-/opt/video-studio/studiod init ~/videos/千岛湖.studio   # 新建一部作品
-cd ~/videos/千岛湖.studio && codex                      # 打开它
+studiod doctor                       # 体检：ffmpeg / ComfyUI 可达性
+studiod init ~/videos/千岛湖.studio   # 新建一部作品
+cd ~/videos/千岛湖.studio && codex    # 打开它
+studiod list ~/videos                # 看看都有哪些作品
 ```
 
 之后就是对话：说创意 → 逐阶段确认 → 出片。想改就说「不要固定 2 秒」，Agent 会调 `studio.revise`。

@@ -363,9 +363,23 @@ pub fn codex_config(studiod_path: &str) -> String {
     format!(
         "# 由 `studiod init` 生成。换机器或换安装位置后跑 `studiod doctor --fix` 修正这里。\n\
          [mcp_servers.video-studio]\n\
-         command = \"{studiod_path}\"\n\
-         args = [\"serve\"]\n"
+         command = {}\n\
+         args = [\"serve\"]\n",
+        toml_path(studiod_path)
     )
+}
+
+/// 把一个路径写成合法的 TOML 字符串。
+///
+/// Windows 的 `C:\opt\studiod.exe` 放进双引号串里，`\o` 是非法转义，
+/// Codex 读配置时会直接报错。TOML 的字面量字符串（单引号）不处理转义，
+/// 正好合适；路径里真出现单引号时再退回双引号并转义反斜杠。
+fn toml_path(p: &str) -> String {
+    if p.contains('\'') {
+        format!("\"{}\"", p.replace('\\', "\\\\").replace('"', "\\\""))
+    } else {
+        format!("'{p}'")
+    }
 }
 
 /// `project.toml`：作品自己的元信息。
@@ -560,6 +574,27 @@ mod tests {
         );
         assert!(a.iter().any(|(p, _)| p == "AGENTS.md"));
         assert!(a.iter().all(|(_, c)| !c.is_empty()));
+    }
+
+    /// Windows 路径不能写进 TOML 的双引号串——`C:\opt` 里的 `\o` 是非法转义。
+    #[test]
+    fn windows_paths_survive_the_toml_round_trip() {
+        for path in [
+            r"C:\opt\video-studio\studiod.exe",
+            r"C:\Users\孙\video-studio\studiod.exe",
+            "/opt/video-studio/studiod",
+        ] {
+            let cfg = codex_config(path);
+            let parsed: toml::Value = toml::from_str(&cfg)
+                .unwrap_or_else(|e| panic!("{path} 生成的配置解析不了：{e}\n{cfg}"));
+            assert_eq!(
+                parsed["mcp_servers"]["video-studio"]["command"]
+                    .as_str()
+                    .unwrap(),
+                path,
+                "路径经过 TOML 往返之后必须一模一样"
+            );
+        }
     }
 
     #[test]
