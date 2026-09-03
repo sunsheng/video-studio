@@ -24,7 +24,10 @@ pub struct Violation {
 
 impl Violation {
     pub fn new(path: impl Into<String>, message: impl Into<String>) -> Self {
-        Violation { path: path.into(), message: message.into() }
+        Violation {
+            path: path.into(),
+            message: message.into(),
+        }
     }
 }
 
@@ -37,21 +40,36 @@ impl fmt::Display for Violation {
 #[derive(Debug, Clone, PartialEq)]
 pub enum StudioError {
     /// 产物不符合阶段 schema。
-    SchemaViolation { stage: StageId, violations: Vec<Violation> },
+    SchemaViolation {
+        stage: StageId,
+        violations: Vec<Violation>,
+    },
     /// 状态机不允许这个动作。
-    InvalidTransition { stage: StageId, current: &'static str, attempted: &'static str, allowed: Vec<&'static str> },
+    InvalidTransition {
+        stage: StageId,
+        current: &'static str,
+        attempted: &'static str,
+        allowed: Vec<&'static str>,
+    },
     /// 有门的阶段提交时没带确认问题。
     ConfirmationRequired { stage: StageId, gate: &'static str },
     /// 门还挂着，不能推进。
     GatePending { stage: StageId, question_id: String },
     /// 应答的选项不在候选里。
-    UnknownAnswer { question_id: String, given: String, options: Vec<String> },
+    UnknownAnswer {
+        question_id: String,
+        given: String,
+        options: Vec<String>,
+    },
     /// 前置阶段还没通过。
     StageNotReady { stage: StageId, blocked_on: StageId },
     /// `.studio/` 被外部改动，完整性校验失败。
     StateDrift { detail: String },
     /// 另一个进程持有本 bundle。
-    ProjectBusy { pid: Option<u32>, since: Option<String> },
+    ProjectBusy {
+        pid: Option<u32>,
+        since: Option<String>,
+    },
     /// 当前目录不是一个 bundle。
     NotAProject { path: String },
     /// 没有可用的 ComfyUI 节点。
@@ -63,7 +81,10 @@ pub enum StudioError {
     /// 登记过的产物在磁盘上不存在。
     ArtifactMissing { path: String },
     /// 外部程序找不到（ffmpeg / ffprobe）。
-    ToolUnavailable { tool: String, looked_in: Vec<String> },
+    ToolUnavailable {
+        tool: String,
+        looked_in: Vec<String>,
+    },
     /// 阶段重试到顶。
     RetryLimitExceeded { stage: StageId, limit: u32 },
     /// 内部错误：I/O、序列化等。
@@ -176,18 +197,29 @@ impl StudioError {
     pub fn message(&self) -> String {
         match self {
             StudioError::SchemaViolation { stage, violations } => {
-                let list = violations.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("; ");
+                let list = violations
+                    .iter()
+                    .map(|v| v.to_string())
+                    .collect::<Vec<_>>()
+                    .join("; ");
                 format!("阶段 {stage} 的产物不符合契约：{list}")
             }
-            StudioError::InvalidTransition { stage, current, attempted, .. } =>
-                format!("阶段 {stage} 当前处于 {current}，不能执行 {attempted}"),
-            StudioError::ConfirmationRequired { stage, gate } =>
-                format!("阶段 {stage} 的确认门 {gate} 需要确认问题"),
-            StudioError::GatePending { stage, question_id } =>
-                format!("阶段 {stage} 正在等待确认（{question_id}）"),
+            StudioError::InvalidTransition {
+                stage,
+                current,
+                attempted,
+                ..
+            } => format!("阶段 {stage} 当前处于 {current}，不能执行 {attempted}"),
+            StudioError::ConfirmationRequired { stage, gate } => {
+                format!("阶段 {stage} 的确认门 {gate} 需要确认问题")
+            }
+            StudioError::GatePending { stage, question_id } => {
+                format!("阶段 {stage} 正在等待确认（{question_id}）")
+            }
             StudioError::UnknownAnswer { given, .. } => format!("无效的选项：{given}"),
-            StudioError::StageNotReady { stage, blocked_on } =>
-                format!("阶段 {stage} 依赖尚未通过的 {blocked_on}"),
+            StudioError::StageNotReady { stage, blocked_on } => {
+                format!("阶段 {stage} 依赖尚未通过的 {blocked_on}")
+            }
             StudioError::StateDrift { detail } => format!("状态完整性校验失败：{detail}"),
             StudioError::ProjectBusy { pid, since } => match (pid, since) {
                 (Some(p), Some(s)) => format!("作品已被进程 {p} 打开（自 {s}）"),
@@ -196,18 +228,23 @@ impl StudioError {
             },
             StudioError::NotAProject { path } => format!("{path} 不是一部作品"),
             StudioError::ComfyUnavailable { .. } => "没有可用的 ComfyUI 节点".to_string(),
-            StudioError::ComfyFailed { node, detail } => format!("ComfyUI 节点 {node} 执行失败：{detail}"),
+            StudioError::ComfyFailed { node, detail } => {
+                format!("ComfyUI 节点 {node} 执行失败：{detail}")
+            }
             StudioError::ModelContractViolation { detail } => format!("模型契约不满足：{detail}"),
             StudioError::ArtifactMissing { path } => format!("产物缺失：{path}"),
             StudioError::ToolUnavailable { tool, .. } => format!("找不到外部程序：{tool}"),
-            StudioError::RetryLimitExceeded { stage, limit } =>
-                format!("阶段 {stage} 超过重试上限 {limit}"),
+            StudioError::RetryLimitExceeded { stage, limit } => {
+                format!("阶段 {stage} 超过重试上限 {limit}")
+            }
             StudioError::Internal { detail } => format!("内部错误：{detail}"),
         }
     }
 
     pub fn internal(detail: impl Into<String>) -> Self {
-        StudioError::Internal { detail: detail.into() }
+        StudioError::Internal {
+            detail: detail.into(),
+        }
     }
 }
 
@@ -232,7 +269,10 @@ pub const ERROR_CODES: [(&str, &str); 16] = [
     ("not_a_project", "当前目录不是一部作品"),
     ("comfy_unavailable", "无健康 ComfyUI 节点，结构化阻塞不降级"),
     ("comfy_failed", "ComfyUI 侧执行失败"),
-    ("model_contract_violation", "固定模型缺失或校验失败，停止不静默替换"),
+    (
+        "model_contract_violation",
+        "固定模型缺失或校验失败，停止不静默替换",
+    ),
     ("artifact_missing", "登记的产物在磁盘上不存在"),
     ("tool_unavailable", "找不到 ffmpeg / ffprobe 等外部程序"),
     ("retry_limit_exceeded", "阶段重试到顶"),
@@ -245,25 +285,76 @@ mod tests {
 
     fn one_of_each() -> Vec<StudioError> {
         vec![
-            StudioError::SchemaViolation { stage: StageId::Script, violations: vec![Violation::new("script.title", "缺失")] },
-            StudioError::InvalidTransition { stage: StageId::Script, current: "awaiting_confirmation", attempted: "submit", allowed: vec!["answer", "revise"] },
-            StudioError::ConfirmationRequired { stage: StageId::Script, gate: "script.approval" },
-            StudioError::GatePending { stage: StageId::Script, question_id: "script.approval".into() },
-            StudioError::UnknownAnswer { question_id: "script.approval".into(), given: "x".into(), options: vec!["approve".into()] },
-            StudioError::StageNotReady { stage: StageId::Render, blocked_on: StageId::PromptPack },
-            StudioError::StateDrift { detail: "digest 不匹配".into() },
-            StudioError::ProjectBusy { pid: Some(42), since: Some("2026-09-03T00:00:00Z".into()) },
-            StudioError::ProjectBusy { pid: None, since: None },
-            StudioError::NotAProject { path: "/tmp/x".into() },
-            StudioError::ComfyUnavailable { tried: vec!["127.0.0.1:9001".into()] },
+            StudioError::SchemaViolation {
+                stage: StageId::Script,
+                violations: vec![Violation::new("script.title", "缺失")],
+            },
+            StudioError::InvalidTransition {
+                stage: StageId::Script,
+                current: "awaiting_confirmation",
+                attempted: "submit",
+                allowed: vec!["answer", "revise"],
+            },
+            StudioError::ConfirmationRequired {
+                stage: StageId::Script,
+                gate: "script.approval",
+            },
+            StudioError::GatePending {
+                stage: StageId::Script,
+                question_id: "script.approval".into(),
+            },
+            StudioError::UnknownAnswer {
+                question_id: "script.approval".into(),
+                given: "x".into(),
+                options: vec!["approve".into()],
+            },
+            StudioError::StageNotReady {
+                stage: StageId::Render,
+                blocked_on: StageId::PromptPack,
+            },
+            StudioError::StateDrift {
+                detail: "digest 不匹配".into(),
+            },
+            StudioError::ProjectBusy {
+                pid: Some(42),
+                since: Some("2026-09-03T00:00:00Z".into()),
+            },
+            StudioError::ProjectBusy {
+                pid: None,
+                since: None,
+            },
+            StudioError::NotAProject {
+                path: "/tmp/x".into(),
+            },
+            StudioError::ComfyUnavailable {
+                tried: vec!["127.0.0.1:9001".into()],
+            },
             StudioError::ComfyUnavailable { tried: vec![] },
-            StudioError::ComfyFailed { node: "9001".into(), detail: "OOM".into() },
-            StudioError::ModelContractViolation { detail: "缺 vae".into() },
-            StudioError::ArtifactMissing { path: "media/sh01.mp4".into() },
-            StudioError::ToolUnavailable { tool: "ffmpeg".into(), looked_in: vec![".env".into()] },
-            StudioError::ToolUnavailable { tool: "ffprobe".into(), looked_in: vec![] },
-            StudioError::RetryLimitExceeded { stage: StageId::Render, limit: 3 },
-            StudioError::Internal { detail: "boom".into() },
+            StudioError::ComfyFailed {
+                node: "9001".into(),
+                detail: "OOM".into(),
+            },
+            StudioError::ModelContractViolation {
+                detail: "缺 vae".into(),
+            },
+            StudioError::ArtifactMissing {
+                path: "media/sh01.mp4".into(),
+            },
+            StudioError::ToolUnavailable {
+                tool: "ffmpeg".into(),
+                looked_in: vec![".env".into()],
+            },
+            StudioError::ToolUnavailable {
+                tool: "ffprobe".into(),
+                looked_in: vec![],
+            },
+            StudioError::RetryLimitExceeded {
+                stage: StageId::Render,
+                limit: 3,
+            },
+            StudioError::Internal {
+                detail: "boom".into(),
+            },
         ]
     }
 
@@ -283,7 +374,11 @@ mod tests {
         for e in one_of_each() {
             let r = e.remedy();
             let actionable = r.contains("studio.") || r.contains("studiod ") || r.contains(".env");
-            assert!(actionable, "{} 的 remedy 没给出可执行的下一步：{r}", e.code());
+            assert!(
+                actionable,
+                "{} 的 remedy 没给出可执行的下一步：{r}",
+                e.code()
+            );
         }
     }
 

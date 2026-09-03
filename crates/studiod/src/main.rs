@@ -102,7 +102,10 @@ fn main() {
 
 /// 二进制自己所在的目录——随包分发的 assets、config.toml、.env 都在这里找。
 fn program_dir() -> Option<PathBuf> {
-    std::env::current_exe().ok()?.parent().map(|p| p.to_path_buf())
+    std::env::current_exe()
+        .ok()?
+        .parent()
+        .map(|p| p.to_path_buf())
 }
 
 fn program_path() -> String {
@@ -121,7 +124,11 @@ fn run(cli: Cli) -> Result<(), String> {
         Command::Serve => cmd_serve(),
         Command::Doctor { json, fix } => cmd_doctor(json, fix),
         Command::EmitAssets { out, check } => cmd_emit(&out, check),
-        Command::Pack { bundle, out, no_media } => cmd_pack(&bundle, &out, !no_media),
+        Command::Pack {
+            bundle,
+            out,
+            no_media,
+        } => cmd_pack(&bundle, &out, !no_media),
         Command::Unpack { archive, into } => cmd_unpack(&archive, &into),
         Command::E2e(E2eCommand::Report { bundle, out }) => cmd_e2e(bundle, out),
     }
@@ -130,13 +137,16 @@ fn run(cli: Cli) -> Result<(), String> {
 fn cmd_init(path: &Path, title: Option<&str>) -> Result<(), String> {
     let title = title
         .map(String::from)
-        .or_else(|| {
-            path.file_stem().map(|s| s.to_string_lossy().to_string())
-        })
+        .or_else(|| path.file_stem().map(|s| s.to_string_lossy().to_string()))
         .unwrap_or_else(|| "未命名作品".to_string());
 
     let settings = studio_engine::Settings::load(program_dir().as_deref(), None);
-    let files = assets::bundle_files(&program_path(), &title, env!("CARGO_PKG_VERSION"), &settings.core_model_family());
+    let files = assets::bundle_files(
+        &program_path(),
+        &title,
+        env!("CARGO_PKG_VERSION"),
+        &settings.core_model_family(),
+    );
 
     studio_engine::init_project(path, &title, env!("CARGO_PKG_VERSION"), &files)
         .map_err(|e| format!("{e}\n  {}", e.remedy()))?;
@@ -169,13 +179,21 @@ fn cmd_doctor(json: bool, fix: bool) -> Result<(), String> {
         let Some(root) = &bundle_root else {
             return Err("--fix 需要在一部作品目录里运行。".to_string());
         };
-        doctor::fix_codex_config(root, &program_path()).map_err(|e| format!("修正配置失败：{e}"))?;
-        println!("已把 {}/.codex/config.toml 指向 {}", root.display(), program_path());
+        doctor::fix_codex_config(root, &program_path())
+            .map_err(|e| format!("修正配置失败：{e}"))?;
+        println!(
+            "已把 {}/.codex/config.toml 指向 {}",
+            root.display(),
+            program_path()
+        );
     }
 
     let report = doctor::run(program_dir().as_deref(), bundle_root.as_deref());
     if json {
-        println!("{}", serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?
+        );
     } else {
         print!("{}", doctor::render(&report));
     }
@@ -251,7 +269,8 @@ fn cmd_e2e(bundle: Option<PathBuf>, out: Option<PathBuf>) -> Result<(), String> 
         Some(path) => {
             let json = serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;
             let mut f = std::fs::File::create(&path).map_err(|e| format!("写报告失败：{e}"))?;
-            f.write_all(json.as_bytes()).map_err(|e| format!("写报告失败：{e}"))?;
+            f.write_all(json.as_bytes())
+                .map_err(|e| format!("写报告失败：{e}"))?;
             println!("报告已写入 {}", path.display());
             print!("{}", e2e::render(&report));
         }

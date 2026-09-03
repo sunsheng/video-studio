@@ -1,0 +1,95 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 版本号（例如 v0.1.0），留空则用 dev-<短 SHA>
+        required: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: 构建可解压即用的压缩包
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: 确定版本号
+        id: ver
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "version=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          elif [ -n "${{ inputs.version }}" ]; then
+            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=dev-$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 构建
+        run: cargo build --release -p studiod
+
+      - name: 组装目录
+        id: pkg
+        run: |
+          set -euo pipefail
+          V="${{ steps.ver.outputs.version }}"
+          NAME="video-studio-${V}-linux-x86_64"
+          DIST="dist/video-studio"
+          mkdir -p "$DIST"
+
+          cp target/release/studiod "$DIST/studiod"
+          strip "$DIST/studiod" || true
+          cp scripts/install.sh "$DIST/install.sh"
+          chmod +x "$DIST/install.sh"
+          cp config/default.toml "$DIST/config.toml"
+          cp README.md LICENSE "$DIST/"
+          echo "$V" > "$DIST/VERSION"
+
+          # 随包文档由二进制自己生成，保证与代码同版本。
+          "$DIST/studiod" emit-assets --out "$DIST/assets"
+          cp "$DIST/assets/.env.example" "$DIST/.env.example"
+
+          cd dist && zip -qr "../${NAME}.zip" video-studio && cd ..
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          unzip -l "${NAME}.zip" | tail -5
+
+      - name: 冒烟：解压到任意目录都能跑
+        run: |
+          set -euo pipefail
+          NAME="${{ steps.pkg.outputs.name }}"
+          mkdir -p /tmp/anywhere && unzip -q "${NAME}.zip" -d /tmp/anywhere
+          /tmp/anywhere/video-studio/studiod --version
+          /tmp/anywhere/video-studio/studiod init /tmp/smoke.studio --title 冒烟
+          test -f /tmp/smoke.studio/AGENTS.md
+          test -f /tmp/smoke.studio/.agents/skills/script/SKILL.md
+          test -f /tmp/smoke.studio/.codex/config.toml
+          # doctor 在没有 ComfyUI 的 runner 上应当只是「注意」，不该崩
+          /tmp/anywhere/video-studio/studiod doctor --json > /tmp/doctor.json || true
+          python3 -c "import json;d=json.load(open('/tmp/doctor.json'));print('checks:',len(d['checks']))"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.pkg.outputs.name }}
+          path: ${{ steps.pkg.outputs.name }}.zip
+          retention-days: 30
+
+      - name: 发布 Release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            "${{ steps.pkg.outputs.name }}.zip" \
+            --title "${{ github.ref_name }}" \
+            --generate-notes

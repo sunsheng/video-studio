@@ -1,0 +1,28 @@
+# video-studio 出厂默认配置。
+#
+# 优先级：bundle 的 .env > 程序目录的 .env > 进程环境变量 > 本文件 > PATH。
+# 改这个文件会影响本机所有作品；只想改一部作品就写它自己的 .env。
+
+[media]
+# ffmpeg / ffprobe 不要求在 PATH 中。留空则按上面的顺序查找。
+# ffmpeg_path = "/usr/local/bin/ffmpeg"
+# ffprobe_path = "/usr/local/bin/ffprobe"
+
+[comfy]
+# 运行本程序的机器不需要 GPU，节点可以在别的主机上。
+nodes = [
+    "http://127.0.0.1:9001",
+    "http://127.0.0.1:9002",
+    "http://127.0.0.1:9003",
+    "http://127.0.0.1:9004",
+    "http://127.0.0.1:9005",
+    "http://127.0.0.1:9006",
+    "http://127.0.0.1:9007",
+    "http://127.0.0.1:9008",
+]
+timeout_secs = 1800
+poll_interval_secs = 3
+
+[model]
+# 未指定时的核心模型系列。同一部作品的视觉、视频和声音保持同一系列。
+core_family = "minimax_h3"

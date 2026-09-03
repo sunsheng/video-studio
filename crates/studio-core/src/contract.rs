@@ -53,12 +53,20 @@ pub struct AnswerOption {
 impl AnswerOption {
     /// 一个「通过」选项。
     pub fn new(id: impl Into<String>, label: impl Into<String>) -> Self {
-        AnswerOption { id: id.into(), label: label.into(), outcome: Outcome::Approve }
+        AnswerOption {
+            id: id.into(),
+            label: label.into(),
+            outcome: Outcome::Approve,
+        }
     }
 
     /// 一个「打回重做」选项。
     pub fn revise(id: impl Into<String>, label: impl Into<String>) -> Self {
-        AnswerOption { id: id.into(), label: label.into(), outcome: Outcome::Revise }
+        AnswerOption {
+            id: id.into(),
+            label: label.into(),
+            outcome: Outcome::Revise,
+        }
     }
 }
 
@@ -100,7 +108,10 @@ impl Question {
 
     /// 选中这个选项之后该发生什么。
     pub fn outcome_of(&self, answer: &str) -> Option<Outcome> {
-        self.options.iter().find(|o| o.id == answer).map(|o| o.outcome)
+        self.options
+            .iter()
+            .find(|o| o.id == answer)
+            .map(|o| o.outcome)
     }
 }
 
@@ -114,7 +125,11 @@ pub struct Blocked {
 
 impl From<&StudioError> for Blocked {
     fn from(e: &StudioError) -> Self {
-        Blocked { code: e.code().to_string(), message: e.message(), remedy: e.remedy() }
+        Blocked {
+            code: e.code().to_string(),
+            message: e.message(),
+            remedy: e.remedy(),
+        }
     }
 }
 
@@ -177,7 +192,9 @@ impl Envelope {
         match self.waiting_on {
             WaitingOn::User => {
                 if self.pending_question.is_none() && self.blocked_by.is_none() {
-                    return Err("waiting_on=user 但既没有 pending_question 也没有 blocked_by".into());
+                    return Err(
+                        "waiting_on=user 但既没有 pending_question 也没有 blocked_by".into(),
+                    );
                 }
             }
             WaitingOn::Agent => {
@@ -212,7 +229,10 @@ mod tests {
             stage: StageId::Script,
             prompt: "确认剧本？".into(),
             selection_type: SelectionType::Single,
-            options: vec![AnswerOption::new("approve", "确认"), AnswerOption::new("revise", "修改")],
+            options: vec![
+                AnswerOption::new("approve", "确认"),
+                AnswerOption::new("revise", "修改"),
+            ],
         }
     }
 
@@ -225,7 +245,10 @@ mod tests {
 
     #[test]
     fn blocked_from_error_always_has_remedy() {
-        let e = StudioError::ConfirmationRequired { stage: StageId::Script, gate: "script.approval" };
+        let e = StudioError::ConfirmationRequired {
+            stage: StageId::Script,
+            gate: "script.approval",
+        };
         let b = Blocked::from(&e);
         assert_eq!(b.code, "confirmation_required");
         assert!(!b.remedy.is_empty());
@@ -234,12 +257,19 @@ mod tests {
     #[test]
     fn envelope_rejects_waiting_on_user_without_question() {
         let env = Envelope {
-            project: ProjectInfo { title: "t".into(), stage: StageId::Script, status: ProjectStatus::Active },
+            project: ProjectInfo {
+                title: "t".into(),
+                stage: StageId::Script,
+                status: ProjectStatus::Active,
+            },
             waiting_on: WaitingOn::User,
             blocked_by: None,
             pending_question: None,
             next_action: None,
-            progress: Progress { completed: 2, total: 9 },
+            progress: Progress {
+                completed: 2,
+                total: 9,
+            },
         };
         assert!(env.assert_consistent().is_err());
     }
@@ -247,12 +277,19 @@ mod tests {
     #[test]
     fn envelope_accepts_waiting_on_user_with_question() {
         let env = Envelope {
-            project: ProjectInfo { title: "t".into(), stage: StageId::Script, status: ProjectStatus::Active },
+            project: ProjectInfo {
+                title: "t".into(),
+                stage: StageId::Script,
+                status: ProjectStatus::Active,
+            },
             waiting_on: WaitingOn::User,
             blocked_by: None,
             pending_question: Some(q()),
             next_action: None,
-            progress: Progress { completed: 2, total: 9 },
+            progress: Progress {
+                completed: 2,
+                total: 9,
+            },
         };
         assert!(env.assert_consistent().is_ok());
     }

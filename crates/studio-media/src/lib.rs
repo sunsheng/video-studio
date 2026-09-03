@@ -33,10 +33,12 @@ impl<'a> Media<'a> {
     }
 
     fn resolve(&self, tool: &str) -> Result<PathBuf> {
-        self.settings.tool_path(tool).ok_or_else(|| StudioError::ToolUnavailable {
-            tool: tool.to_string(),
-            looked_in: self.settings.searched.clone(),
-        })
+        self.settings
+            .tool_path(tool)
+            .ok_or_else(|| StudioError::ToolUnavailable {
+                tool: tool.to_string(),
+                looked_in: self.settings.searched.clone(),
+            })
     }
 
     /// 体检用：找得到就顺便取版本号。
@@ -50,9 +52,16 @@ impl<'a> Media<'a> {
                 looked_in: self.settings.searched.clone(),
             },
             Some(p) => {
-                let version = Command::new(&p).arg("-version").output().ok().and_then(|o| {
-                    String::from_utf8_lossy(&o.stdout).lines().next().map(|l| l.trim().to_string())
-                });
+                let version = Command::new(&p)
+                    .arg("-version")
+                    .output()
+                    .ok()
+                    .and_then(|o| {
+                        String::from_utf8_lossy(&o.stdout)
+                            .lines()
+                            .next()
+                            .map(|l| l.trim().to_string())
+                    });
                 ToolStatus {
                     name: tool.into(),
                     found: true,
@@ -68,10 +77,19 @@ impl<'a> Media<'a> {
     pub fn probe(&self, file: &Path) -> Result<MediaInfo> {
         let ffprobe = self.resolve("ffprobe")?;
         if !file.is_file() {
-            return Err(StudioError::ArtifactMissing { path: file.display().to_string() });
+            return Err(StudioError::ArtifactMissing {
+                path: file.display().to_string(),
+            });
         }
         let out = Command::new(&ffprobe)
-            .args(["-v", "error", "-print_format", "json", "-show_format", "-show_streams"])
+            .args([
+                "-v",
+                "error",
+                "-print_format",
+                "json",
+                "-show_format",
+                "-show_streams",
+            ])
             .arg(file)
             .output()
             .map_err(|e| StudioError::internal(format!("执行 ffprobe 失败：{e}")))?;
@@ -92,20 +110,31 @@ impl<'a> Media<'a> {
         let ffmpeg = self.resolve("ffmpeg")?;
         for p in parts {
             if !p.is_file() {
-                return Err(StudioError::ArtifactMissing { path: p.display().to_string() });
+                return Err(StudioError::ArtifactMissing {
+                    path: p.display().to_string(),
+                });
             }
         }
         let list = out.with_extension("concat.txt");
         let body: String = parts
             .iter()
-            .map(|p| format!("file '{}'\n", p.display().to_string().replace('\'', "'\\''")))
+            .map(|p| {
+                format!(
+                    "file '{}'\n",
+                    p.display().to_string().replace('\'', "'\\''")
+                )
+            })
             .collect();
-        std::fs::write(&list, body).map_err(|e| StudioError::internal(format!("写 concat 清单失败：{e}")))?;
+        std::fs::write(&list, body)
+            .map_err(|e| StudioError::internal(format!("写 concat 清单失败：{e}")))?;
 
         let mut cmd = Command::new(&ffmpeg);
-        cmd.args(["-hide_banner", "-y", "-f", "concat", "-safe", "0", "-i"]).arg(&list);
+        cmd.args(["-hide_banner", "-y", "-f", "concat", "-safe", "0", "-i"])
+            .arg(&list);
         if reencode {
-            cmd.args(["-c:v", "libx264", "-preset", "medium", "-crf", "20", "-c:a", "aac"]);
+            cmd.args([
+                "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-c:a", "aac",
+            ]);
         } else {
             cmd.args(["-c", "copy"]);
         }
@@ -120,7 +149,9 @@ impl<'a> Media<'a> {
     pub fn extract_frame(&self, video: &Path, at_seconds: f64, out: &Path) -> Result<()> {
         let ffmpeg = self.resolve("ffmpeg")?;
         if !video.is_file() {
-            return Err(StudioError::ArtifactMissing { path: video.display().to_string() });
+            return Err(StudioError::ArtifactMissing {
+                path: video.display().to_string(),
+            });
         }
         let mut cmd = Command::new(&ffmpeg);
         cmd.args(["-hide_banner", "-y", "-ss", &format!("{at_seconds}")])
@@ -147,14 +178,20 @@ impl<'a> Media<'a> {
 }
 
 fn run(mut cmd: Command, what: &str) -> Result<()> {
-    let out = cmd.output().map_err(|e| StudioError::internal(format!("执行 {what} 失败：{e}")))?;
+    let out = cmd
+        .output()
+        .map_err(|e| StudioError::internal(format!("执行 {what} 失败：{e}")))?;
     if out.status.success() {
         Ok(())
     } else {
         Err(StudioError::internal(format!(
             "{what} 退出码 {:?}：{}",
             out.status.code(),
-            String::from_utf8_lossy(&out.stderr).lines().last().unwrap_or("").trim()
+            String::from_utf8_lossy(&out.stderr)
+                .lines()
+                .last()
+                .unwrap_or("")
+                .trim()
         )))
     }
 }
@@ -174,7 +211,10 @@ pub struct MediaInfo {
 impl MediaInfo {
     pub fn from_ffprobe(v: &serde_json::Value) -> MediaInfo {
         let mut info = MediaInfo {
-            duration_seconds: v["format"]["duration"].as_str().and_then(|s| s.parse().ok()).unwrap_or(0.0),
+            duration_seconds: v["format"]["duration"]
+                .as_str()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0.0),
             ..Default::default()
         };
         if let Some(streams) = v["streams"].as_array() {
@@ -246,7 +286,11 @@ mod tests {
         let m = Media::new(&s);
         let st = m.probe_tool("definitely-not-a-real-tool");
         assert!(!st.found);
-        assert!(st.looked_in.iter().any(|p| p.contains(".env")), "应当报告找过 .env：{:?}", st.looked_in);
+        assert!(
+            st.looked_in.iter().any(|p| p.contains(".env")),
+            "应当报告找过 .env：{:?}",
+            st.looked_in
+        );
         assert!(st.looked_in.contains(&"PATH".to_string()));
     }
 
@@ -285,7 +329,11 @@ mod tests {
 
     #[test]
     fn aspect_ratio_handles_landscape_and_unknown() {
-        let mut i = MediaInfo { width: 1920, height: 1080, ..Default::default() };
+        let mut i = MediaInfo {
+            width: 1920,
+            height: 1080,
+            ..Default::default()
+        };
         assert_eq!(i.aspect_ratio(), "16:9");
         i.width = 0;
         assert_eq!(i.aspect_ratio(), "unknown");

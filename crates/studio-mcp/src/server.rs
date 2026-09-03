@@ -26,9 +26,17 @@ impl Server {
         match Project::open(cwd, program_dir) {
             Ok(p) => {
                 let root = p.bundle().root().to_path_buf();
-                Server { project: Some(p), open_error: None, root }
+                Server {
+                    project: Some(p),
+                    open_error: None,
+                    root,
+                }
             }
-            Err(e) => Server { project: None, open_error: Some(e), root: cwd.to_path_buf() },
+            Err(e) => Server {
+                project: None,
+                open_error: Some(e),
+                root: cwd.to_path_buf(),
+            },
         }
     }
 
@@ -40,7 +48,9 @@ impl Server {
             if line.is_empty() {
                 continue;
             }
-            let Some(response) = self.handle_line(line) else { continue };
+            let Some(response) = self.handle_line(line) else {
+                continue;
+            };
             writeln!(output, "{response}")?;
             output.flush()?;
         }
@@ -53,12 +63,16 @@ impl Server {
             Ok(v) => v,
             Err(e) => {
                 return Some(
-                    error_response(&Value::Null, -32700, &format!("JSON 解析失败：{e}")).to_string(),
+                    error_response(&Value::Null, -32700, &format!("JSON 解析失败：{e}"))
+                        .to_string(),
                 )
             }
         };
         let id = msg.get("id").cloned();
-        let method = msg.get("method").and_then(|m| m.as_str()).unwrap_or_default();
+        let method = msg
+            .get("method")
+            .and_then(|m| m.as_str())
+            .unwrap_or_default();
         let params = msg.get("params").cloned().unwrap_or(json!({}));
 
         // 通知没有 id，不需要回应。
@@ -79,8 +93,15 @@ impl Server {
     }
 
     fn initialize(&self, params: &Value) -> Value {
-        let requested = params.get("protocolVersion").and_then(|v| v.as_str()).unwrap_or("");
-        let version = if SUPPORTED_PROTOCOLS.contains(&requested) { requested } else { SUPPORTED_PROTOCOLS[0] };
+        let requested = params
+            .get("protocolVersion")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let version = if SUPPORTED_PROTOCOLS.contains(&requested) {
+            requested
+        } else {
+            SUPPORTED_PROTOCOLS[0]
+        };
         json!({
             "protocolVersion": version,
             "capabilities": { "tools": { "listChanged": false } },
@@ -89,11 +110,19 @@ impl Server {
     }
 
     fn call_tool(&mut self, id: &Value, params: &Value) -> Value {
-        let name = params.get("name").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+        let name = params
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
         let args = params.get("arguments").cloned().unwrap_or(json!({}));
 
         if !TOOLS.iter().any(|t| t.name == name) {
-            return error_response(id, -32602, &format!("未知工具：{name}。可用工具见 tools/list。"));
+            return error_response(
+                id,
+                -32602,
+                &format!("未知工具：{name}。可用工具见 tools/list。"),
+            );
         }
 
         let started = std::time::Instant::now();
@@ -102,8 +131,15 @@ impl Server {
 
         let (payload, is_error, rec) = match outcome {
             Ok(v) => {
-                let stage = v.get("project").and_then(|p| p.get("stage")).and_then(|s| s.as_str()).map(String::from);
-                let waiting = v.get("waiting_on").and_then(|s| s.as_str()).map(String::from);
+                let stage = v
+                    .get("project")
+                    .and_then(|p| p.get("stage"))
+                    .and_then(|s| s.as_str())
+                    .map(String::from);
+                let waiting = v
+                    .get("waiting_on")
+                    .and_then(|s| s.as_str())
+                    .map(String::from);
                 let rec = TraceRecord {
                     at: now(),
                     tool: name.clone(),
@@ -162,7 +198,9 @@ impl Server {
         match (&self.project, &self.open_error) {
             (Some(p), _) => Ok(p),
             (None, Some(e)) => Err(e.clone()),
-            (None, None) => Err(StudioError::NotAProject { path: self.root.display().to_string() }),
+            (None, None) => Err(StudioError::NotAProject {
+                path: self.root.display().to_string(),
+            }),
         }
     }
 
@@ -177,16 +215,24 @@ impl Server {
                     _ => {
                         return Err(StudioError::SchemaViolation {
                             stage: p.current_stage()?.unwrap_or(StageId::Idea),
-                            violations: vec![studio_core::Violation::new("outputs", "必须是一个对象")],
+                            violations: vec![studio_core::Violation::new(
+                                "outputs",
+                                "必须是一个对象",
+                            )],
                         })
                     }
                 };
                 let summary = args.get("summary").and_then(|v| v.as_str());
                 let confirmation: Option<Confirmation> = match args.get("confirmation") {
                     None | Some(Value::Null) => None,
-                    Some(v) => Some(serde_json::from_value(v.clone()).map_err(|e| StudioError::SchemaViolation {
-                        stage: p.current_stage().ok().flatten().unwrap_or(StageId::Idea),
-                        violations: vec![studio_core::Violation::new("confirmation", e.to_string())],
+                    Some(v) => Some(serde_json::from_value(v.clone()).map_err(|e| {
+                        StudioError::SchemaViolation {
+                            stage: p.current_stage().ok().flatten().unwrap_or(StageId::Idea),
+                            violations: vec![studio_core::Violation::new(
+                                "confirmation",
+                                e.to_string(),
+                            )],
+                        }
                     })?),
                 };
                 to_value(p.submit_stage(outputs, summary, confirmation)?)
@@ -229,7 +275,10 @@ fn stage_arg(args: &Value) -> studio_core::Result<StageId> {
     StageId::parse(&s).ok_or_else(|| {
         StudioError::internal(format!(
             "未知阶段 {s}。合法取值：{}",
-            StageId::all().map(|x| x.as_str()).collect::<Vec<_>>().join(" / ")
+            StageId::all()
+                .map(|x| x.as_str())
+                .collect::<Vec<_>>()
+                .join(" / ")
         ))
     })
 }

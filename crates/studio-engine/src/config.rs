@@ -42,7 +42,9 @@ pub struct ComfyConfig {
 }
 
 fn default_nodes() -> Vec<String> {
-    (9001..=9008).map(|p| format!("http://127.0.0.1:{p}")).collect()
+    (9001..=9008)
+        .map(|p| format!("http://127.0.0.1:{p}"))
+        .collect()
 }
 fn default_timeout() -> u64 {
     1800
@@ -53,7 +55,11 @@ fn default_poll() -> u64 {
 
 impl Default for ComfyConfig {
     fn default() -> Self {
-        ComfyConfig { nodes: default_nodes(), timeout_secs: default_timeout(), poll_interval_secs: default_poll() }
+        ComfyConfig {
+            nodes: default_nodes(),
+            timeout_secs: default_timeout(),
+            poll_interval_secs: default_poll(),
+        }
     }
 }
 
@@ -69,7 +75,9 @@ fn default_family() -> String {
 
 impl Default for ModelConfig {
     fn default() -> Self {
-        ModelConfig { core_family: default_family() }
+        ModelConfig {
+            core_family: default_family(),
+        }
     }
 }
 
@@ -124,7 +132,11 @@ impl Settings {
         }
         searched.push("PATH".to_string());
 
-        Settings { file, env, searched }
+        Settings {
+            file,
+            env,
+            searched,
+        }
     }
 
     /// 解析一个外部程序的位置。返回 None 表示到处都找不到。
@@ -161,7 +173,12 @@ impl Settings {
                 return list;
             }
         }
-        self.file.comfy.nodes.iter().map(|s| s.trim_end_matches('/').to_string()).collect()
+        self.file
+            .comfy
+            .nodes
+            .iter()
+            .map(|s| s.trim_end_matches('/').to_string())
+            .collect()
     }
 
     pub fn comfy_timeout_secs(&self) -> u64 {
@@ -202,7 +219,9 @@ pub fn read_dotenv(path: &Path) -> Option<BTreeMap<String, String>> {
             continue;
         }
         let line = line.strip_prefix("export ").unwrap_or(line);
-        let Some((k, v)) = line.split_once('=') else { continue };
+        let Some((k, v)) = line.split_once('=') else {
+            continue;
+        };
         let k = k.trim();
         if k.is_empty() {
             continue;
@@ -252,8 +271,16 @@ mod tests {
     fn bundle_env_beats_program_env() {
         let prog = tempfile::tempdir().unwrap();
         let bundle = tempfile::tempdir().unwrap();
-        std::fs::write(prog.path().join(".env"), "COMFY_NODES=http://program:9001\n").unwrap();
-        std::fs::write(bundle.path().join(".env"), "COMFY_NODES=http://bundle:9001\n").unwrap();
+        std::fs::write(
+            prog.path().join(".env"),
+            "COMFY_NODES=http://program:9001\n",
+        )
+        .unwrap();
+        std::fs::write(
+            bundle.path().join(".env"),
+            "COMFY_NODES=http://bundle:9001\n",
+        )
+        .unwrap();
         let s = Settings::load(Some(prog.path()), Some(bundle.path()));
         assert_eq!(s.comfy_nodes(), vec!["http://bundle:9001"]);
     }
@@ -270,7 +297,11 @@ mod tests {
     #[test]
     fn trailing_slashes_are_normalised() {
         let bundle = tempfile::tempdir().unwrap();
-        std::fs::write(bundle.path().join(".env"), "COMFY_NODES=http://a:9001/,http://b:9002//\n").unwrap();
+        std::fs::write(
+            bundle.path().join(".env"),
+            "COMFY_NODES=http://a:9001/,http://b:9002//\n",
+        )
+        .unwrap();
         let s = Settings::load(None, Some(bundle.path()));
         assert_eq!(s.comfy_nodes(), vec!["http://a:9001", "http://b:9002"]);
     }
@@ -280,7 +311,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let fake = dir.path().join("ffmpeg");
         std::fs::write(&fake, "#!/bin/sh\n").unwrap();
-        std::fs::write(dir.path().join(".env"), format!("FFMPEG_PATH={}\n", fake.display())).unwrap();
+        std::fs::write(
+            dir.path().join(".env"),
+            format!("FFMPEG_PATH={}\n", fake.display()),
+        )
+        .unwrap();
         let s = Settings::load(None, Some(dir.path()));
         assert_eq!(s.tool_path("ffmpeg").unwrap(), fake);
     }
@@ -288,7 +323,11 @@ mod tests {
     #[test]
     fn tool_path_is_none_when_configured_file_is_missing() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join(".env"), "FFMPEG_PATH=/definitely/not/here/ffmpeg\n").unwrap();
+        std::fs::write(
+            dir.path().join(".env"),
+            "FFMPEG_PATH=/definitely/not/here/ffmpeg\n",
+        )
+        .unwrap();
         let s = Settings::load(None, Some(dir.path()));
         // 配错了路径就当作没配，继续退回 PATH；本机没装 ffmpeg 时应为 None。
         if which("ffmpeg").is_none() {

@@ -1,0 +1,118 @@
+{
+  "$id": "https://github.com/sunsheng/video-studio/schema/visual_assets.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": true,
+  "description": "studio.submit_stage 在阶段 visual_assets 接受的 outputs 形状。顶层键固定为 asset_plan。",
+  "properties": {
+    "asset_plan": {
+      "additionalProperties": true,
+      "description": "角色卡、场景卡与参考资产计划",
+      "properties": {
+        "backend": {
+          "description": "生成后端，通常是 comfyui",
+          "type": "string"
+        },
+        "consistency_lock": {
+          "description": "一致性锁定：角色、机位、环境、安全、排版"
+        },
+        "core_model_family": {
+          "description": "核心模型系列，例如 minimax_h3",
+          "type": "string"
+        },
+        "fallback_policy": {
+          "description": "降级策略。默认结构化阻塞，不自动换系列",
+          "type": "string"
+        },
+        "requests": {
+          "description": "资产请求",
+          "items": {
+            "additionalProperties": true,
+            "description": "一项资产",
+            "properties": {
+              "applies_to": {
+                "description": "作用于哪些镜头",
+                "items": {
+                  "description": "shot_id",
+                  "type": "string"
+                },
+                "minItems": 0,
+                "type": "array"
+              },
+              "asset_id": {
+                "description": "稳定标识，例如 C01 / SC01",
+                "type": "string"
+              },
+              "asset_kind": {
+                "description": "资产类型",
+                "enum": [
+                  "character_card",
+                  "scene_card",
+                  "prop_card",
+                  "safety_reference",
+                  "style_reference"
+                ],
+                "type": "string"
+              },
+              "height": {
+                "description": "高",
+                "type": "integer"
+              },
+              "prompt": {
+                "description": "生成提示词",
+                "type": "string"
+              },
+              "references": {
+                "description": "依赖的其它资产",
+                "items": {
+                  "description": "asset_id",
+                  "type": "string"
+                },
+                "minItems": 0,
+                "type": "array"
+              },
+              "status": {
+                "description": "状态",
+                "enum": [
+                  "planned",
+                  "generating",
+                  "ready",
+                  "failed"
+                ],
+                "type": "string"
+              },
+              "width": {
+                "description": "宽",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "asset_id",
+              "asset_kind",
+              "prompt",
+              "status"
+            ],
+            "type": "object"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "strategy": {
+          "description": "生成策略，例如先出开发片段再抽帧",
+          "type": "string"
+        }
+      },
+      "required": [
+        "backend",
+        "core_model_family",
+        "consistency_lock",
+        "requests"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "asset_plan"
+  ],
+  "title": "visual_assets 阶段产物",
+  "type": "object"
+}

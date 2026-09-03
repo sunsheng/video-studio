@@ -1,0 +1,94 @@
+{
+  "$id": "https://github.com/sunsheng/video-studio/schema/prompt_pack.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": true,
+  "description": "studio.submit_stage 在阶段 prompt_pack 接受的 outputs 形状。顶层键固定为 prompt_pack。",
+  "properties": {
+    "prompt_pack": {
+      "additionalProperties": true,
+      "description": "逐镜头 prompt 与 ComfyUI workflow 参数",
+      "properties": {
+        "core_model_family": {
+          "description": "核心模型系列",
+          "type": "string"
+        },
+        "shots": {
+          "description": "逐镜头参数",
+          "items": {
+            "additionalProperties": true,
+            "description": "一个镜头的 prompt",
+            "properties": {
+              "fps": {
+                "description": "帧率",
+                "type": "integer"
+              },
+              "height": {
+                "description": "高",
+                "type": "integer"
+              },
+              "length_frames": {
+                "description": "帧数",
+                "type": "integer"
+              },
+              "negative": {
+                "description": "负向提示词",
+                "type": "string"
+              },
+              "positive": {
+                "description": "正向提示词",
+                "type": "string"
+              },
+              "references": {
+                "description": "引用的视觉资产",
+                "items": {
+                  "description": "asset_id",
+                  "type": "string"
+                },
+                "minItems": 0,
+                "type": "array"
+              },
+              "seed": {
+                "description": "随机种子。固定以便复现",
+                "type": "integer"
+              },
+              "shot_id": {
+                "description": "对应分镜的 shot_id",
+                "type": "string"
+              },
+              "width": {
+                "description": "宽",
+                "type": "integer"
+              },
+              "workflow": {
+                "description": "使用的已验证 workflow 名，例如 minimax_h3/t2v",
+                "type": "string"
+              }
+            },
+            "required": [
+              "shot_id",
+              "workflow",
+              "positive",
+              "width",
+              "height",
+              "length_frames",
+              "fps"
+            ],
+            "type": "object"
+          },
+          "minItems": 1,
+          "type": "array"
+        }
+      },
+      "required": [
+        "core_model_family",
+        "shots"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "prompt_pack"
+  ],
+  "title": "prompt_pack 阶段产物",
+  "type": "object"
+}

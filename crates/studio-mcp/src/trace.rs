@@ -36,7 +36,9 @@ pub struct Trace {
 
 impl Trace {
     pub fn at(bundle_root: &Path) -> Trace {
-        Trace { path: bundle_root.join(TRACE_FILE) }
+        Trace {
+            path: bundle_root.join(TRACE_FILE),
+        }
     }
 
     /// 写失败不影响主流程——留痕是辅助，不是契约。
@@ -45,7 +47,11 @@ impl Trace {
             let _ = std::fs::create_dir_all(parent);
         }
         if let Ok(line) = serde_json::to_string(rec) {
-            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&self.path) {
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.path)
+            {
                 let _ = writeln!(f, "{line}");
             }
         }
@@ -53,8 +59,12 @@ impl Trace {
 
     pub fn read(bundle_root: &Path) -> Vec<TraceRecord> {
         let path = bundle_root.join(TRACE_FILE);
-        let Ok(text) = std::fs::read_to_string(path) else { return Vec::new() };
-        text.lines().filter_map(|l| serde_json::from_str(l).ok()).collect()
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return Vec::new();
+        };
+        text.lines()
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .collect()
     }
 }
 

@@ -52,7 +52,10 @@ pub fn run(program_dir: Option<&std::path::Path>, bundle: Option<&std::path::Pat
                 detail: format!(
                     "{}{}",
                     st.path.clone().unwrap_or_default(),
-                    st.version.as_ref().map(|v| format!("（{v}）")).unwrap_or_default()
+                    st.version
+                        .as_ref()
+                        .map(|v| format!("（{v}）"))
+                        .unwrap_or_default()
                 ),
                 remedy: None,
             });
@@ -156,7 +159,10 @@ fn check_codex_config(root: &std::path::Path) -> Check {
 pub fn fix_codex_config(root: &std::path::Path, studiod_path: &str) -> std::io::Result<()> {
     let dir = root.join(".codex");
     std::fs::create_dir_all(&dir)?;
-    std::fs::write(dir.join("config.toml"), crate::assets::codex_config(studiod_path))
+    std::fs::write(
+        dir.join("config.toml"),
+        crate::assets::codex_config(studiod_path),
+    )
 }
 
 pub fn render(report: &Report) -> String {

@@ -1,0 +1,149 @@
+{
+  "$id": "https://github.com/sunsheng/video-studio/schema/idea.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": true,
+  "description": "studio.submit_stage 在阶段 idea 接受的 outputs 形状。顶层键固定为 brief。",
+  "properties": {
+    "brief": {
+      "additionalProperties": true,
+      "description": "把用户创意整理成可执行 brief",
+      "properties": {
+        "aspect_ratio": {
+          "description": "画幅",
+          "enum": [
+            "9:16",
+            "16:9",
+            "4:3",
+            "1:1"
+          ],
+          "type": "string"
+        },
+        "assumptions": {
+          "description": "对模糊输入所做的假设，必须写清",
+          "items": {
+            "description": "一条假设",
+            "type": "string"
+          },
+          "minItems": 0,
+          "type": "array"
+        },
+        "audience": {
+          "description": "目标受众",
+          "type": "string"
+        },
+        "delivery_spec": {
+          "description": "交付规格，例如 1080x1920, 30fps, H.264/AAC",
+          "type": "string"
+        },
+        "duration_seconds": {
+          "description": "总时长（秒）",
+          "minimum": 1.0,
+          "type": "number"
+        },
+        "explicit_exclusions": {
+          "description": "明确不做的事",
+          "items": {
+            "description": "一条",
+            "type": "string"
+          },
+          "minItems": 0,
+          "type": "array"
+        },
+        "hook_0_3s": {
+          "description": "前三秒钩子",
+          "type": "string"
+        },
+        "logline": {
+          "description": "一句话概括",
+          "type": "string"
+        },
+        "platform": {
+          "description": "发布平台，例如「抖音竖屏短视频」",
+          "type": "string"
+        },
+        "protagonist": {
+          "description": "主角设定，用于跨镜头一致性"
+        },
+        "rights_and_safety_risks": {
+          "description": "版权与安全风险",
+          "items": {
+            "additionalProperties": true,
+            "description": "一条风险",
+            "properties": {
+              "level": {
+                "description": "等级：可规避 / 需用户决定 / 不可接受",
+                "type": "string"
+              },
+              "mitigation": {
+                "description": "规避方式",
+                "type": "string"
+              },
+              "risk": {
+                "description": "风险",
+                "type": "string"
+              }
+            },
+            "required": [
+              "risk",
+              "level"
+            ],
+            "type": "object"
+          },
+          "minItems": 0,
+          "type": "array"
+        },
+        "shot_count": {
+          "description": "镜头数",
+          "type": "integer"
+        },
+        "story_beats": {
+          "description": "故事节拍，逐镜头一条",
+          "items": {
+            "description": "一个节拍",
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "success_metrics": {
+          "description": "可验收的成功标准",
+          "items": {
+            "description": "一条标准",
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "theme": {
+          "description": "主题",
+          "type": "string"
+        },
+        "title": {
+          "description": "作品标题",
+          "type": "string"
+        },
+        "tone": {
+          "description": "情绪基调",
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "logline",
+        "platform",
+        "audience",
+        "duration_seconds",
+        "shot_count",
+        "aspect_ratio",
+        "story_beats",
+        "success_metrics"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "brief"
+  ],
+  "title": "idea 阶段产物",
+  "type": "object"
+}

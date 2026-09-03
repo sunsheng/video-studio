@@ -1,0 +1,57 @@
+{
+  "$id": "https://github.com/sunsheng/video-studio/schema/review.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": true,
+  "description": "studio.submit_stage 在阶段 review 接受的 outputs 形状。顶层键固定为 review。",
+  "properties": {
+    "review": {
+      "additionalProperties": true,
+      "description": "验收报告（由控制面产出）",
+      "properties": {
+        "checks": {
+          "description": "逐项检查",
+          "items": {
+            "additionalProperties": true,
+            "description": "一项",
+            "properties": {
+              "detail": {
+                "description": "依据。必须来自实际媒体元数据，不能是推断",
+                "type": "string"
+              },
+              "name": {
+                "description": "检查项",
+                "type": "string"
+              },
+              "passed": {
+                "description": "结果",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "name",
+              "passed",
+              "detail"
+            ],
+            "type": "object"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "passed": {
+          "description": "是否通过",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "passed",
+        "checks"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "review"
+  ],
+  "title": "review 阶段产物",
+  "type": "object"
+}

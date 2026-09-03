@@ -1,0 +1,33 @@
+# 固定模型契约。
+#
+# 这些组合是真机验证过的。缺失、校验失败或 OOM 时必须停下并报
+# model_contract_violation，**不允许静默替换成 pruned / 量化变体**。
+#
+# 这份契约由控制面校验，Agent 不需要知道其中任何一个文件名。
+
+[minimax_h3]
+description = "默认核心系列。T2V / I2V（可选首尾帧）与 R2V 共用同一套编码器与 VAE。"
+diffusion_t2v = "minimax_h3_fl2va_int8_convrot.safetensors"
+diffusion_r2v = "minimax_h3_ref2va_int8_convrot.safetensors"
+text_encoder  = "qwen3vl_32b_minimax_h3_int8_convrot.safetensors"
+video_vae     = "minimax_h3_video_vae_fp16.safetensors"
+audio_vae     = "minimax_h3_audio_vae_fp32.safetensors"
+forbidden     = ["*_pruned_*", "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"]
+
+[ltx2_5]
+description = "两个 Gemma 文件分别承担提示词生成和条件编码，不得互换。"
+diffusion       = "ltx-2.5-22b-distilled-transformer-comfy-int8-convrot.safetensors"
+prompt_encoder  = "gemma4_e2b_it_int8_convrot.safetensors"
+cond_encoder    = "gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors"
+video_vae       = "ltx-2.5-video-vae-bf16.safetensors"
+audio_vae       = "ltx-2.5-audio-vae-bf16.safetensors"
+upscaler        = "ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors"
+
+[wan2_2_14b]
+description = "默认走官方非 Turbo 20 步分支，不加载 LoRA。与 WAN Animate 2 是不同系列。"
+t2v_high     = "wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors"
+t2v_low      = "wan2.2_t2v_low_noise_14B_fp8_scaled.safetensors"
+i2v_high     = "wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors"
+i2v_low      = "wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors"
+text_encoder = "umt5_xxl_fp8_e4m3fn_scaled.safetensors"
+vae          = "wan_2.1_vae.safetensors"

@@ -105,12 +105,15 @@ impl Comfy {
 
     /// 选一个健康且队列最短的节点。一个都没有就结构化阻塞，**不降级**。
     pub fn pick_node(&self) -> Result<String> {
-        let mut healthy: Vec<NodeHealth> = self.health().into_iter().filter(|h| h.reachable).collect();
+        let mut healthy: Vec<NodeHealth> =
+            self.health().into_iter().filter(|h| h.reachable).collect();
         healthy.sort_by_key(|h| h.queue_depth);
         healthy
             .first()
             .map(|h| h.url.clone())
-            .ok_or_else(|| StudioError::ComfyUnavailable { tried: self.nodes.clone() })
+            .ok_or_else(|| StudioError::ComfyUnavailable {
+                tried: self.nodes.clone(),
+            })
     }
 
     /// 提交一张 API 格式的节点图。
@@ -120,15 +123,24 @@ impl Comfy {
             .agent()
             .post(&format!("{node}/prompt"))
             .send_json(body)
-            .map_err(|e| StudioError::ComfyFailed { node: node.into(), detail: short_error(&e) })?;
-        let v: Value = resp
-            .into_json()
-            .map_err(|e| StudioError::ComfyFailed { node: node.into(), detail: format!("提交返回不是 JSON：{e}") })?;
-        let prompt_id = v["prompt_id"].as_str().ok_or_else(|| StudioError::ComfyFailed {
+            .map_err(|e| StudioError::ComfyFailed {
+                node: node.into(),
+                detail: short_error(&e),
+            })?;
+        let v: Value = resp.into_json().map_err(|e| StudioError::ComfyFailed {
             node: node.into(),
-            detail: format!("提交返回里没有 prompt_id：{v}"),
+            detail: format!("提交返回不是 JSON：{e}"),
         })?;
-        Ok(Submission { node: node.to_string(), prompt_id: prompt_id.to_string() })
+        let prompt_id = v["prompt_id"]
+            .as_str()
+            .ok_or_else(|| StudioError::ComfyFailed {
+                node: node.into(),
+                detail: format!("提交返回里没有 prompt_id：{v}"),
+            })?;
+        Ok(Submission {
+            node: node.to_string(),
+            prompt_id: prompt_id.to_string(),
+        })
     }
 
     /// 轮询直到出结果或超时。返回该次执行产出的文件清单。
@@ -141,7 +153,11 @@ impl Comfy {
             if started.elapsed() > self.timeout {
                 return Err(StudioError::ComfyFailed {
                     node: sub.node.clone(),
-                    detail: format!("等待 {} 超过 {} 秒仍无结果", sub.prompt_id, self.timeout.as_secs()),
+                    detail: format!(
+                        "等待 {} 超过 {} 秒仍无结果",
+                        sub.prompt_id,
+                        self.timeout.as_secs()
+                    ),
                 });
             }
             std::thread::sleep(self.poll);
@@ -155,12 +171,18 @@ impl Comfy {
             .agent()
             .get(&url)
             .call()
-            .map_err(|e| StudioError::ComfyFailed { node: sub.node.clone(), detail: short_error(&e) })?;
-        let v: Value = resp
-            .into_json()
-            .map_err(|e| StudioError::ComfyFailed { node: sub.node.clone(), detail: format!("历史返回不是 JSON：{e}") })?;
+            .map_err(|e| StudioError::ComfyFailed {
+                node: sub.node.clone(),
+                detail: short_error(&e),
+            })?;
+        let v: Value = resp.into_json().map_err(|e| StudioError::ComfyFailed {
+            node: sub.node.clone(),
+            detail: format!("历史返回不是 JSON：{e}"),
+        })?;
 
-        let Some(entry) = v.get(&sub.prompt_id) else { return Ok(None) };
+        let Some(entry) = v.get(&sub.prompt_id) else {
+            return Ok(None);
+        };
 
         if let Some(status) = entry.get("status") {
             if status.get("status_str").and_then(|s| s.as_str()) == Some("error") {
@@ -169,7 +191,10 @@ impl Comfy {
                     detail: extract_error(status),
                 });
             }
-            let completed = status.get("completed").and_then(|c| c.as_bool()).unwrap_or(false);
+            let completed = status
+                .get("completed")
+                .and_then(|c| c.as_bool())
+                .unwrap_or(false);
             if !completed && entry.get("outputs").is_none() {
                 return Ok(None);
             }
@@ -194,14 +219,19 @@ impl Comfy {
             .agent()
             .get(&url)
             .call()
-            .map_err(|e| StudioError::ComfyFailed { node: node.into(), detail: short_error(&e) })?;
+            .map_err(|e| StudioError::ComfyFailed {
+                node: node.into(),
+                detail: short_error(&e),
+            })?;
         if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| StudioError::internal(format!("建目录失败：{e}")))?;
+            std::fs::create_dir_all(parent)
+                .map_err(|e| StudioError::internal(format!("建目录失败：{e}")))?;
         }
         let mut reader = resp.into_reader();
         let mut out = std::fs::File::create(dest)
             .map_err(|e| StudioError::internal(format!("创建 {} 失败：{e}", dest.display())))?;
-        std::io::copy(&mut reader, &mut out).map_err(|e| StudioError::internal(format!("下载失败：{e}")))
+        std::io::copy(&mut reader, &mut out)
+            .map_err(|e| StudioError::internal(format!("下载失败：{e}")))
     }
 
     /// 上传一张参考图作为 workflow 的输入。
@@ -210,7 +240,8 @@ impl Comfy {
         let mut body = Vec::new();
         body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
         body.extend_from_slice(
-            format!("Content-Disposition: form-data; name=\"image\"; filename=\"{name}\"\r\n").as_bytes(),
+            format!("Content-Disposition: form-data; name=\"image\"; filename=\"{name}\"\r\n")
+                .as_bytes(),
         );
         body.extend_from_slice(b"Content-Type: application/octet-stream\r\n\r\n");
         body.extend_from_slice(bytes);
@@ -219,12 +250,19 @@ impl Comfy {
         let resp = self
             .agent()
             .post(&format!("{node}/upload/image"))
-            .set("Content-Type", &format!("multipart/form-data; boundary={boundary}"))
+            .set(
+                "Content-Type",
+                &format!("multipart/form-data; boundary={boundary}"),
+            )
             .send_bytes(&body)
-            .map_err(|e| StudioError::ComfyFailed { node: node.into(), detail: short_error(&e) })?;
-        let v: Value = resp
-            .into_json()
-            .map_err(|e| StudioError::ComfyFailed { node: node.into(), detail: format!("上传返回不是 JSON：{e}") })?;
+            .map_err(|e| StudioError::ComfyFailed {
+                node: node.into(),
+                detail: short_error(&e),
+            })?;
+        let v: Value = resp.into_json().map_err(|e| StudioError::ComfyFailed {
+            node: node.into(),
+            detail: format!("上传返回不是 JSON：{e}"),
+        })?;
         Ok(v["name"].as_str().unwrap_or(name).to_string())
     }
 }
@@ -237,12 +275,19 @@ fn queue_depth(v: &Value) -> usize {
 
 fn collect_files(outputs: &Value) -> Vec<RemoteFile> {
     let mut files = Vec::new();
-    let Some(map) = outputs.as_object() else { return files };
+    let Some(map) = outputs.as_object() else {
+        return files;
+    };
     for node_out in map.values() {
-        let Some(obj) = node_out.as_object() else { continue };
+        let Some(obj) = node_out.as_object() else {
+            continue;
+        };
         for (key, list) in obj {
             // ComfyUI 按类型分组：images / gifs / videos / audio ...
-            if !matches!(key.as_str(), "images" | "gifs" | "videos" | "audio" | "files") {
+            if !matches!(
+                key.as_str(),
+                "images" | "gifs" | "videos" | "audio" | "files"
+            ) {
                 continue;
             }
             let Some(arr) = list.as_array() else { continue };
@@ -261,14 +306,24 @@ fn extract_error(status: &Value) -> String {
         for m in msgs {
             if m.get(0).and_then(|s| s.as_str()) == Some("execution_error") {
                 if let Some(detail) = m.get(1) {
-                    let node = detail.get("node_type").and_then(|s| s.as_str()).unwrap_or("未知节点");
-                    let msg = detail.get("exception_message").and_then(|s| s.as_str()).unwrap_or("未提供原因");
+                    let node = detail
+                        .get("node_type")
+                        .and_then(|s| s.as_str())
+                        .unwrap_or("未知节点");
+                    let msg = detail
+                        .get("exception_message")
+                        .and_then(|s| s.as_str())
+                        .unwrap_or("未提供原因");
                     return format!("{node}: {msg}");
                 }
             }
         }
     }
-    status.get("status_str").and_then(|s| s.as_str()).unwrap_or("执行失败").to_string()
+    status
+        .get("status_str")
+        .and_then(|s| s.as_str())
+        .unwrap_or("执行失败")
+        .to_string()
 }
 
 fn short_error(e: &ureq::Error) -> String {
@@ -281,7 +336,9 @@ fn short_error(e: &ureq::Error) -> String {
 fn urlencode(s: &str) -> String {
     s.bytes()
         .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (b as char).to_string()
+            }
             _ => format!("%{b:02X}"),
         })
         .collect()
@@ -326,7 +383,10 @@ mod tests {
                 let _ = stream.flush();
             }
         });
-        Stub { url: format!("http://127.0.0.1:{port}"), _handle: handle }
+        Stub {
+            url: format!("http://127.0.0.1:{port}"),
+            _handle: handle,
+        }
     }
 
     #[test]
@@ -336,12 +396,19 @@ mod tests {
         let e = c.pick_node().unwrap_err();
         assert_eq!(e.code(), "comfy_unavailable");
         assert!(e.remedy().contains("COMFY_NODES"));
-        assert!(e.remedy().contains("不要降级"), "缺节点时必须明确禁止换模型：{}", e.remedy());
+        assert!(
+            e.remedy().contains("不要降级"),
+            "缺节点时必须明确禁止换模型：{}",
+            e.remedy()
+        );
     }
 
     #[test]
     fn health_reports_queue_depth() {
-        let s = stub(vec![("/queue", json!({ "queue_running": [1], "queue_pending": [1, 2] }))]);
+        let s = stub(vec![(
+            "/queue",
+            json!({ "queue_running": [1], "queue_pending": [1, 2] }),
+        )]);
         let c = Comfy::new(vec![s.url.clone()], 5, 1);
         let h = c.health();
         assert!(h[0].reachable);
@@ -350,17 +417,32 @@ mod tests {
 
     #[test]
     fn the_shortest_queue_wins() {
-        let busy = stub(vec![("/queue", json!({ "queue_running": [1], "queue_pending": [1, 2, 3] }))]);
-        let idle = stub(vec![("/queue", json!({ "queue_running": [], "queue_pending": [] }))]);
+        let busy = stub(vec![(
+            "/queue",
+            json!({ "queue_running": [1], "queue_pending": [1, 2, 3] }),
+        )]);
+        let idle = stub(vec![(
+            "/queue",
+            json!({ "queue_running": [], "queue_pending": [] }),
+        )]);
         let c = Comfy::new(vec![busy.url.clone(), idle.url.clone()], 5, 1);
         assert_eq!(c.pick_node().unwrap(), idle.url);
     }
 
     #[test]
     fn submit_returns_the_prompt_id_for_traceability() {
-        let s = stub(vec![("/prompt", json!({ "prompt_id": "abc-123", "number": 1 }))]);
+        let s = stub(vec![(
+            "/prompt",
+            json!({ "prompt_id": "abc-123", "number": 1 }),
+        )]);
         let c = Comfy::new(vec![s.url.clone()], 5, 1);
-        let sub = c.submit(&s.url, &json!({ "1": { "class_type": "X", "inputs": {} } }), "cid").unwrap();
+        let sub = c
+            .submit(
+                &s.url,
+                &json!({ "1": { "class_type": "X", "inputs": {} } }),
+                "cid",
+            )
+            .unwrap();
         assert_eq!(sub.prompt_id, "abc-123");
     }
 
@@ -374,7 +456,10 @@ mod tests {
             }}),
         )]);
         let c = Comfy::new(vec![s.url.clone()], 5, 1);
-        let sub = Submission { node: s.url.clone(), prompt_id: "abc-123".into() };
+        let sub = Submission {
+            node: s.url.clone(),
+            prompt_id: "abc-123".into(),
+        };
         let files = c.try_history(&sub).unwrap().unwrap();
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].filename, "sh01.mp4");
@@ -384,7 +469,10 @@ mod tests {
     fn a_still_running_prompt_is_not_an_error() {
         let s = stub(vec![("/history/", json!({}))]);
         let c = Comfy::new(vec![s.url.clone()], 5, 1);
-        let sub = Submission { node: s.url.clone(), prompt_id: "abc-123".into() };
+        let sub = Submission {
+            node: s.url.clone(),
+            prompt_id: "abc-123".into(),
+        };
         assert!(c.try_history(&sub).unwrap().is_none());
     }
 
@@ -397,7 +485,10 @@ mod tests {
                                                    "exception_message": "CUDA out of memory" }]] } }}),
         )]);
         let c = Comfy::new(vec![s.url.clone()], 5, 1);
-        let sub = Submission { node: s.url.clone(), prompt_id: "abc-123".into() };
+        let sub = Submission {
+            node: s.url.clone(),
+            prompt_id: "abc-123".into(),
+        };
         let e = c.try_history(&sub).unwrap_err();
         assert_eq!(e.code(), "comfy_failed");
         assert!(e.message().contains("KSampler"));

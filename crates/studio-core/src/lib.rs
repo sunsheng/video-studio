@@ -7,16 +7,16 @@
 //! 上层 crate 负责把这里的决策落到 SQLite 与文件系统。
 
 pub mod contract;
+pub mod error;
 #[cfg(any(test, feature = "fixtures"))]
 pub mod fixtures;
-pub mod error;
 pub mod schema;
 pub mod stage;
 pub mod state;
 
 pub use contract::{
-    ActionKind, AnswerOption, Blocked, Confirmation, Envelope, Event, NextAction, Outcome, Progress,
-    ProjectInfo, ProjectStatus, Question, SelectionType, WaitingOn,
+    ActionKind, AnswerOption, Blocked, Confirmation, Envelope, Event, NextAction, Outcome,
+    Progress, ProjectInfo, ProjectStatus, Question, SelectionType, WaitingOn,
 };
 pub use error::{Result, StudioError, Violation};
 pub use stage::{Capability, StageId, StageKind, StageSpec, STAGE_GRAPH};

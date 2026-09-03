@@ -1,0 +1,61 @@
+{
+  "$id": "https://github.com/sunsheng/video-studio/schema/render.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": true,
+  "description": "studio.submit_stage 在阶段 render 接受的 outputs 形状。顶层键固定为 render。",
+  "properties": {
+    "render": {
+      "additionalProperties": true,
+      "description": "渲染结果登记（由控制面产出）",
+      "properties": {
+        "shots": {
+          "description": "每镜头一条",
+          "items": {
+            "additionalProperties": true,
+            "description": "一镜结果",
+            "properties": {
+              "duration_seconds": {
+                "description": "实际时长",
+                "type": "number"
+              },
+              "node": {
+                "description": "承载的 ComfyUI 节点",
+                "type": "string"
+              },
+              "path": {
+                "description": "产出文件的 bundle 内相对路径",
+                "type": "string"
+              },
+              "prompt_id": {
+                "description": "ComfyUI 的 prompt_id，用于追溯",
+                "type": "string"
+              },
+              "shot_id": {
+                "description": "镜头标识",
+                "type": "string"
+              }
+            },
+            "required": [
+              "shot_id",
+              "node",
+              "prompt_id",
+              "path"
+            ],
+            "type": "object"
+          },
+          "minItems": 1,
+          "type": "array"
+        }
+      },
+      "required": [
+        "shots"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "render"
+  ],
+  "title": "render 阶段产物",
+  "type": "object"
+}

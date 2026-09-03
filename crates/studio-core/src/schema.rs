@@ -14,32 +14,76 @@ use serde_json::{json, Value};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Schema {
-    Object { desc: &'static str, props: Vec<(&'static str, Schema)>, required: Vec<&'static str> },
-    Array { desc: &'static str, items: Box<Schema>, min_items: usize },
-    Str { desc: &'static str, allowed: Vec<&'static str> },
-    Num { desc: &'static str, min: Option<f64>, max: Option<f64> },
-    Int { desc: &'static str },
-    Bool { desc: &'static str },
-    Any { desc: &'static str },
+    Object {
+        desc: &'static str,
+        props: Vec<(&'static str, Schema)>,
+        required: Vec<&'static str>,
+    },
+    Array {
+        desc: &'static str,
+        items: Box<Schema>,
+        min_items: usize,
+    },
+    Str {
+        desc: &'static str,
+        allowed: Vec<&'static str>,
+    },
+    Num {
+        desc: &'static str,
+        min: Option<f64>,
+        max: Option<f64>,
+    },
+    Int {
+        desc: &'static str,
+    },
+    Bool {
+        desc: &'static str,
+    },
+    Any {
+        desc: &'static str,
+    },
 }
 
-pub fn obj(desc: &'static str, props: Vec<(&'static str, Schema)>, required: Vec<&'static str>) -> Schema {
-    Schema::Object { desc, props, required }
+pub fn obj(
+    desc: &'static str,
+    props: Vec<(&'static str, Schema)>,
+    required: Vec<&'static str>,
+) -> Schema {
+    Schema::Object {
+        desc,
+        props,
+        required,
+    }
 }
 pub fn arr(desc: &'static str, items: Schema, min_items: usize) -> Schema {
-    Schema::Array { desc, items: Box::new(items), min_items }
+    Schema::Array {
+        desc,
+        items: Box::new(items),
+        min_items,
+    }
 }
 pub fn text(desc: &'static str) -> Schema {
-    Schema::Str { desc, allowed: vec![] }
+    Schema::Str {
+        desc,
+        allowed: vec![],
+    }
 }
 pub fn one_of(desc: &'static str, allowed: Vec<&'static str>) -> Schema {
     Schema::Str { desc, allowed }
 }
 pub fn num(desc: &'static str) -> Schema {
-    Schema::Num { desc, min: None, max: None }
+    Schema::Num {
+        desc,
+        min: None,
+        max: None,
+    }
 }
 pub fn num_min(desc: &'static str, min: f64) -> Schema {
-    Schema::Num { desc, min: Some(min), max: None }
+    Schema::Num {
+        desc,
+        min: Some(min),
+        max: None,
+    }
 }
 pub fn int(desc: &'static str) -> Schema {
     Schema::Int { desc }
@@ -51,7 +95,11 @@ pub fn any(desc: &'static str) -> Schema {
 impl Schema {
     pub fn to_json(&self) -> Value {
         match self {
-            Schema::Object { desc, props, required } => {
+            Schema::Object {
+                desc,
+                props,
+                required,
+            } => {
                 let mut p = serde_json::Map::new();
                 for (k, v) in props {
                     p.insert((*k).to_string(), v.to_json());
@@ -64,7 +112,11 @@ impl Schema {
                     "additionalProperties": true
                 })
             }
-            Schema::Array { desc, items, min_items } => json!({
+            Schema::Array {
+                desc,
+                items,
+                min_items,
+            } => json!({
                 "type": "array", "description": desc,
                 "items": items.to_json(), "minItems": min_items
             }),
@@ -79,8 +131,12 @@ impl Schema {
                 let mut m = serde_json::Map::new();
                 m.insert("type".into(), json!("number"));
                 m.insert("description".into(), json!(desc));
-                if let Some(v) = min { m.insert("minimum".into(), json!(v)); }
-                if let Some(v) = max { m.insert("maximum".into(), json!(v)); }
+                if let Some(v) = min {
+                    m.insert("minimum".into(), json!(v));
+                }
+                if let Some(v) = max {
+                    m.insert("maximum".into(), json!(v));
+                }
                 Value::Object(m)
             }
             Schema::Int { desc } => json!({ "type": "integer", "description": desc }),
@@ -91,9 +147,14 @@ impl Schema {
 
     fn check(&self, v: &Value, path: &str, out: &mut Vec<Violation>) {
         match self {
-            Schema::Object { props, required, .. } => {
+            Schema::Object {
+                props, required, ..
+            } => {
                 let Some(map) = v.as_object() else {
-                    out.push(Violation::new(path, format!("应当是对象，实际是 {}", kind_of(v))));
+                    out.push(Violation::new(
+                        path,
+                        format!("应当是对象，实际是 {}", kind_of(v)),
+                    ));
                     return;
                 };
                 for r in required {
@@ -107,45 +168,72 @@ impl Schema {
                     }
                 }
             }
-            Schema::Array { items, min_items, .. } => {
+            Schema::Array {
+                items, min_items, ..
+            } => {
                 let Some(a) = v.as_array() else {
-                    out.push(Violation::new(path, format!("应当是数组，实际是 {}", kind_of(v))));
+                    out.push(Violation::new(
+                        path,
+                        format!("应当是数组，实际是 {}", kind_of(v)),
+                    ));
                     return;
                 };
                 if a.len() < *min_items {
-                    out.push(Violation::new(path, format!("至少需要 {} 项，实际 {}", min_items, a.len())));
+                    out.push(Violation::new(
+                        path,
+                        format!("至少需要 {} 项，实际 {}", min_items, a.len()),
+                    ));
                 }
                 for (i, child) in a.iter().enumerate() {
                     items.check(child, &format!("{path}[{i}]"), out);
                 }
             }
             Schema::Str { allowed, .. } => match v.as_str() {
-                None => out.push(Violation::new(path, format!("应当是字符串，实际是 {}", kind_of(v)))),
+                None => out.push(Violation::new(
+                    path,
+                    format!("应当是字符串，实际是 {}", kind_of(v)),
+                )),
                 Some(s) => {
                     if !allowed.is_empty() && !allowed.contains(&s) {
-                        out.push(Violation::new(path, format!("只能是 {} 之一，实际是 {s:?}", allowed.join(" / "))));
+                        out.push(Violation::new(
+                            path,
+                            format!("只能是 {} 之一，实际是 {s:?}", allowed.join(" / ")),
+                        ));
                     }
                 }
             },
             Schema::Num { min, max, .. } => match v.as_f64() {
-                None => out.push(Violation::new(path, format!("应当是数字，实际是 {}", kind_of(v)))),
+                None => out.push(Violation::new(
+                    path,
+                    format!("应当是数字，实际是 {}", kind_of(v)),
+                )),
                 Some(n) => {
                     if let Some(m) = min {
-                        if n < *m { out.push(Violation::new(path, format!("不能小于 {m}，实际 {n}"))); }
+                        if n < *m {
+                            out.push(Violation::new(path, format!("不能小于 {m}，实际 {n}")));
+                        }
                     }
                     if let Some(m) = max {
-                        if n > *m { out.push(Violation::new(path, format!("不能大于 {m}，实际 {n}"))); }
+                        if n > *m {
+                            out.push(Violation::new(path, format!("不能大于 {m}，实际 {n}")));
+                        }
                     }
                 }
             },
             Schema::Int { .. } => {
                 if !v.is_i64() && !v.is_u64() {
-                    out.push(Violation::new(path, format!("应当是整数，实际是 {}", kind_of(v))));
+                    out.push(Violation::new(
+                        path,
+                        format!("应当是整数，实际是 {}", kind_of(v)),
+                    ));
                 }
             }
             Schema::Bool { .. } => {
                 if !v.is_boolean() {
-                    out.push(Violation::new(path, format!("应当是布尔值，实际是 {}", kind_of(v))));
+                    out.push(Violation::new(
+                        path,
+                        format!("应当是布尔值，实际是 {}", kind_of(v)),
+                    ));
                 }
             }
             Schema::Any { .. } => {}
@@ -154,7 +242,11 @@ impl Schema {
 }
 
 fn join(path: &str, key: &str) -> String {
-    if path.is_empty() { key.to_string() } else { format!("{path}.{key}") }
+    if path.is_empty() {
+        key.to_string()
+    } else {
+        format!("{path}.{key}")
+    }
 }
 
 fn kind_of(v: &Value) -> &'static str {
@@ -174,7 +266,10 @@ pub fn validate(stage: StageId, outputs: &Outputs) -> Result<()> {
     let key = stage.output_key();
     let mut violations = Vec::new();
     match outputs.get(key) {
-        None => violations.push(Violation::new(key, format!("阶段 {stage} 的产物必须放在顶层键 {key} 下"))),
+        None => violations.push(Violation::new(
+            key,
+            format!("阶段 {stage} 的产物必须放在顶层键 {key} 下"),
+        )),
         Some(v) => stage_schema(stage).check(v, key, &mut violations),
     }
     if violations.is_empty() {
@@ -187,174 +282,435 @@ pub fn validate(stage: StageId, outputs: &Outputs) -> Result<()> {
 /// 阶段产物在 outputs 里那一层的 schema（不含顶层键）。
 pub fn stage_schema(stage: StageId) -> Schema {
     match stage {
-        StageId::Idea => obj("把用户创意整理成可执行 brief", vec![
-            ("title", text("作品标题")),
-            ("logline", text("一句话概括")),
-            ("platform", text("发布平台，例如「抖音竖屏短视频」")),
-            ("audience", text("目标受众")),
-            ("theme", text("主题")),
-            ("tone", text("情绪基调")),
-            ("duration_seconds", num_min("总时长（秒）", 1.0)),
-            ("shot_count", int("镜头数")),
-            ("aspect_ratio", one_of("画幅", vec!["9:16", "16:9", "4:3", "1:1"])),
-            ("delivery_spec", text("交付规格，例如 1080x1920, 30fps, H.264/AAC")),
-            ("hook_0_3s", text("前三秒钩子")),
-            ("story_beats", arr("故事节拍，逐镜头一条", text("一个节拍"), 1)),
-            ("success_metrics", arr("可验收的成功标准", text("一条标准"), 1)),
-            ("rights_and_safety_risks", arr("版权与安全风险", obj("一条风险", vec![
-                ("risk", text("风险")),
-                ("level", text("等级：可规避 / 需用户决定 / 不可接受")),
-                ("mitigation", text("规避方式")),
-            ], vec!["risk", "level"]), 0)),
-            ("assumptions", arr("对模糊输入所做的假设，必须写清", text("一条假设"), 0)),
-            ("explicit_exclusions", arr("明确不做的事", text("一条"), 0)),
-            ("protagonist", any("主角设定，用于跨镜头一致性")),
-        ], vec!["title", "logline", "platform", "audience", "duration_seconds",
-                "shot_count", "aspect_ratio", "story_beats", "success_metrics"]),
+        StageId::Idea => obj(
+            "把用户创意整理成可执行 brief",
+            vec![
+                ("title", text("作品标题")),
+                ("logline", text("一句话概括")),
+                ("platform", text("发布平台，例如「抖音竖屏短视频」")),
+                ("audience", text("目标受众")),
+                ("theme", text("主题")),
+                ("tone", text("情绪基调")),
+                ("duration_seconds", num_min("总时长（秒）", 1.0)),
+                ("shot_count", int("镜头数")),
+                (
+                    "aspect_ratio",
+                    one_of("画幅", vec!["9:16", "16:9", "4:3", "1:1"]),
+                ),
+                (
+                    "delivery_spec",
+                    text("交付规格，例如 1080x1920, 30fps, H.264/AAC"),
+                ),
+                ("hook_0_3s", text("前三秒钩子")),
+                (
+                    "story_beats",
+                    arr("故事节拍，逐镜头一条", text("一个节拍"), 1),
+                ),
+                (
+                    "success_metrics",
+                    arr("可验收的成功标准", text("一条标准"), 1),
+                ),
+                (
+                    "rights_and_safety_risks",
+                    arr(
+                        "版权与安全风险",
+                        obj(
+                            "一条风险",
+                            vec![
+                                ("risk", text("风险")),
+                                ("level", text("等级：可规避 / 需用户决定 / 不可接受")),
+                                ("mitigation", text("规避方式")),
+                            ],
+                            vec!["risk", "level"],
+                        ),
+                        0,
+                    ),
+                ),
+                (
+                    "assumptions",
+                    arr("对模糊输入所做的假设，必须写清", text("一条假设"), 0),
+                ),
+                ("explicit_exclusions", arr("明确不做的事", text("一条"), 0)),
+                ("protagonist", any("主角设定，用于跨镜头一致性")),
+            ],
+            vec![
+                "title",
+                "logline",
+                "platform",
+                "audience",
+                "duration_seconds",
+                "shot_count",
+                "aspect_ratio",
+                "story_beats",
+                "success_metrics",
+            ],
+        ),
 
-        StageId::Selection => obj("从可行性、受众匹配和发布风险筛选方案", vec![
-            ("recommendation", text("推荐方案的标识")),
-            ("feasibility", obj("可行性", vec![
-                ("score", text("high / medium / low")),
-                ("rationale", text("判断依据")),
-                ("model_control", text("模型可控性说明")),
-                ("production_cost", text("制作成本")),
-            ], vec!["score", "rationale"])),
-            ("audience_fit", obj("受众匹配", vec![
-                ("hook_strength", text("钩子强度")),
-                ("benefit", text("观看收益")),
-                ("retention_plan", text("留存设计")),
-            ], vec!["hook_strength"])),
-            ("publishing_risks", obj("发布风险分级", vec![
-                ("avoidable", arr("可规避", text("一条"), 0)),
-                ("unacceptable", arr("不可接受", text("一条"), 0)),
-                ("user_decision", arr("需用户决定", text("一条"), 0)),
-            ], vec![])),
-            ("tradeoffs", text("取舍说明")),
-            ("acceptance_metrics", arr("验收标准", text("一条"), 1)),
-        ], vec!["recommendation", "feasibility", "audience_fit", "tradeoffs", "acceptance_metrics"]),
+        StageId::Selection => obj(
+            "从可行性、受众匹配和发布风险筛选方案",
+            vec![
+                ("recommendation", text("推荐方案的标识")),
+                (
+                    "feasibility",
+                    obj(
+                        "可行性",
+                        vec![
+                            ("score", text("high / medium / low")),
+                            ("rationale", text("判断依据")),
+                            ("model_control", text("模型可控性说明")),
+                            ("production_cost", text("制作成本")),
+                        ],
+                        vec!["score", "rationale"],
+                    ),
+                ),
+                (
+                    "audience_fit",
+                    obj(
+                        "受众匹配",
+                        vec![
+                            ("hook_strength", text("钩子强度")),
+                            ("benefit", text("观看收益")),
+                            ("retention_plan", text("留存设计")),
+                        ],
+                        vec!["hook_strength"],
+                    ),
+                ),
+                (
+                    "publishing_risks",
+                    obj(
+                        "发布风险分级",
+                        vec![
+                            ("avoidable", arr("可规避", text("一条"), 0)),
+                            ("unacceptable", arr("不可接受", text("一条"), 0)),
+                            ("user_decision", arr("需用户决定", text("一条"), 0)),
+                        ],
+                        vec![],
+                    ),
+                ),
+                ("tradeoffs", text("取舍说明")),
+                ("acceptance_metrics", arr("验收标准", text("一条"), 1)),
+            ],
+            vec![
+                "recommendation",
+                "feasibility",
+                "audience_fit",
+                "tradeoffs",
+                "acceptance_metrics",
+            ],
+        ),
 
-        StageId::Script => obj("故事结构、节奏与声音时间线", vec![
-            ("title", text("标题")),
-            ("total_duration_seconds", num_min("总时长，必须与各段之和一致", 1.0)),
-            ("shot_count", int("镜头数")),
-            ("timing_rule", text("时长分配规则。按内容智能分配时在这里说明依据")),
-            ("language", text("口播语言；无口播填 none")),
-            ("story_arc", arr("逐拍节奏", obj("一拍", vec![
-                ("beat_id", text("稳定标识，例如 beat_01")),
-                ("start", num_min("起点（秒）", 0.0)),
-                ("end", num_min("终点（秒）", 0.0)),
-                ("duration_seconds", num_min("时长（秒）", 0.1)),
-                ("purpose", text("这一拍要达成什么")),
-                ("visual", text("画面")),
-                ("audio", text("声音")),
-            ], vec!["beat_id", "start", "end", "duration_seconds", "purpose", "visual", "audio"]), 1)),
-            ("segments", arr("声音/字幕时间线", obj("一段", vec![
-                ("segment_id", text("标识")),
-                ("start", num_min("起点（秒）", 0.0)),
-                ("end", num_min("终点（秒）", 0.0)),
-                ("speaker", text("说话人；环境声填 ambient")),
-                ("text", text("台词/旁白；无则空串")),
-                ("subtitle_text", text("字幕；无则空串")),
-                ("source", text("声音来源")),
-            ], vec!["segment_id", "start", "end", "speaker"]), 1)),
-            ("subtitle_policy", any("字幕策略")),
-            ("audio_policy", any("音频策略：原生音频优先、外部音乐是否禁用、降级条件")),
-            ("safety_notes", arr("安全注意", text("一条"), 0)),
-        ], vec!["title", "total_duration_seconds", "shot_count", "timing_rule", "story_arc", "segments"]),
+        StageId::Script => obj(
+            "故事结构、节奏与声音时间线",
+            vec![
+                ("title", text("标题")),
+                (
+                    "total_duration_seconds",
+                    num_min("总时长，必须与各段之和一致", 1.0),
+                ),
+                ("shot_count", int("镜头数")),
+                (
+                    "timing_rule",
+                    text("时长分配规则。按内容智能分配时在这里说明依据"),
+                ),
+                ("language", text("口播语言；无口播填 none")),
+                (
+                    "story_arc",
+                    arr(
+                        "逐拍节奏",
+                        obj(
+                            "一拍",
+                            vec![
+                                ("beat_id", text("稳定标识，例如 beat_01")),
+                                ("start", num_min("起点（秒）", 0.0)),
+                                ("end", num_min("终点（秒）", 0.0)),
+                                ("duration_seconds", num_min("时长（秒）", 0.1)),
+                                ("purpose", text("这一拍要达成什么")),
+                                ("visual", text("画面")),
+                                ("audio", text("声音")),
+                            ],
+                            vec![
+                                "beat_id",
+                                "start",
+                                "end",
+                                "duration_seconds",
+                                "purpose",
+                                "visual",
+                                "audio",
+                            ],
+                        ),
+                        1,
+                    ),
+                ),
+                (
+                    "segments",
+                    arr(
+                        "声音/字幕时间线",
+                        obj(
+                            "一段",
+                            vec![
+                                ("segment_id", text("标识")),
+                                ("start", num_min("起点（秒）", 0.0)),
+                                ("end", num_min("终点（秒）", 0.0)),
+                                ("speaker", text("说话人；环境声填 ambient")),
+                                ("text", text("台词/旁白；无则空串")),
+                                ("subtitle_text", text("字幕；无则空串")),
+                                ("source", text("声音来源")),
+                            ],
+                            vec!["segment_id", "start", "end", "speaker"],
+                        ),
+                        1,
+                    ),
+                ),
+                ("subtitle_policy", any("字幕策略")),
+                (
+                    "audio_policy",
+                    any("音频策略：原生音频优先、外部音乐是否禁用、降级条件"),
+                ),
+                ("safety_notes", arr("安全注意", text("一条"), 0)),
+            ],
+            vec![
+                "title",
+                "total_duration_seconds",
+                "shot_count",
+                "timing_rule",
+                "story_arc",
+                "segments",
+            ],
+        ),
 
-        StageId::Storyboard => obj("逐镜头分镜：摄影机、灯光、构图与时长", vec![
-            ("title", text("标题")),
-            ("aspect_ratio", one_of("画幅", vec!["9:16", "16:9", "4:3", "1:1"])),
-            ("total_duration_seconds", num_min("总时长", 1.0)),
-            ("shot_count", int("镜头数")),
-            ("timing_basis", text("时长依据。不平均切分时说明为什么")),
-            ("character_lock", any("角色连续性锁定：外观、服装、机位签名、安全约束")),
-            ("shots", arr("镜头表", obj("一个镜头", vec![
-                ("shot_id", text("稳定标识，例如 sh01")),
-                ("start", num_min("起点（秒）", 0.0)),
-                ("end", num_min("终点（秒）", 0.0)),
-                ("duration_seconds", num_min("时长（秒）", 0.1)),
-                ("purpose", text("这个镜头的作用")),
-                ("shot_size", text("景别")),
-                ("angle", text("机位角度")),
-                ("camera_motion", text("镜头运动。每镜只保留一个主运动")),
-                ("lighting_color", text("灯光与色调")),
-                ("subject", text("主体")),
-                ("foreground", text("前景")),
-                ("midground", text("中景")),
-                ("background", text("背景")),
-                ("action_chain", text("动作链：起 -> 承 -> 收")),
-                ("first_frame", text("首帧")),
-                ("last_frame", text("尾帧")),
-                ("sound", text("声音")),
-                ("transition_to_next", text("转场方式")),
-            ], vec!["shot_id", "start", "end", "duration_seconds", "purpose",
-                    "shot_size", "camera_motion", "subject", "action_chain"]), 1)),
-        ], vec!["title", "aspect_ratio", "total_duration_seconds", "shot_count", "shots"]),
+        StageId::Storyboard => obj(
+            "逐镜头分镜：摄影机、灯光、构图与时长",
+            vec![
+                ("title", text("标题")),
+                (
+                    "aspect_ratio",
+                    one_of("画幅", vec!["9:16", "16:9", "4:3", "1:1"]),
+                ),
+                ("total_duration_seconds", num_min("总时长", 1.0)),
+                ("shot_count", int("镜头数")),
+                ("timing_basis", text("时长依据。不平均切分时说明为什么")),
+                (
+                    "character_lock",
+                    any("角色连续性锁定：外观、服装、机位签名、安全约束"),
+                ),
+                (
+                    "shots",
+                    arr(
+                        "镜头表",
+                        obj(
+                            "一个镜头",
+                            vec![
+                                ("shot_id", text("稳定标识，例如 sh01")),
+                                ("start", num_min("起点（秒）", 0.0)),
+                                ("end", num_min("终点（秒）", 0.0)),
+                                ("duration_seconds", num_min("时长（秒）", 0.1)),
+                                ("purpose", text("这个镜头的作用")),
+                                ("shot_size", text("景别")),
+                                ("angle", text("机位角度")),
+                                ("camera_motion", text("镜头运动。每镜只保留一个主运动")),
+                                ("lighting_color", text("灯光与色调")),
+                                ("subject", text("主体")),
+                                ("foreground", text("前景")),
+                                ("midground", text("中景")),
+                                ("background", text("背景")),
+                                ("action_chain", text("动作链：起 -> 承 -> 收")),
+                                ("first_frame", text("首帧")),
+                                ("last_frame", text("尾帧")),
+                                ("sound", text("声音")),
+                                ("transition_to_next", text("转场方式")),
+                            ],
+                            vec![
+                                "shot_id",
+                                "start",
+                                "end",
+                                "duration_seconds",
+                                "purpose",
+                                "shot_size",
+                                "camera_motion",
+                                "subject",
+                                "action_chain",
+                            ],
+                        ),
+                        1,
+                    ),
+                ),
+            ],
+            vec![
+                "title",
+                "aspect_ratio",
+                "total_duration_seconds",
+                "shot_count",
+                "shots",
+            ],
+        ),
 
-        StageId::VisualAssets => obj("角色卡、场景卡与参考资产计划", vec![
-            ("backend", text("生成后端，通常是 comfyui")),
-            ("core_model_family", text("核心模型系列，例如 minimax_h3")),
-            ("strategy", text("生成策略，例如先出开发片段再抽帧")),
-            ("fallback_policy", text("降级策略。默认结构化阻塞，不自动换系列")),
-            ("consistency_lock", any("一致性锁定：角色、机位、环境、安全、排版")),
-            ("requests", arr("资产请求", obj("一项资产", vec![
-                ("asset_id", text("稳定标识，例如 C01 / SC01")),
-                ("asset_kind", one_of("资产类型", vec![
-                    "character_card", "scene_card", "prop_card", "safety_reference", "style_reference",
-                ])),
-                ("prompt", text("生成提示词")),
-                ("width", int("宽")),
-                ("height", int("高")),
-                ("applies_to", arr("作用于哪些镜头", text("shot_id"), 0)),
-                ("references", arr("依赖的其它资产", text("asset_id"), 0)),
-                ("status", one_of("状态", vec!["planned", "generating", "ready", "failed"])),
-            ], vec!["asset_id", "asset_kind", "prompt", "status"]), 1)),
-        ], vec!["backend", "core_model_family", "consistency_lock", "requests"]),
+        StageId::VisualAssets => obj(
+            "角色卡、场景卡与参考资产计划",
+            vec![
+                ("backend", text("生成后端，通常是 comfyui")),
+                ("core_model_family", text("核心模型系列，例如 minimax_h3")),
+                ("strategy", text("生成策略，例如先出开发片段再抽帧")),
+                (
+                    "fallback_policy",
+                    text("降级策略。默认结构化阻塞，不自动换系列"),
+                ),
+                (
+                    "consistency_lock",
+                    any("一致性锁定：角色、机位、环境、安全、排版"),
+                ),
+                (
+                    "requests",
+                    arr(
+                        "资产请求",
+                        obj(
+                            "一项资产",
+                            vec![
+                                ("asset_id", text("稳定标识，例如 C01 / SC01")),
+                                (
+                                    "asset_kind",
+                                    one_of(
+                                        "资产类型",
+                                        vec![
+                                            "character_card",
+                                            "scene_card",
+                                            "prop_card",
+                                            "safety_reference",
+                                            "style_reference",
+                                        ],
+                                    ),
+                                ),
+                                ("prompt", text("生成提示词")),
+                                ("width", int("宽")),
+                                ("height", int("高")),
+                                ("applies_to", arr("作用于哪些镜头", text("shot_id"), 0)),
+                                ("references", arr("依赖的其它资产", text("asset_id"), 0)),
+                                (
+                                    "status",
+                                    one_of(
+                                        "状态",
+                                        vec!["planned", "generating", "ready", "failed"],
+                                    ),
+                                ),
+                            ],
+                            vec!["asset_id", "asset_kind", "prompt", "status"],
+                        ),
+                        1,
+                    ),
+                ),
+            ],
+            vec![
+                "backend",
+                "core_model_family",
+                "consistency_lock",
+                "requests",
+            ],
+        ),
 
-        StageId::PromptPack => obj("逐镜头 prompt 与 ComfyUI workflow 参数", vec![
-            ("core_model_family", text("核心模型系列")),
-            ("shots", arr("逐镜头参数", obj("一个镜头的 prompt", vec![
-                ("shot_id", text("对应分镜的 shot_id")),
-                ("workflow", text("使用的已验证 workflow 名，例如 minimax_h3/t2v")),
-                ("positive", text("正向提示词")),
-                ("negative", text("负向提示词")),
-                ("width", int("宽")),
-                ("height", int("高")),
-                ("length_frames", int("帧数")),
-                ("fps", int("帧率")),
-                ("seed", int("随机种子。固定以便复现")),
-                ("references", arr("引用的视觉资产", text("asset_id"), 0)),
-            ], vec!["shot_id", "workflow", "positive", "width", "height", "length_frames", "fps"]), 1)),
-        ], vec!["core_model_family", "shots"]),
+        StageId::PromptPack => obj(
+            "逐镜头 prompt 与 ComfyUI workflow 参数",
+            vec![
+                ("core_model_family", text("核心模型系列")),
+                (
+                    "shots",
+                    arr(
+                        "逐镜头参数",
+                        obj(
+                            "一个镜头的 prompt",
+                            vec![
+                                ("shot_id", text("对应分镜的 shot_id")),
+                                (
+                                    "workflow",
+                                    text("使用的已验证 workflow 名，例如 minimax_h3/t2v"),
+                                ),
+                                ("positive", text("正向提示词")),
+                                ("negative", text("负向提示词")),
+                                ("width", int("宽")),
+                                ("height", int("高")),
+                                ("length_frames", int("帧数")),
+                                ("fps", int("帧率")),
+                                ("seed", int("随机种子。固定以便复现")),
+                                ("references", arr("引用的视觉资产", text("asset_id"), 0)),
+                            ],
+                            vec![
+                                "shot_id",
+                                "workflow",
+                                "positive",
+                                "width",
+                                "height",
+                                "length_frames",
+                                "fps",
+                            ],
+                        ),
+                        1,
+                    ),
+                ),
+            ],
+            vec!["core_model_family", "shots"],
+        ),
 
-        StageId::Render => obj("渲染结果登记（由控制面产出）", vec![
-            ("shots", arr("每镜头一条", obj("一镜结果", vec![
-                ("shot_id", text("镜头标识")),
-                ("node", text("承载的 ComfyUI 节点")),
-                ("prompt_id", text("ComfyUI 的 prompt_id，用于追溯")),
-                ("path", text("产出文件的 bundle 内相对路径")),
-                ("duration_seconds", num("实际时长")),
-            ], vec!["shot_id", "node", "prompt_id", "path"]), 1)),
-        ], vec!["shots"]),
+        StageId::Render => obj(
+            "渲染结果登记（由控制面产出）",
+            vec![(
+                "shots",
+                arr(
+                    "每镜头一条",
+                    obj(
+                        "一镜结果",
+                        vec![
+                            ("shot_id", text("镜头标识")),
+                            ("node", text("承载的 ComfyUI 节点")),
+                            ("prompt_id", text("ComfyUI 的 prompt_id，用于追溯")),
+                            ("path", text("产出文件的 bundle 内相对路径")),
+                            ("duration_seconds", num("实际时长")),
+                        ],
+                        vec!["shot_id", "node", "prompt_id", "path"],
+                    ),
+                    1,
+                ),
+            )],
+            vec!["shots"],
+        ),
 
-        StageId::Post => obj("后期结果（由控制面产出）", vec![
-            ("video", text("成片的 bundle 内相对路径")),
-            ("cover", text("封面相对路径")),
-            ("subtitles", text("字幕相对路径")),
-            ("duration_seconds", num("成片实际时长")),
-            ("aspect_ratio", text("成片实际画幅")),
-        ], vec!["video", "duration_seconds", "aspect_ratio"]),
+        StageId::Post => obj(
+            "后期结果（由控制面产出）",
+            vec![
+                ("video", text("成片的 bundle 内相对路径")),
+                ("cover", text("封面相对路径")),
+                ("subtitles", text("字幕相对路径")),
+                ("duration_seconds", num("成片实际时长")),
+                ("aspect_ratio", text("成片实际画幅")),
+            ],
+            vec!["video", "duration_seconds", "aspect_ratio"],
+        ),
 
-        StageId::Review => obj("验收报告（由控制面产出）", vec![
-            ("passed", Schema::Bool { desc: "是否通过" }),
-            ("checks", arr("逐项检查", obj("一项", vec![
-                ("name", text("检查项")),
-                ("passed", Schema::Bool { desc: "结果" }),
-                ("detail", text("依据。必须来自实际媒体元数据，不能是推断")),
-            ], vec!["name", "passed", "detail"]), 1)),
-        ], vec!["passed", "checks"]),
+        StageId::Review => obj(
+            "验收报告（由控制面产出）",
+            vec![
+                (
+                    "passed",
+                    Schema::Bool {
+                        desc: "是否通过"
+                    },
+                ),
+                (
+                    "checks",
+                    arr(
+                        "逐项检查",
+                        obj(
+                            "一项",
+                            vec![
+                                ("name", text("检查项")),
+                                ("passed", Schema::Bool { desc: "结果" }),
+                                ("detail", text("依据。必须来自实际媒体元数据，不能是推断")),
+                            ],
+                            vec!["name", "passed", "detail"],
+                        ),
+                        1,
+                    ),
+                ),
+            ],
+            vec!["passed", "checks"],
+        ),
     }
 }
 
@@ -406,26 +762,31 @@ mod tests {
 
     #[test]
     fn violation_paths_point_at_the_exact_field() {
-        let bad = wrap(StageId::Script, json!({
-            "title": "千岛湖，把快乐装进十秒",
-            "total_duration_seconds": 10,
-            "shot_count": 5,
-            "timing_rule": "按动作复杂度分配",
-            "story_arc": [
-                { "beat_id": "beat_01", "start": 0, "end": 1.4, "duration_seconds": 1.4,
-                  "purpose": "地点钩子", "visual": "船头掠过湖面", "audio": "湖水轻拍" },
-                { "beat_id": "beat_02", "start": 1.4, "end": 3.4, "duration_seconds": "两秒",
-                  "purpose": "人物动作", "visual": "小跑", "audio": "脚步" }
-            ],
-            "segments": [
-                { "segment_id": "s01", "start": 0, "end": 1.4, "speaker": "ambient" }
-            ]
-        }));
+        let bad = wrap(
+            StageId::Script,
+            json!({
+                "title": "千岛湖，把快乐装进十秒",
+                "total_duration_seconds": 10,
+                "shot_count": 5,
+                "timing_rule": "按动作复杂度分配",
+                "story_arc": [
+                    { "beat_id": "beat_01", "start": 0, "end": 1.4, "duration_seconds": 1.4,
+                      "purpose": "地点钩子", "visual": "船头掠过湖面", "audio": "湖水轻拍" },
+                    { "beat_id": "beat_02", "start": 1.4, "end": 3.4, "duration_seconds": "两秒",
+                      "purpose": "人物动作", "visual": "小跑", "audio": "脚步" }
+                ],
+                "segments": [
+                    { "segment_id": "s01", "start": 0, "end": 1.4, "speaker": "ambient" }
+                ]
+            }),
+        );
         let e = validate(StageId::Script, &bad).unwrap_err();
         match e {
             StudioError::SchemaViolation { violations, .. } => {
                 assert!(
-                    violations.iter().any(|v| v.path == "script.story_arc[1].duration_seconds"),
+                    violations
+                        .iter()
+                        .any(|v| v.path == "script.story_arc[1].duration_seconds"),
                     "没有精确定位到出错字段：{violations:?}"
                 );
             }
@@ -435,55 +796,66 @@ mod tests {
 
     #[test]
     fn a_well_formed_script_passes() {
-        let good = wrap(StageId::Script, json!({
-            "title": "千岛湖，把快乐装进十秒",
-            "total_duration_seconds": 10,
-            "shot_count": 5,
-            "timing_rule": "按动作复杂度和信息量分配，合计 10 秒",
-            "language": "none",
-            "story_arc": [
-                { "beat_id": "beat_01", "start": 0,   "end": 1.4,  "duration_seconds": 1.4,
-                  "purpose": "地点钩子", "visual": "船头掠过清透湖面", "audio": "湖水轻拍船身" },
-                { "beat_id": "beat_02", "start": 1.4, "end": 3.4,  "duration_seconds": 2.0,
-                  "purpose": "人物动作", "visual": "沿步道轻快小跑", "audio": "轻快脚步与风声" },
-                { "beat_id": "beat_03", "start": 3.4, "end": 5.8,  "duration_seconds": 2.4,
-                  "purpose": "景色展开", "visual": "观景台举起手机取景", "audio": "快门声" },
-                { "beat_id": "beat_04", "start": 5.8, "end": 7.8,  "duration_seconds": 2.0,
-                  "purpose": "互动快乐", "visual": "举起冷饮轻碰杯", "audio": "碰杯声" },
-                { "beat_id": "beat_05", "start": 7.8, "end": 10.0, "duration_seconds": 2.2,
-                  "purpose": "情绪收束", "visual": "回头挥手", "audio": "环境声收尾" }
-            ],
-            "segments": [
-                { "segment_id": "s01", "start": 0, "end": 10, "speaker": "ambient",
-                  "text": "", "subtitle_text": "", "source": "核心模型原生环境声" }
-            ]
-        }));
+        let good = wrap(
+            StageId::Script,
+            json!({
+                "title": "千岛湖，把快乐装进十秒",
+                "total_duration_seconds": 10,
+                "shot_count": 5,
+                "timing_rule": "按动作复杂度和信息量分配，合计 10 秒",
+                "language": "none",
+                "story_arc": [
+                    { "beat_id": "beat_01", "start": 0,   "end": 1.4,  "duration_seconds": 1.4,
+                      "purpose": "地点钩子", "visual": "船头掠过清透湖面", "audio": "湖水轻拍船身" },
+                    { "beat_id": "beat_02", "start": 1.4, "end": 3.4,  "duration_seconds": 2.0,
+                      "purpose": "人物动作", "visual": "沿步道轻快小跑", "audio": "轻快脚步与风声" },
+                    { "beat_id": "beat_03", "start": 3.4, "end": 5.8,  "duration_seconds": 2.4,
+                      "purpose": "景色展开", "visual": "观景台举起手机取景", "audio": "快门声" },
+                    { "beat_id": "beat_04", "start": 5.8, "end": 7.8,  "duration_seconds": 2.0,
+                      "purpose": "互动快乐", "visual": "举起冷饮轻碰杯", "audio": "碰杯声" },
+                    { "beat_id": "beat_05", "start": 7.8, "end": 10.0, "duration_seconds": 2.2,
+                      "purpose": "情绪收束", "visual": "回头挥手", "audio": "环境声收尾" }
+                ],
+                "segments": [
+                    { "segment_id": "s01", "start": 0, "end": 10, "speaker": "ambient",
+                      "text": "", "subtitle_text": "", "source": "核心模型原生环境声" }
+                ]
+            }),
+        );
         validate(StageId::Script, &good).expect("这份剧本应当通过校验");
     }
 
     #[test]
     fn enum_values_are_enforced() {
-        let bad = wrap(StageId::Storyboard, json!({
-            "title": "t", "aspect_ratio": "竖屏", "total_duration_seconds": 10, "shot_count": 1,
-            "shots": [{ "shot_id": "sh01", "start": 0, "end": 10, "duration_seconds": 10,
-                        "purpose": "p", "shot_size": "近景", "camera_motion": "推",
-                        "subject": "人", "action_chain": "起 -> 收" }]
-        }));
+        let bad = wrap(
+            StageId::Storyboard,
+            json!({
+                "title": "t", "aspect_ratio": "竖屏", "total_duration_seconds": 10, "shot_count": 1,
+                "shots": [{ "shot_id": "sh01", "start": 0, "end": 10, "duration_seconds": 10,
+                            "purpose": "p", "shot_size": "近景", "camera_motion": "推",
+                            "subject": "人", "action_chain": "起 -> 收" }]
+            }),
+        );
         let e = validate(StageId::Storyboard, &bad).unwrap_err();
         match e {
-            StudioError::SchemaViolation { violations, .. } =>
-                assert!(violations.iter().any(|v| v.path == "storyboard.aspect_ratio")),
+            StudioError::SchemaViolation { violations, .. } => assert!(violations
+                .iter()
+                .any(|v| v.path == "storyboard.aspect_ratio")),
             other => panic!("实际 {other}"),
         }
     }
 
     #[test]
     fn empty_required_array_is_reported() {
-        let bad = wrap(StageId::PromptPack, json!({ "core_model_family": "minimax_h3", "shots": [] }));
+        let bad = wrap(
+            StageId::PromptPack,
+            json!({ "core_model_family": "minimax_h3", "shots": [] }),
+        );
         let e = validate(StageId::PromptPack, &bad).unwrap_err();
         match e {
-            StudioError::SchemaViolation { violations, .. } =>
-                assert!(violations.iter().any(|v| v.path == "prompt_pack.shots")),
+            StudioError::SchemaViolation { violations, .. } => {
+                assert!(violations.iter().any(|v| v.path == "prompt_pack.shots"))
+            }
             other => panic!("实际 {other}"),
         }
     }
@@ -508,7 +880,10 @@ mod fixture_tests {
     fn script_fixture_durations_add_up() {
         let o = fixtures::outputs(StageId::Script);
         let arc = o["script"]["story_arc"].as_array().unwrap();
-        let sum: f64 = arc.iter().map(|b| b["duration_seconds"].as_f64().unwrap()).sum();
+        let sum: f64 = arc
+            .iter()
+            .map(|b| b["duration_seconds"].as_f64().unwrap())
+            .sum();
         assert!((sum - 10.0).abs() < 1e-9, "五拍合计应为 10 秒，实际 {sum}");
         assert_eq!(arc.len(), 5);
     }

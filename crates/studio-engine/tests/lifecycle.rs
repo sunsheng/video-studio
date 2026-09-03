@@ -18,7 +18,11 @@ fn new_project() -> (tempfile::TempDir, Project) {
 /// 提交一个阶段并在有门时确认通过。
 fn advance(p: &Project, stage: StageId) {
     let env = p
-        .submit_stage(fixtures::outputs(stage), Some(fixtures::summary(stage)), fixtures::confirmation(stage))
+        .submit_stage(
+            fixtures::outputs(stage),
+            Some(fixtures::summary(stage)),
+            fixtures::confirmation(stage),
+        )
         .unwrap_or_else(|e| panic!("提交 {stage} 失败：{e}"));
     if let Some(q) = env.pending_question {
         p.answer(&q.question_id, "approve").unwrap();
@@ -43,7 +47,9 @@ fn a_fresh_project_asks_the_agent_for_the_brief() {
 #[test]
 fn gateless_stage_advances_without_a_question() {
     let (_d, p) = new_project();
-    let env = p.submit_stage(fixtures::outputs(StageId::Idea), Some("brief 完成"), None).unwrap();
+    let env = p
+        .submit_stage(fixtures::outputs(StageId::Idea), Some("brief 完成"), None)
+        .unwrap();
     assert!(env.pending_question.is_none());
     assert_eq!(env.project.stage, StageId::Selection);
     assert_eq!(env.progress.completed, 1);
@@ -54,7 +60,11 @@ fn gated_stage_waits_for_the_user() {
     let (_d, p) = new_project();
     advance(&p, StageId::Idea);
     let env = p
-        .submit_stage(fixtures::outputs(StageId::Selection), None, fixtures::confirmation(StageId::Selection))
+        .submit_stage(
+            fixtures::outputs(StageId::Selection),
+            None,
+            fixtures::confirmation(StageId::Selection),
+        )
         .unwrap();
     env.assert_consistent().unwrap();
     assert_eq!(env.waiting_on, WaitingOn::User);
@@ -70,7 +80,11 @@ fn schema_violation_names_the_exact_field() {
     bad["brief"].as_object_mut().unwrap().remove("aspect_ratio");
     let e = p.submit_stage(bad, None, None).unwrap_err();
     assert_eq!(e.code(), "schema_violation");
-    assert!(e.message().contains("brief.aspect_ratio"), "实际：{}", e.message());
+    assert!(
+        e.message().contains("brief.aspect_ratio"),
+        "实际：{}",
+        e.message()
+    );
     assert!(e.remedy().contains("studio.schema"));
 }
 
@@ -78,10 +92,19 @@ fn schema_violation_names_the_exact_field() {
 fn submitting_while_a_gate_is_open_says_exactly_what_to_do() {
     let (_d, p) = new_project();
     advance(&p, StageId::Idea);
-    p.submit_stage(fixtures::outputs(StageId::Selection), None, fixtures::confirmation(StageId::Selection)).unwrap();
+    p.submit_stage(
+        fixtures::outputs(StageId::Selection),
+        None,
+        fixtures::confirmation(StageId::Selection),
+    )
+    .unwrap();
 
     let e = p
-        .submit_stage(fixtures::outputs(StageId::Selection), None, fixtures::confirmation(StageId::Selection))
+        .submit_stage(
+            fixtures::outputs(StageId::Selection),
+            None,
+            fixtures::confirmation(StageId::Selection),
+        )
         .unwrap_err();
     assert_eq!(e.code(), "gate_pending");
     assert!(e.remedy().contains("studio.answer"));
@@ -112,20 +135,38 @@ fn the_revise_round_trip_takes_three_calls() {
             beat["duration_seconds"] = serde_json::json!(2.0);
         }
     }
-    let env = p.submit_stage(even, Some("每镜头 2 秒"), fixtures::confirmation(StageId::Script)).unwrap();
+    let env = p
+        .submit_stage(
+            even,
+            Some("每镜头 2 秒"),
+            fixtures::confirmation(StageId::Script),
+        )
+        .unwrap();
     assert_eq!(env.waiting_on, WaitingOn::User);
 
     // 2. 用户说「不要固定2秒，要根据镜头内容智能分配」
-    let env = p.revise(StageId::Script, "不要固定2秒，要根据镜头内容智能分配").unwrap();
-    assert_eq!(env.waiting_on, WaitingOn::Agent, "修订之后应当立刻回到等 Agent 提交");
+    let env = p
+        .revise(StageId::Script, "不要固定2秒，要根据镜头内容智能分配")
+        .unwrap();
+    assert_eq!(
+        env.waiting_on,
+        WaitingOn::Agent,
+        "修订之后应当立刻回到等 Agent 提交"
+    );
     assert!(env.pending_question.is_none(), "修订必须彻底释放确认门");
     assert!(env.blocked_by.is_none(), "修订不该留下任何阻塞");
 
     // 3. 立刻重新提交智能时长版——不存在 task already claimed
     let env = p
-        .submit_stage(fixtures::outputs(StageId::Script), Some("按内容智能分配"), fixtures::confirmation(StageId::Script))
+        .submit_stage(
+            fixtures::outputs(StageId::Script),
+            Some("按内容智能分配"),
+            fixtures::confirmation(StageId::Script),
+        )
         .unwrap();
-    let q = env.pending_question.expect("同一个 question_id 必须能重新挂起");
+    let q = env
+        .pending_question
+        .expect("同一个 question_id 必须能重新挂起");
     assert_eq!(q.question_id, "script.approval");
 
     // 用户确认，进入分镜
@@ -139,12 +180,20 @@ fn choosing_the_revise_option_sends_the_stage_back_not_forward() {
     let (_d, p) = new_project();
     advance(&p, StageId::Idea);
     let env = p
-        .submit_stage(fixtures::outputs(StageId::Selection), None, fixtures::confirmation(StageId::Selection))
+        .submit_stage(
+            fixtures::outputs(StageId::Selection),
+            None,
+            fixtures::confirmation(StageId::Selection),
+        )
         .unwrap();
     let q = env.pending_question.unwrap();
 
     let env = p.answer(&q.question_id, "revise").unwrap();
-    assert_eq!(env.project.stage, StageId::Selection, "选『先修改』不该推进阶段");
+    assert_eq!(
+        env.project.stage,
+        StageId::Selection,
+        "选『先修改』不该推进阶段"
+    );
     assert_eq!(env.waiting_on, WaitingOn::Agent);
     assert!(env.pending_question.is_none());
 }
@@ -156,7 +205,13 @@ fn choosing_the_revise_option_sends_the_stage_back_not_forward() {
 #[test]
 fn revise_rewinds_the_whole_project_to_that_stage() {
     let (_d, p) = new_project();
-    for s in [StageId::Idea, StageId::Selection, StageId::Script, StageId::Storyboard, StageId::VisualAssets] {
+    for s in [
+        StageId::Idea,
+        StageId::Selection,
+        StageId::Script,
+        StageId::Storyboard,
+        StageId::VisualAssets,
+    ] {
         advance(&p, s);
     }
     assert_eq!(p.status().unwrap().progress.completed, 5);
@@ -164,7 +219,10 @@ fn revise_rewinds_the_whole_project_to_that_stage() {
     p.revise(StageId::Script, "把碰杯换成拍照").unwrap();
     let env = p.status().unwrap();
     assert_eq!(env.project.stage, StageId::Script);
-    assert_eq!(env.progress.completed, 2, "剧本及其之后全部退回未执行，只剩 idea 与 selection");
+    assert_eq!(
+        env.progress.completed, 2,
+        "剧本及其之后全部退回未执行，只剩 idea 与 selection"
+    );
 
     // 重新提交剧本并确认后，仍然要按顺序重做分镜
     advance(&p, StageId::Script);
@@ -176,7 +234,9 @@ fn revise_rewinds_the_whole_project_to_that_stage() {
 
     // 时间线记下了这次退回
     let t = p.timeline(100).unwrap();
-    assert!(t.iter().any(|e| e.kind == "rewound" && e.summary.contains("storyboard")));
+    assert!(t
+        .iter()
+        .any(|e| e.kind == "rewound" && e.summary.contains("storyboard")));
 }
 
 /// 「改完发现还不如原来那版」——连按 undo 退回到那次修订之前。
@@ -186,7 +246,12 @@ fn revise_rewinds_the_whole_project_to_that_stage() {
 #[test]
 fn undo_can_walk_back_past_a_revise() {
     let (_d, p) = new_project();
-    for s in [StageId::Idea, StageId::Selection, StageId::Script, StageId::Storyboard] {
+    for s in [
+        StageId::Idea,
+        StageId::Selection,
+        StageId::Script,
+        StageId::Storyboard,
+    ] {
         advance(&p, s);
     }
     assert_eq!(p.status().unwrap().project.stage, StageId::VisualAssets);
@@ -199,8 +264,15 @@ fn undo_can_walk_back_past_a_revise() {
     // 提交一版新剧本并确认，走到分镜
     let mut changed = fixtures::outputs(StageId::Script);
     changed["script"]["title"] = serde_json::json!("换了个标题的剧本");
-    let env = p.submit_stage(changed, Some("改后版本"), fixtures::confirmation(StageId::Script)).unwrap();
-    p.answer(&env.pending_question.unwrap().question_id, "approve").unwrap();
+    let env = p
+        .submit_stage(
+            changed,
+            Some("改后版本"),
+            fixtures::confirmation(StageId::Script),
+        )
+        .unwrap();
+    p.answer(&env.pending_question.unwrap().question_id, "approve")
+        .unwrap();
     assert_eq!(p.status().unwrap().project.stage, StageId::Storyboard);
 
     // 觉得还不如原来那版：退回确认前、提交前、修订前
@@ -209,9 +281,17 @@ fn undo_can_walk_back_past_a_revise() {
     p.undo().unwrap();
     let env = p.undo().unwrap();
 
-    assert_eq!(env.project.stage, StageId::VisualAssets, "分镜恢复已通过，下一步回到视觉资产");
+    assert_eq!(
+        env.project.stage,
+        StageId::VisualAssets,
+        "分镜恢复已通过，下一步回到视觉资产"
+    );
     assert_eq!(env.progress.completed, 4);
-    assert_eq!(p.stage_output(StageId::Script).unwrap(), original, "旧剧本内容应当原样回来");
+    assert_eq!(
+        p.stage_output(StageId::Script).unwrap(),
+        original,
+        "旧剧本内容应当原样回来"
+    );
 }
 
 /// 就是编辑器的 Ctrl+Z：连着按就一步步往回走，不限于撤销修订。
@@ -260,10 +340,16 @@ fn stage_outputs_are_mirrored_as_readable_json() {
     let (_d, p) = new_project();
     advance(&p, StageId::Idea);
     let path = p.bundle().root().join("stages/idea.json");
-    assert!(path.is_file(), "阶段产物应当同步成人可读的 stages/<stage>.json");
+    assert!(
+        path.is_file(),
+        "阶段产物应当同步成人可读的 stages/<stage>.json"
+    );
     let text = std::fs::read_to_string(&path).unwrap();
     assert!(text.contains("千岛湖"));
-    assert!(!text.contains(p.bundle().root().to_str().unwrap()), "bundle 内文件不得写入绝对路径");
+    assert!(
+        !text.contains(p.bundle().root().to_str().unwrap()),
+        "bundle 内文件不得写入绝对路径"
+    );
 }
 
 #[test]
@@ -282,15 +368,25 @@ fn the_six_stages_before_comfyui_run_end_to_end() {
     let env = p.status().unwrap();
     env.assert_consistent().unwrap();
     assert_eq!(env.progress.completed, 6);
-    assert_eq!(env.project.stage, StageId::Render, "六个阶段跑完，下一步才轮到 ComfyUI");
-    assert_eq!(env.waiting_on, WaitingOn::System, "render 是确定性阶段，由控制面执行");
+    assert_eq!(
+        env.project.stage,
+        StageId::Render,
+        "六个阶段跑完，下一步才轮到 ComfyUI"
+    );
+    assert_eq!(
+        env.waiting_on,
+        WaitingOn::System,
+        "render 是确定性阶段，由控制面执行"
+    );
     assert_eq!(env.project.status, ProjectStatus::Active);
 
     // 提示词包已经带着可提交给 ComfyUI 的全部参数
     let pack = p.stage_output(StageId::PromptPack).unwrap();
     let shots = pack["prompt_pack"]["shots"].as_array().unwrap();
     assert_eq!(shots.len(), 5);
-    assert!(shots.iter().all(|s| s["workflow"].is_string() && s["seed"].is_number()));
+    assert!(shots
+        .iter()
+        .all(|s| s["workflow"].is_string() && s["seed"].is_number()));
 
     // 时间线记下了每一步
     let t = p.timeline(100).unwrap();

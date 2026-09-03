@@ -31,7 +31,9 @@ impl Bundle {
     pub fn open(root: impl AsRef<Path>) -> Result<Bundle> {
         let root = root.as_ref().to_path_buf();
         if !root.join(DB_FILE).is_file() {
-            return Err(StudioError::NotAProject { path: root.display().to_string() });
+            return Err(StudioError::NotAProject {
+                path: root.display().to_string(),
+            });
         }
         Ok(Bundle { root })
     }
@@ -45,7 +47,9 @@ impl Bundle {
                 return Ok(Bundle { root: dir });
             }
             if !dir.pop() {
-                return Err(StudioError::NotAProject { path: start.as_ref().display().to_string() });
+                return Err(StudioError::NotAProject {
+                    path: start.as_ref().display().to_string(),
+                });
             }
         }
     }
@@ -62,7 +66,8 @@ impl Bundle {
             MEDIA_DIR,
             OUTPUT_DIR,
         ] {
-            fs::create_dir_all(root.join(d)).map_err(|e| StudioError::internal(format!("建目录 {d} 失败：{e}")))?;
+            fs::create_dir_all(root.join(d))
+                .map_err(|e| StudioError::internal(format!("建目录 {d} 失败：{e}")))?;
         }
         Ok(Bundle { root })
     }
@@ -95,7 +100,9 @@ impl Bundle {
     /// 把 bundle 内的相对路径解析成绝对路径。拒绝越界。
     pub fn resolve(&self, rel: &str) -> Result<PathBuf> {
         if rel.starts_with('/') || rel.contains("..") {
-            return Err(StudioError::internal(format!("bundle 内路径必须是相对且不越界的：{rel}")));
+            return Err(StudioError::internal(format!(
+                "bundle 内路径必须是相对且不越界的：{rel}"
+            )));
         }
         Ok(self.root.join(rel))
     }
@@ -104,21 +111,25 @@ impl Bundle {
     pub fn write(&self, rel: &str, content: &str) -> Result<()> {
         let p = self.resolve(rel)?;
         if let Some(parent) = p.parent() {
-            fs::create_dir_all(parent).map_err(|e| StudioError::internal(format!("建目录失败：{e}")))?;
+            fs::create_dir_all(parent)
+                .map_err(|e| StudioError::internal(format!("建目录失败：{e}")))?;
         }
         fs::write(&p, content).map_err(|e| StudioError::internal(format!("写 {rel} 失败：{e}")))
     }
 
     pub fn read(&self, rel: &str) -> Result<String> {
         let p = self.resolve(rel)?;
-        fs::read_to_string(&p).map_err(|_| StudioError::ArtifactMissing { path: rel.to_string() })
+        fs::read_to_string(&p).map_err(|_| StudioError::ArtifactMissing {
+            path: rel.to_string(),
+        })
     }
 
     /// 独占本 bundle。锁随进程退出自动释放，不存在残留。
     pub fn lock(&self) -> Result<LockGuard> {
         let path = self.lock_path();
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|e| StudioError::internal(format!("建锁目录失败：{e}")))?;
+            fs::create_dir_all(parent)
+                .map_err(|e| StudioError::internal(format!("建锁目录失败：{e}")))?;
         }
         let file = fs::OpenOptions::new()
             .create(true)
@@ -187,7 +198,15 @@ mod tests {
     fn scaffold_creates_the_expected_layout() {
         let d = tempfile::tempdir().unwrap();
         let b = Bundle::scaffold(d.path()).unwrap();
-        for rel in [STUDIO_DIR, ".studio/logs", SKILLS_DIR, ".codex", STAGES_DIR, MEDIA_DIR, OUTPUT_DIR] {
+        for rel in [
+            STUDIO_DIR,
+            ".studio/logs",
+            SKILLS_DIR,
+            ".codex",
+            STAGES_DIR,
+            MEDIA_DIR,
+            OUTPUT_DIR,
+        ] {
             assert!(b.root().join(rel).is_dir(), "缺少目录 {rel}");
         }
     }

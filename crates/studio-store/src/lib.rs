@@ -37,8 +37,10 @@ impl Store {
     /// 打开已有库并校验完整性。
     pub fn open(path: &std::path::Path) -> Result<Store> {
         let conn = Connection::open(path).map_err(oops)?;
-        conn.pragma_update(None, "journal_mode", "WAL").map_err(oops)?;
-        conn.pragma_update(None, "foreign_keys", "ON").map_err(oops)?;
+        conn.pragma_update(None, "journal_mode", "WAL")
+            .map_err(oops)?;
+        conn.pragma_update(None, "foreign_keys", "ON")
+            .map_err(oops)?;
         let store = Store { conn };
         store.verify_integrity()?;
         Ok(store)
@@ -47,7 +49,8 @@ impl Store {
     /// 新建库并写入初始状态：第一个阶段处于草稿。
     pub fn create(path: &std::path::Path, title: &str, program_version: &str) -> Result<Store> {
         let conn = Connection::open(path).map_err(oops)?;
-        conn.pragma_update(None, "journal_mode", "WAL").map_err(oops)?;
+        conn.pragma_update(None, "journal_mode", "WAL")
+            .map_err(oops)?;
         conn.execute_batch(
             r#"
             CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -108,7 +111,13 @@ impl Store {
             ("schema_version", &SCHEMA_VERSION.to_string()),
             ("created_at", &t),
         ] {
-            store.conn.execute("INSERT INTO meta (key, value) VALUES (?1, ?2)", params![k, v]).map_err(oops)?;
+            store
+                .conn
+                .execute(
+                    "INSERT INTO meta (key, value) VALUES (?1, ?2)",
+                    params![k, v],
+                )
+                .map_err(oops)?;
         }
         // 全部阶段先落成草稿，状态机之后只做迁移不做创建。
         for stage in StageId::all() {
@@ -121,7 +130,10 @@ impl Store {
                 )
                 .map_err(oops)?;
         }
-        store.conn.execute("INSERT INTO integrity (id, digest) VALUES (1, '')", []).map_err(oops)?;
+        store
+            .conn
+            .execute("INSERT INTO integrity (id, digest) VALUES (1, '')", [])
+            .map_err(oops)?;
         store.reseal()?;
         Ok(store)
     }
@@ -130,7 +142,9 @@ impl Store {
 
     pub fn meta(&self, key: &str) -> Result<Option<String>> {
         self.conn
-            .query_row("SELECT value FROM meta WHERE key = ?1", params![key], |r| r.get::<_, String>(0))
+            .query_row("SELECT value FROM meta WHERE key = ?1", params![key], |r| {
+                r.get::<_, String>(0)
+            })
             .optional()
             .map_err(oops)
     }
@@ -147,7 +161,9 @@ impl Store {
     }
 
     pub fn title(&self) -> Result<String> {
-        Ok(self.meta("title")?.unwrap_or_else(|| "未命名作品".to_string()))
+        Ok(self
+            .meta("title")?
+            .unwrap_or_else(|| "未命名作品".to_string()))
     }
 
     // ---------- stages ----------
@@ -161,9 +177,9 @@ impl Store {
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .map_err(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => {
-                    StudioError::StateDrift { detail: format!("阶段 {stage} 的记录不存在") }
-                }
+                rusqlite::Error::QueryReturnedNoRows => StudioError::StateDrift {
+                    detail: format!("阶段 {stage} 的记录不存在"),
+                },
                 other => oops(other),
             })?;
 
@@ -171,7 +187,11 @@ impl Store {
             "draft" => StageState::Draft,
             "awaiting_confirmation" => StageState::AwaitingConfirmation,
             "approved" => StageState::Approved,
-            other => return Err(StudioError::StateDrift { detail: format!("阶段 {stage} 的状态值非法：{other}") }),
+            other => {
+                return Err(StudioError::StateDrift {
+                    detail: format!("阶段 {stage} 的状态值非法：{other}"),
+                })
+            }
         };
 
         let outputs = match outputs_json {
@@ -214,9 +234,11 @@ impl Store {
 
     pub fn stage_summary(&self, stage: StageId) -> Result<Option<String>> {
         self.conn
-            .query_row("SELECT summary FROM stages WHERE stage = ?1", params![stage.as_str()], |r| {
-                r.get::<_, Option<String>>(0)
-            })
+            .query_row(
+                "SELECT summary FROM stages WHERE stage = ?1",
+                params![stage.as_str()],
+                |r| r.get::<_, Option<String>>(0),
+            )
             .optional()
             .map_err(oops)
             .map(|o| o.flatten())
@@ -252,7 +274,10 @@ impl Store {
 
     fn clear_question(&self, stage: StageId) -> Result<()> {
         self.conn
-            .execute("DELETE FROM questions WHERE stage = ?1", params![stage.as_str()])
+            .execute(
+                "DELETE FROM questions WHERE stage = ?1",
+                params![stage.as_str()],
+            )
             .map_err(oops)?;
         Ok(())
     }
@@ -279,13 +304,19 @@ impl Store {
         let Some((question_id, prompt, selection_type, options_json)) = row else {
             return Ok(None);
         };
-        let options: Vec<AnswerOption> = serde_json::from_str(&options_json)
-            .map_err(|e| StudioError::StateDrift { detail: format!("确认门 {question_id} 的选项无法解析：{e}") })?;
+        let options: Vec<AnswerOption> =
+            serde_json::from_str(&options_json).map_err(|e| StudioError::StateDrift {
+                detail: format!("确认门 {question_id} 的选项无法解析：{e}"),
+            })?;
         Ok(Some(Question {
             question_id,
             stage,
             prompt,
-            selection_type: if selection_type == "multi" { SelectionType::Multi } else { SelectionType::Single },
+            selection_type: if selection_type == "multi" {
+                SelectionType::Multi
+            } else {
+                SelectionType::Single
+            },
             options,
         }))
     }
@@ -294,14 +325,19 @@ impl Store {
     pub fn pending_question(&self) -> Result<Option<Question>> {
         let stage: Option<String> = self
             .conn
-            .query_row("SELECT stage FROM questions WHERE status = 'pending' LIMIT 1", [], |r| r.get(0))
+            .query_row(
+                "SELECT stage FROM questions WHERE status = 'pending' LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
             .optional()
             .map_err(oops)?;
         match stage {
             None => Ok(None),
             Some(s) => {
-                let stage = StageId::parse(&s)
-                    .ok_or_else(|| StudioError::StateDrift { detail: format!("确认门挂在未知阶段 {s} 上") })?;
+                let stage = StageId::parse(&s).ok_or_else(|| StudioError::StateDrift {
+                    detail: format!("确认门挂在未知阶段 {s} 上"),
+                })?;
                 self.question_for(stage)
             }
         }
@@ -309,7 +345,13 @@ impl Store {
 
     // ---------- events ----------
 
-    pub fn append_event(&self, stage: StageId, kind: &str, summary: &str, error: Option<&str>) -> Result<()> {
+    pub fn append_event(
+        &self,
+        stage: StageId,
+        kind: &str,
+        summary: &str,
+        error: Option<&str>,
+    ) -> Result<()> {
         self.conn
             .execute(
                 "INSERT INTO events (at, stage, kind, summary, error) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -356,7 +398,13 @@ impl Store {
 
     // ---------- artifacts ----------
 
-    pub fn register_artifact(&self, stage: StageId, kind: &str, rel_path: &str, meta: Option<&serde_json::Value>) -> Result<()> {
+    pub fn register_artifact(
+        &self,
+        stage: StageId,
+        kind: &str,
+        rel_path: &str,
+        meta: Option<&serde_json::Value>,
+    ) -> Result<()> {
         debug_assert!(!rel_path.starts_with('/'), "bundle 内一律相对路径");
         let meta_json = match meta {
             Some(v) => Some(serde_json::to_string(v).map_err(oops)?),
@@ -377,11 +425,17 @@ impl Store {
             Some(s) => {
                 let mut stmt = self
                     .conn
-                    .prepare("SELECT stage, kind, rel_path FROM artifacts WHERE stage = ?1 ORDER BY id")
+                    .prepare(
+                        "SELECT stage, kind, rel_path FROM artifacts WHERE stage = ?1 ORDER BY id",
+                    )
                     .map_err(oops)?;
                 let rows = stmt
                     .query_map(params![s.as_str()], |r| {
-                        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+                        Ok((
+                            r.get::<_, String>(0)?,
+                            r.get::<_, String>(1)?,
+                            r.get::<_, String>(2)?,
+                        ))
                     })
                     .map_err(oops)?;
                 for row in rows {
@@ -396,7 +450,11 @@ impl Store {
                     .map_err(oops)?;
                 let rows = stmt
                     .query_map([], |r| {
-                        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+                        Ok((
+                            r.get::<_, String>(0)?,
+                            r.get::<_, String>(1)?,
+                            r.get::<_, String>(2)?,
+                        ))
                     })
                     .map_err(oops)?;
                 for row in rows {
@@ -444,7 +502,9 @@ impl Store {
     /// 栈里还剩几层可撤销。
     pub fn undo_depth(&self) -> Result<usize> {
         self.conn
-            .query_row("SELECT COUNT(*) FROM undo_stack", [], |r| r.get::<_, i64>(0))
+            .query_row("SELECT COUNT(*) FROM undo_stack", [], |r| {
+                r.get::<_, i64>(0)
+            })
             .map(|n| n as usize)
             .map_err(oops)
     }
@@ -482,9 +542,12 @@ impl Store {
         };
 
         let stages: Vec<Vec<Option<String>>> = serde_json::from_str(&stages_json).map_err(oops)?;
-        let questions: Vec<Vec<Option<String>>> = serde_json::from_str(&questions_json).map_err(oops)?;
+        let questions: Vec<Vec<Option<String>>> =
+            serde_json::from_str(&questions_json).map_err(oops)?;
 
-        self.conn.execute("DELETE FROM questions", []).map_err(oops)?;
+        self.conn
+            .execute("DELETE FROM questions", [])
+            .map_err(oops)?;
         for q in &questions {
             self.conn
                 .execute(
@@ -504,7 +567,9 @@ impl Store {
                 )
                 .map_err(oops)?;
         }
-        self.conn.execute("DELETE FROM undo_stack WHERE seq = ?1", params![seq]).map_err(oops)?;
+        self.conn
+            .execute("DELETE FROM undo_stack WHERE seq = ?1", params![seq])
+            .map_err(oops)?;
         self.reseal()?;
         Ok(label)
     }
@@ -583,7 +648,9 @@ impl Store {
 
     fn reseal(&self) -> Result<()> {
         let d = self.digest()?;
-        self.conn.execute("UPDATE integrity SET digest = ?1 WHERE id = 1", params![d]).map_err(oops)?;
+        self.conn
+            .execute("UPDATE integrity SET digest = ?1 WHERE id = 1", params![d])
+            .map_err(oops)?;
         Ok(())
     }
 
@@ -591,11 +658,15 @@ impl Store {
     pub fn verify_integrity(&self) -> Result<()> {
         let stored: Option<String> = self
             .conn
-            .query_row("SELECT digest FROM integrity WHERE id = 1", [], |r| r.get(0))
+            .query_row("SELECT digest FROM integrity WHERE id = 1", [], |r| {
+                r.get(0)
+            })
             .optional()
             .map_err(oops)?;
         let Some(stored) = stored else {
-            return Err(StudioError::StateDrift { detail: "完整性记录缺失".into() });
+            return Err(StudioError::StateDrift {
+                detail: "完整性记录缺失".into(),
+            });
         };
         let actual = self.digest()?;
         if stored != actual {
@@ -613,8 +684,9 @@ impl Store {
 }
 
 fn parse_outputs(s: &str, stage: StageId) -> Result<Outputs> {
-    serde_json::from_str(s)
-        .map_err(|e| StudioError::StateDrift { detail: format!("阶段 {stage} 的产物无法解析：{e}") })
+    serde_json::from_str(s).map_err(|e| StudioError::StateDrift {
+        detail: format!("阶段 {stage} 的产物无法解析：{e}"),
+    })
 }
 
 #[cfg(test)]
@@ -626,7 +698,12 @@ mod tests {
 
     fn store() -> (tempfile::TempDir, Store) {
         let dir = tempfile::tempdir().unwrap();
-        let s = Store::create(&dir.path().join("studio.db"), "千岛湖，把快乐装进十秒", "0.1.0").unwrap();
+        let s = Store::create(
+            &dir.path().join("studio.db"),
+            "千岛湖，把快乐装进十秒",
+            "0.1.0",
+        )
+        .unwrap();
         (dir, s)
     }
 
@@ -640,7 +717,10 @@ mod tests {
         Confirmation {
             prompt: "是否确认这版剧本？".into(),
             selection_type: SelectionType::Single,
-            options: vec![AnswerOption::new("approve", "确认"), AnswerOption::new("revise", "修改")],
+            options: vec![
+                AnswerOption::new("approve", "确认"),
+                AnswerOption::new("revise", "修改"),
+            ],
         }
     }
 
@@ -657,17 +737,29 @@ mod tests {
     #[test]
     fn gate_roundtrips_through_the_database() {
         let (_d, s) = store();
-        let submitted = Stage::<Draft>::new(StageId::Script).submit(outs("script"), Some(conf())).unwrap();
-        let q = submitted.question().unwrap().clone();
-        s.save_stage(StageId::Script, StageState::AwaitingConfirmation, 1, submitted.outputs(), Some("已完成剧本"), Some(&q))
+        let submitted = Stage::<Draft>::new(StageId::Script)
+            .submit(outs("script"), Some(conf()))
             .unwrap();
+        let q = submitted.question().unwrap().clone();
+        s.save_stage(
+            StageId::Script,
+            StageState::AwaitingConfirmation,
+            1,
+            submitted.outputs(),
+            Some("已完成剧本"),
+            Some(&q),
+        )
+        .unwrap();
 
         let loaded = s.load_stage(StageId::Script).unwrap();
         assert_eq!(loaded.state(), StageState::AwaitingConfirmation);
         let pending = s.pending_question().unwrap().unwrap();
         assert_eq!(pending.question_id, "script.approval");
         assert!(pending.accepts("approve"));
-        assert_eq!(s.stage_summary(StageId::Script).unwrap().as_deref(), Some("已完成剧本"));
+        assert_eq!(
+            s.stage_summary(StageId::Script).unwrap().as_deref(),
+            Some("已完成剧本")
+        );
     }
 
     /// 门在离开挂起状态时整行删除，不留「已取消」的残骸——
@@ -675,19 +767,50 @@ mod tests {
     #[test]
     fn revise_clears_the_gate_completely() {
         let (_d, s) = store();
-        let submitted = Stage::<Draft>::new(StageId::Script).submit(outs("script"), Some(conf())).unwrap();
+        let submitted = Stage::<Draft>::new(StageId::Script)
+            .submit(outs("script"), Some(conf()))
+            .unwrap();
         let q = submitted.question().unwrap().clone();
-        s.save_stage(StageId::Script, StageState::AwaitingConfirmation, 1, submitted.outputs(), None, Some(&q)).unwrap();
+        s.save_stage(
+            StageId::Script,
+            StageState::AwaitingConfirmation,
+            1,
+            submitted.outputs(),
+            None,
+            Some(&q),
+        )
+        .unwrap();
         assert!(s.pending_question().unwrap().is_some());
 
         // 用户要求修订
-        s.save_stage(StageId::Script, StageState::Draft, 2, Some(&outs("script")), None, None).unwrap();
-        assert!(s.pending_question().unwrap().is_none(), "修订后不应残留任何挂起的门");
+        s.save_stage(
+            StageId::Script,
+            StageState::Draft,
+            2,
+            Some(&outs("script")),
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(
+            s.pending_question().unwrap().is_none(),
+            "修订后不应残留任何挂起的门"
+        );
 
         // 立刻重新提交，同一个 question_id 必须能重新挂起
-        let again = Stage::<Draft>::resumed(StageId::Script, 2, None).submit(outs("script"), Some(conf())).unwrap();
+        let again = Stage::<Draft>::resumed(StageId::Script, 2, None)
+            .submit(outs("script"), Some(conf()))
+            .unwrap();
         let q2 = again.question().unwrap().clone();
-        s.save_stage(StageId::Script, StageState::AwaitingConfirmation, 2, again.outputs(), None, Some(&q2)).unwrap();
+        s.save_stage(
+            StageId::Script,
+            StageState::AwaitingConfirmation,
+            2,
+            again.outputs(),
+            None,
+            Some(&q2),
+        )
+        .unwrap();
         let pending = s.pending_question().unwrap().unwrap();
         assert_eq!(pending.question_id, "script.approval");
         assert_eq!(s.load_stage(StageId::Script).unwrap().attempt(), 2);
@@ -696,9 +819,12 @@ mod tests {
     #[test]
     fn timeline_is_chronological() {
         let (_d, s) = store();
-        s.append_event(StageId::Idea, "submitted", "brief 完成", None).unwrap();
-        s.append_event(StageId::Selection, "gate_opened", "等待确认", None).unwrap();
-        s.append_event(StageId::Selection, "answered", "已确认", None).unwrap();
+        s.append_event(StageId::Idea, "submitted", "brief 完成", None)
+            .unwrap();
+        s.append_event(StageId::Selection, "gate_opened", "等待确认", None)
+            .unwrap();
+        s.append_event(StageId::Selection, "answered", "已确认", None)
+            .unwrap();
         let t = s.timeline(10).unwrap();
         assert_eq!(t.len(), 3);
         assert_eq!(t[0].stage, StageId::Idea);
@@ -709,7 +835,8 @@ mod tests {
     fn timeline_limit_keeps_the_latest() {
         let (_d, s) = store();
         for i in 0..10 {
-            s.append_event(StageId::Idea, "tick", &format!("第 {i} 条"), None).unwrap();
+            s.append_event(StageId::Idea, "tick", &format!("第 {i} 条"), None)
+                .unwrap();
         }
         let t = s.timeline(3).unwrap();
         assert_eq!(t.len(), 3);
@@ -719,10 +846,15 @@ mod tests {
     #[test]
     fn artifacts_are_registered_per_stage() {
         let (_d, s) = store();
-        s.register_artifact(StageId::Render, "video", "media/sh01.mp4", None).unwrap();
-        s.register_artifact(StageId::Post, "video", "output/final.mp4", None).unwrap();
+        s.register_artifact(StageId::Render, "video", "media/sh01.mp4", None)
+            .unwrap();
+        s.register_artifact(StageId::Post, "video", "output/final.mp4", None)
+            .unwrap();
         assert_eq!(s.artifacts(None).unwrap().len(), 2);
-        assert_eq!(s.artifacts(Some(StageId::Post)).unwrap()[0].2, "output/final.mp4");
+        assert_eq!(
+            s.artifacts(Some(StageId::Post)).unwrap()[0].2,
+            "output/final.mp4"
+        );
     }
 
     /// 直接改库会被下一次打开时抓到——这是 .studio/ 私有约定的兜底。
@@ -732,12 +864,21 @@ mod tests {
         let path = dir.path().join("studio.db");
         {
             let s = Store::create(&path, "t", "0.1.0").unwrap();
-            s.save_stage(StageId::Idea, StageState::Approved, 1, Some(&outs("brief")), None, None).unwrap();
+            s.save_stage(
+                StageId::Idea,
+                StageState::Approved,
+                1,
+                Some(&outs("brief")),
+                None,
+                None,
+            )
+            .unwrap();
         }
         // 绕过控制面直接改状态，正是前身项目那次做的事
         {
             let c = Connection::open(&path).unwrap();
-            c.execute("UPDATE stages SET state = 'draft' WHERE stage = 'idea'", []).unwrap();
+            c.execute("UPDATE stages SET state = 'draft' WHERE stage = 'idea'", [])
+                .unwrap();
         }
         let e = Store::open(&path).unwrap_err();
         assert_eq!(e.code(), "state_drift");
@@ -750,10 +891,22 @@ mod tests {
         let path = dir.path().join("studio.db");
         {
             let s = Store::create(&path, "t", "0.1.0").unwrap();
-            s.save_stage(StageId::Idea, StageState::Approved, 1, Some(&outs("brief")), None, None).unwrap();
-            s.append_event(StageId::Idea, "submitted", "ok", None).unwrap();
+            s.save_stage(
+                StageId::Idea,
+                StageState::Approved,
+                1,
+                Some(&outs("brief")),
+                None,
+                None,
+            )
+            .unwrap();
+            s.append_event(StageId::Idea, "submitted", "ok", None)
+                .unwrap();
         }
         let s = Store::open(&path).unwrap();
-        assert_eq!(s.load_stage(StageId::Idea).unwrap().state(), StageState::Approved);
+        assert_eq!(
+            s.load_stage(StageId::Idea).unwrap().state(),
+            StageState::Approved
+        );
     }
 }

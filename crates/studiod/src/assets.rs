@@ -186,7 +186,10 @@ fn stage_table() -> String {
             stage,
             stage.capability(),
             kind,
-            stage.gate().map(|g| format!("`{g}`")).unwrap_or_else(|| "—".into())
+            stage
+                .gate()
+                .map(|g| format!("`{g}`"))
+                .unwrap_or_else(|| "—".into())
         ));
     }
     s
@@ -195,7 +198,12 @@ fn stage_table() -> String {
 fn tool_table() -> String {
     let mut s = String::from("| 工具 | 作用 |\n|---|---|\n");
     for t in TOOLS.iter() {
-        let desc = t.description.replace('\n', " ").split_whitespace().collect::<Vec<_>>().join(" ");
+        let desc = t
+            .description
+            .replace('\n', " ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
         s.push_str(&format!("| `{}` | {} |\n", t.name, desc));
     }
     s
@@ -311,7 +319,9 @@ fn skill_md(doc: &SkillDoc) -> String {
             }
         }
         s.push('\n');
-        s.push_str("上游产物由 `studio.status` 的 `next_action.inputs` 给出，不需要你去别处找。\n\n");
+        s.push_str(
+            "上游产物由 `studio.status` 的 `next_action.inputs` 给出，不需要你去别处找。\n\n",
+        );
 
         s.push_str("## 确认点\n\n");
         match stage.gate() {
@@ -394,7 +404,8 @@ pub fn all_assets() -> Vec<(String, String)> {
         out.push((format!("skills/{}/SKILL.md", doc.name), skill_md(doc)));
     }
     for stage in StageId::all() {
-        let json = serde_json::to_string_pretty(&schema::stage_schema_document(stage)).unwrap_or_default();
+        let json =
+            serde_json::to_string_pretty(&schema::stage_schema_document(stage)).unwrap_or_default();
         out.push((format!("schema/{stage}.json"), format!("{json}\n")));
     }
     out.push((".env.example".to_string(), env_example()));
@@ -402,15 +413,26 @@ pub fn all_assets() -> Vec<(String, String)> {
 }
 
 /// `studiod init` 要在 bundle 里物化的文件。
-pub fn bundle_files(studiod_path: &str, title: &str, version: &str, core_model: &str) -> Vec<(String, String)> {
+pub fn bundle_files(
+    studiod_path: &str,
+    title: &str,
+    version: &str,
+    core_model: &str,
+) -> Vec<(String, String)> {
     let mut out = vec![
         ("AGENTS.md".to_string(), agents_md()),
         (".codex/config.toml".to_string(), codex_config(studiod_path)),
-        ("project.toml".to_string(), project_toml(title, version, core_model)),
+        (
+            "project.toml".to_string(),
+            project_toml(title, version, core_model),
+        ),
         (".env.example".to_string(), env_example()),
     ];
     for doc in SKILLS.iter() {
-        out.push((format!(".agents/skills/{}/SKILL.md", doc.name), skill_md(doc)));
+        out.push((
+            format!(".agents/skills/{}/SKILL.md", doc.name),
+            skill_md(doc),
+        ));
     }
     out
 }
@@ -423,7 +445,10 @@ mod tests {
     fn agents_md_never_points_at_source_code() {
         let md = agents_md();
         for leak in ["stage_graph.rs", "mcp_server.rs", "src/", "crates/", ".py"] {
-            assert!(!md.contains(leak), "AGENTS.md 不该把 Agent 指向源码：{leak}");
+            assert!(
+                !md.contains(leak),
+                "AGENTS.md 不该把 Agent 指向源码：{leak}"
+            );
         }
     }
 
@@ -444,7 +469,10 @@ mod tests {
     #[test]
     fn agents_md_states_the_rewind_rule() {
         let md = agents_md();
-        assert!(md.contains("一律变回未执行"), "必须说清修订会让下游退回未执行");
+        assert!(
+            md.contains("一律变回未执行"),
+            "必须说清修订会让下游退回未执行"
+        );
         assert!(md.contains(".studio/"), "必须说清 .studio/ 不要碰");
     }
 
@@ -477,8 +505,14 @@ mod tests {
         for doc in SKILLS.iter() {
             let Some(stage) = doc.stage else { continue };
             let md = skill_md(doc);
-            assert!(md.contains(&format!("studio.schema(\"{stage}\")")), "{} 应提示先取 schema", doc.name);
-            if let studio_core::schema::Schema::Object { required, .. } = schema::stage_schema(stage) {
+            assert!(
+                md.contains(&format!("studio.schema(\"{stage}\")")),
+                "{} 应提示先取 schema",
+                doc.name
+            );
+            if let studio_core::schema::Schema::Object { required, .. } =
+                schema::stage_schema(stage)
+            {
                 for r in required {
                     assert!(md.contains(r), "{} 缺少必填项 {r}", doc.name);
                 }
@@ -502,7 +536,11 @@ mod tests {
             let md = skill_md(doc);
             if let Some(gate) = stage.gate() {
                 assert!(md.contains(gate), "{} 应写明确认门 {gate}", doc.name);
-                assert!(md.contains("outcome"), "{} 应说明选项要声明 outcome", doc.name);
+                assert!(
+                    md.contains("outcome"),
+                    "{} 应说明选项要声明 outcome",
+                    doc.name
+                );
             } else {
                 assert!(md.contains("没有确认门"), "{} 应说明本阶段无门", doc.name);
             }
@@ -512,8 +550,14 @@ mod tests {
     #[test]
     fn assets_cover_agents_ten_skills_and_nine_schemas() {
         let a = all_assets();
-        assert_eq!(a.iter().filter(|(p, _)| p.starts_with("skills/")).count(), 10);
-        assert_eq!(a.iter().filter(|(p, _)| p.starts_with("schema/")).count(), 9);
+        assert_eq!(
+            a.iter().filter(|(p, _)| p.starts_with("skills/")).count(),
+            10
+        );
+        assert_eq!(
+            a.iter().filter(|(p, _)| p.starts_with("schema/")).count(),
+            9
+        );
         assert!(a.iter().any(|(p, _)| p == "AGENTS.md"));
         assert!(a.iter().all(|(_, c)| !c.is_empty()));
     }
@@ -523,7 +567,12 @@ mod tests {
         let f = bundle_files("/opt/video-studio/studiod", "千岛湖", "0.1.0", "minimax_h3");
         assert!(f.iter().any(|(p, _)| p == "AGENTS.md"));
         assert!(f.iter().any(|(p, _)| p == ".codex/config.toml"));
-        assert_eq!(f.iter().filter(|(p, _)| p.starts_with(".agents/skills/")).count(), 10);
+        assert_eq!(
+            f.iter()
+                .filter(|(p, _)| p.starts_with(".agents/skills/"))
+                .count(),
+            10
+        );
         let cfg = &f.iter().find(|(p, _)| p == ".codex/config.toml").unwrap().1;
         assert!(cfg.contains("/opt/video-studio/studiod"));
         assert!(cfg.contains("serve"));

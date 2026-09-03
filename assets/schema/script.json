@@ -1,0 +1,164 @@
+{
+  "$id": "https://github.com/sunsheng/video-studio/schema/script.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": true,
+  "description": "studio.submit_stage 在阶段 script 接受的 outputs 形状。顶层键固定为 script。",
+  "properties": {
+    "script": {
+      "additionalProperties": true,
+      "description": "故事结构、节奏与声音时间线",
+      "properties": {
+        "audio_policy": {
+          "description": "音频策略：原生音频优先、外部音乐是否禁用、降级条件"
+        },
+        "language": {
+          "description": "口播语言；无口播填 none",
+          "type": "string"
+        },
+        "safety_notes": {
+          "description": "安全注意",
+          "items": {
+            "description": "一条",
+            "type": "string"
+          },
+          "minItems": 0,
+          "type": "array"
+        },
+        "segments": {
+          "description": "声音/字幕时间线",
+          "items": {
+            "additionalProperties": true,
+            "description": "一段",
+            "properties": {
+              "end": {
+                "description": "终点（秒）",
+                "minimum": 0.0,
+                "type": "number"
+              },
+              "segment_id": {
+                "description": "标识",
+                "type": "string"
+              },
+              "source": {
+                "description": "声音来源",
+                "type": "string"
+              },
+              "speaker": {
+                "description": "说话人；环境声填 ambient",
+                "type": "string"
+              },
+              "start": {
+                "description": "起点（秒）",
+                "minimum": 0.0,
+                "type": "number"
+              },
+              "subtitle_text": {
+                "description": "字幕；无则空串",
+                "type": "string"
+              },
+              "text": {
+                "description": "台词/旁白；无则空串",
+                "type": "string"
+              }
+            },
+            "required": [
+              "segment_id",
+              "start",
+              "end",
+              "speaker"
+            ],
+            "type": "object"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "shot_count": {
+          "description": "镜头数",
+          "type": "integer"
+        },
+        "story_arc": {
+          "description": "逐拍节奏",
+          "items": {
+            "additionalProperties": true,
+            "description": "一拍",
+            "properties": {
+              "audio": {
+                "description": "声音",
+                "type": "string"
+              },
+              "beat_id": {
+                "description": "稳定标识，例如 beat_01",
+                "type": "string"
+              },
+              "duration_seconds": {
+                "description": "时长（秒）",
+                "minimum": 0.1,
+                "type": "number"
+              },
+              "end": {
+                "description": "终点（秒）",
+                "minimum": 0.0,
+                "type": "number"
+              },
+              "purpose": {
+                "description": "这一拍要达成什么",
+                "type": "string"
+              },
+              "start": {
+                "description": "起点（秒）",
+                "minimum": 0.0,
+                "type": "number"
+              },
+              "visual": {
+                "description": "画面",
+                "type": "string"
+              }
+            },
+            "required": [
+              "beat_id",
+              "start",
+              "end",
+              "duration_seconds",
+              "purpose",
+              "visual",
+              "audio"
+            ],
+            "type": "object"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "subtitle_policy": {
+          "description": "字幕策略"
+        },
+        "timing_rule": {
+          "description": "时长分配规则。按内容智能分配时在这里说明依据",
+          "type": "string"
+        },
+        "title": {
+          "description": "标题",
+          "type": "string"
+        },
+        "total_duration_seconds": {
+          "description": "总时长，必须与各段之和一致",
+          "minimum": 1.0,
+          "type": "number"
+        }
+      },
+      "required": [
+        "title",
+        "total_duration_seconds",
+        "shot_count",
+        "timing_rule",
+        "story_arc",
+        "segments"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "script"
+  ],
+  "title": "script 阶段产物",
+  "type": "object"
+}

@@ -20,13 +20,22 @@ impl Harness {
         let root = dir.path().join("千岛湖.studio");
         studio_engine::init_project(&root, fixtures::TITLE, "0.1.0-test", &[]).unwrap();
         let server = Server::new(&root, None);
-        Harness { _dir: dir, root, server, next_id: 0 }
+        Harness {
+            _dir: dir,
+            root,
+            server,
+            next_id: 0,
+        }
     }
 
     fn rpc(&mut self, method: &str, params: Value) -> Value {
         self.next_id += 1;
-        let req = json!({ "jsonrpc": "2.0", "id": self.next_id, "method": method, "params": params });
-        let raw = self.server.handle_line(&req.to_string()).expect("请求必须有回应");
+        let req =
+            json!({ "jsonrpc": "2.0", "id": self.next_id, "method": method, "params": params });
+        let raw = self
+            .server
+            .handle_line(&req.to_string())
+            .expect("请求必须有回应");
         serde_json::from_str(&raw).unwrap()
     }
 
@@ -34,7 +43,10 @@ impl Harness {
     fn call(&mut self, name: &str, args: Value) -> (Value, bool) {
         let resp = self.rpc("tools/call", json!({ "name": name, "arguments": args }));
         let result = &resp["result"];
-        (result["structuredContent"].clone(), result["isError"].as_bool().unwrap_or(false))
+        (
+            result["structuredContent"].clone(),
+            result["isError"].as_bool().unwrap_or(false),
+        )
     }
 
     fn submit(&mut self, stage: StageId) -> (Value, bool) {
@@ -54,7 +66,10 @@ impl Harness {
         assert!(!err, "提交 {stage} 失败：{env}");
         if let Some(q) = env["pending_question"].as_object() {
             let qid = q["question_id"].as_str().unwrap().to_string();
-            let (_, err) = self.call("studio.answer", json!({ "question_id": qid, "answer": "approve" }));
+            let (_, err) = self.call(
+                "studio.answer",
+                json!({ "question_id": qid, "answer": "approve" }),
+            );
             assert!(!err, "确认 {stage} 失败");
         }
     }
@@ -63,7 +78,10 @@ impl Harness {
 #[test]
 fn initialize_echoes_a_protocol_version_we_support() {
     let mut h = Harness::new();
-    let resp = h.rpc("initialize", json!({ "protocolVersion": "2024-11-05", "capabilities": {} }));
+    let resp = h.rpc(
+        "initialize",
+        json!({ "protocolVersion": "2024-11-05", "capabilities": {} }),
+    );
     assert_eq!(resp["result"]["protocolVersion"], "2024-11-05");
     assert_eq!(resp["result"]["serverInfo"]["name"], "video-studio");
     assert!(resp["result"]["capabilities"]["tools"].is_object());
@@ -94,7 +112,9 @@ fn tools_list_exposes_exactly_nine_tools_without_run_id() {
 #[test]
 fn notifications_get_no_response() {
     let mut h = Harness::new();
-    let raw = h.server.handle_line(&json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }).to_string());
+    let raw = h.server.handle_line(
+        &json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }).to_string(),
+    );
     assert!(raw.is_none(), "通知不该有回应");
 }
 
@@ -112,9 +132,15 @@ fn unknown_method_and_unknown_tool_are_rejected_clearly() {
     let resp = h.rpc("does/not/exist", json!({}));
     assert_eq!(resp["error"]["code"], -32601);
 
-    let resp = h.rpc("tools/call", json!({ "name": "studio.launch_missiles", "arguments": {} }));
+    let resp = h.rpc(
+        "tools/call",
+        json!({ "name": "studio.launch_missiles", "arguments": {} }),
+    );
     assert_eq!(resp["error"]["code"], -32602);
-    assert!(resp["error"]["message"].as_str().unwrap().contains("tools/list"));
+    assert!(resp["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("tools/list"));
 }
 
 #[test]
@@ -160,7 +186,10 @@ fn the_six_stages_before_comfyui_run_end_to_end_over_mcp() {
     let (env, _) = h.call("studio.status", json!({}));
     assert_eq!(env["progress"]["completed"], 6);
     assert_eq!(env["project"]["stage"], "render");
-    assert_eq!(env["waiting_on"], "system", "轮到 ComfyUI 了，Agent 只需观察");
+    assert_eq!(
+        env["waiting_on"], "system",
+        "轮到 ComfyUI 了，Agent 只需观察"
+    );
     assert!(env["blocked_by"].is_null());
 
     // 提示词包已经带着可提交给 ComfyUI 的全部参数
@@ -170,7 +199,12 @@ fn the_six_stages_before_comfyui_run_end_to_end_over_mcp() {
     assert_eq!(shots[0]["workflow"], "minimax_h3/t2v");
 
     let (tl, _) = h.call("studio.timeline", json!({ "limit": 100 }));
-    let kinds: Vec<&str> = tl.as_array().unwrap().iter().map(|e| e["kind"].as_str().unwrap()).collect();
+    let kinds: Vec<&str> = tl
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["kind"].as_str().unwrap())
+        .collect();
     assert!(kinds.iter().filter(|k| **k == "submitted").count() >= 6);
 }
 
@@ -182,7 +216,12 @@ fn the_revise_round_trip_over_mcp_is_three_calls() {
     h.advance(StageId::Selection);
 
     let mut even = fixtures::outputs(StageId::Script);
-    for (i, beat) in even["script"]["story_arc"].as_array_mut().unwrap().iter_mut().enumerate() {
+    for (i, beat) in even["script"]["story_arc"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .enumerate()
+    {
         beat["start"] = json!(i as f64 * 2.0);
         beat["end"] = json!((i as f64 + 1.0) * 2.0);
         beat["duration_seconds"] = json!(2.0);
@@ -218,10 +257,16 @@ fn errors_come_back_as_an_envelope_with_a_remedy() {
     assert!(err, "schema 不合规必须报错");
     let blocked = &env["blocked_by"];
     assert_eq!(blocked["code"], "schema_violation");
-    assert!(blocked["message"].as_str().unwrap().contains("brief.story_beats"));
+    assert!(blocked["message"]
+        .as_str()
+        .unwrap()
+        .contains("brief.story_beats"));
     let remedy = blocked["remedy"].as_str().unwrap();
     assert!(!remedy.is_empty(), "blocked_by 必须带 remedy");
-    assert!(remedy.contains("studio.schema"), "remedy 要指向能调的工具：{remedy}");
+    assert!(
+        remedy.contains("studio.schema"),
+        "remedy 要指向能调的工具：{remedy}"
+    );
 }
 
 #[test]
@@ -229,11 +274,20 @@ fn choosing_the_revise_option_over_mcp_sends_the_stage_back() {
     let mut h = Harness::new();
     h.advance(StageId::Idea);
     let (env, _) = h.submit(StageId::Selection);
-    let qid = env["pending_question"]["question_id"].as_str().unwrap().to_string();
+    let qid = env["pending_question"]["question_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
-    let (env, err) = h.call("studio.answer", json!({ "question_id": qid, "answer": "revise" }));
+    let (env, err) = h.call(
+        "studio.answer",
+        json!({ "question_id": qid, "answer": "revise" }),
+    );
     assert!(!err);
-    assert_eq!(env["project"]["stage"], "selection", "选『先修改』不推进阶段");
+    assert_eq!(
+        env["project"]["stage"], "selection",
+        "选『先修改』不推进阶段"
+    );
     assert_eq!(env["waiting_on"], "agent");
 }
 
@@ -242,8 +296,8 @@ fn choosing_the_revise_option_over_mcp_sends_the_stage_back() {
 #[test]
 fn every_call_is_traced_for_the_production_report() {
     let mut h = Harness::new();
-    h.advance(StageId::Idea);       // 无门：1 次 submit
-    h.advance(StageId::Selection);  // 有门：1 次 submit + 1 次 answer
+    h.advance(StageId::Idea); // 无门：1 次 submit
+    h.advance(StageId::Selection); // 有门：1 次 submit + 1 次 answer
     let (_, err) = h.call("studio.submit_stage", json!({ "outputs": { "nope": {} } }));
     assert!(err);
 
@@ -257,10 +311,16 @@ fn every_call_is_traced_for_the_production_report() {
     let failed: Vec<_> = records.iter().filter(|r| !r.ok).collect();
     assert_eq!(failed.len(), 1);
     assert_eq!(failed[0].error_code.as_deref(), Some("schema_violation"));
-    assert_eq!(failed[0].remedy_present, Some(true), "报告要能核对每条阻塞是否带补救路径");
+    assert_eq!(
+        failed[0].remedy_present,
+        Some(true),
+        "报告要能核对每条阻塞是否带补救路径"
+    );
 
     // 成功的调用记下了当时该谁行动，报告据此还原阶段推进过程。
-    assert!(records.iter().any(|r| r.ok && r.waiting_on.as_deref() == Some("user")));
+    assert!(records
+        .iter()
+        .any(|r| r.ok && r.waiting_on.as_deref() == Some("user")));
     assert!(records.iter().all(|r| r.duration_ms < 60_000));
 }
 

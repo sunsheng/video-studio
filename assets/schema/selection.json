@@ -1,0 +1,128 @@
+{
+  "$id": "https://github.com/sunsheng/video-studio/schema/selection.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": true,
+  "description": "studio.submit_stage 在阶段 selection 接受的 outputs 形状。顶层键固定为 selection。",
+  "properties": {
+    "selection": {
+      "additionalProperties": true,
+      "description": "从可行性、受众匹配和发布风险筛选方案",
+      "properties": {
+        "acceptance_metrics": {
+          "description": "验收标准",
+          "items": {
+            "description": "一条",
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "audience_fit": {
+          "additionalProperties": true,
+          "description": "受众匹配",
+          "properties": {
+            "benefit": {
+              "description": "观看收益",
+              "type": "string"
+            },
+            "hook_strength": {
+              "description": "钩子强度",
+              "type": "string"
+            },
+            "retention_plan": {
+              "description": "留存设计",
+              "type": "string"
+            }
+          },
+          "required": [
+            "hook_strength"
+          ],
+          "type": "object"
+        },
+        "feasibility": {
+          "additionalProperties": true,
+          "description": "可行性",
+          "properties": {
+            "model_control": {
+              "description": "模型可控性说明",
+              "type": "string"
+            },
+            "production_cost": {
+              "description": "制作成本",
+              "type": "string"
+            },
+            "rationale": {
+              "description": "判断依据",
+              "type": "string"
+            },
+            "score": {
+              "description": "high / medium / low",
+              "type": "string"
+            }
+          },
+          "required": [
+            "score",
+            "rationale"
+          ],
+          "type": "object"
+        },
+        "publishing_risks": {
+          "additionalProperties": true,
+          "description": "发布风险分级",
+          "properties": {
+            "avoidable": {
+              "description": "可规避",
+              "items": {
+                "description": "一条",
+                "type": "string"
+              },
+              "minItems": 0,
+              "type": "array"
+            },
+            "unacceptable": {
+              "description": "不可接受",
+              "items": {
+                "description": "一条",
+                "type": "string"
+              },
+              "minItems": 0,
+              "type": "array"
+            },
+            "user_decision": {
+              "description": "需用户决定",
+              "items": {
+                "description": "一条",
+                "type": "string"
+              },
+              "minItems": 0,
+              "type": "array"
+            }
+          },
+          "required": [],
+          "type": "object"
+        },
+        "recommendation": {
+          "description": "推荐方案的标识",
+          "type": "string"
+        },
+        "tradeoffs": {
+          "description": "取舍说明",
+          "type": "string"
+        }
+      },
+      "required": [
+        "recommendation",
+        "feasibility",
+        "audience_fit",
+        "tradeoffs",
+        "acceptance_metrics"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "selection"
+  ],
+  "title": "selection 阶段产物",
+  "type": "object"
+}

@@ -7,7 +7,8 @@ use crate::bundle::{Bundle, LockGuard};
 use crate::config::Settings;
 use serde_json::{json, Value};
 use studio_core::contract::{
-    ActionKind, Blocked, Envelope, NextAction, Outcome, Progress, ProjectInfo, ProjectStatus, WaitingOn,
+    ActionKind, Blocked, Envelope, NextAction, Outcome, Progress, ProjectInfo, ProjectStatus,
+    WaitingOn,
 };
 use studio_core::state::{LoadedStage, Stage, StageState, Submitted};
 use studio_core::{schema, Confirmation, Event, Outputs, Result, StageId, StageKind, StudioError};
@@ -36,12 +37,20 @@ pub struct ExportResult {
 
 impl Project {
     /// 打开当前目录（或其祖先）里的作品。
-    pub fn open(root: impl AsRef<std::path::Path>, program_dir: Option<&std::path::Path>) -> Result<Project> {
+    pub fn open(
+        root: impl AsRef<std::path::Path>,
+        program_dir: Option<&std::path::Path>,
+    ) -> Result<Project> {
         let bundle = Bundle::discover(root)?;
         let lock = bundle.lock()?;
         let store = Store::open(&bundle.db_path())?;
         let settings = Settings::load(program_dir, Some(bundle.root()));
-        Ok(Project { bundle, store, settings, _lock: lock })
+        Ok(Project {
+            bundle,
+            store,
+            settings,
+            _lock: lock,
+        })
     }
 
     pub fn bundle(&self) -> &Bundle {
@@ -109,17 +118,40 @@ impl Project {
 
         let (stage, status, waiting_on, next_action) = match (&pending, current) {
             (Some(q), _) => (q.stage, ProjectStatus::Active, WaitingOn::User, None),
-            (None, None) => (StageId::Review, ProjectStatus::Completed, WaitingOn::System, None),
+            (None, None) => (
+                StageId::Review,
+                ProjectStatus::Completed,
+                WaitingOn::System,
+                None,
+            ),
             (None, Some(s)) => match s.kind() {
-                StageKind::Deterministic => (s, ProjectStatus::Active, WaitingOn::System, Some(self.await_action(s)?)),
-                _ => (s, ProjectStatus::Active, WaitingOn::Agent, Some(self.submit_action(s)?)),
+                StageKind::Deterministic => (
+                    s,
+                    ProjectStatus::Active,
+                    WaitingOn::System,
+                    Some(self.await_action(s)?),
+                ),
+                _ => (
+                    s,
+                    ProjectStatus::Active,
+                    WaitingOn::Agent,
+                    Some(self.submit_action(s)?),
+                ),
             },
         };
 
-        let status = if blocked.is_some() { ProjectStatus::Blocked } else { status };
+        let status = if blocked.is_some() {
+            ProjectStatus::Blocked
+        } else {
+            status
+        };
 
         Ok(Envelope {
-            project: ProjectInfo { title, stage, status },
+            project: ProjectInfo {
+                title,
+                stage,
+                status,
+            },
             waiting_on,
             blocked_by: blocked.map(Blocked::from),
             pending_question: pending,
@@ -212,7 +244,9 @@ impl Project {
         let submitted = draft.submit(outputs, confirmation)?;
 
         let (state, question) = match &submitted {
-            Submitted::AwaitingConfirmation(s) => (StageState::AwaitingConfirmation, Some(s.question().clone())),
+            Submitted::AwaitingConfirmation(s) => {
+                (StageState::AwaitingConfirmation, Some(s.question().clone()))
+            }
             Submitted::Approved(_) => (StageState::Approved, None),
         };
         let attempt = match &submitted {
@@ -221,13 +255,21 @@ impl Project {
         };
         let outputs_ref = submitted.outputs();
 
-        self.store.save_stage(stage, state, attempt, outputs_ref, summary, question.as_ref())?;
+        self.store.save_stage(
+            stage,
+            state,
+            attempt,
+            outputs_ref,
+            summary,
+            question.as_ref(),
+        )?;
         self.mirror_stage_file(stage, outputs_ref)?;
 
         let desc = summary.unwrap_or("已提交阶段产物");
         self.store.append_event(stage, "submitted", desc, None)?;
         if let Some(q) = &question {
-            self.store.append_event(stage, "gate_opened", &q.prompt, None)?;
+            self.store
+                .append_event(stage, "gate_opened", &q.prompt, None)?;
         }
         self.status()
     }
@@ -247,7 +289,10 @@ impl Project {
             });
         };
         if q.question_id != question_id {
-            return Err(StudioError::GatePending { stage: q.stage, question_id: q.question_id.clone() });
+            return Err(StudioError::GatePending {
+                stage: q.stage,
+                question_id: q.question_id.clone(),
+            });
         }
 
         match q.outcome_of(answer) {
@@ -263,11 +308,13 @@ impl Project {
                     .find(|o| o.id == answer)
                     .map(|o| o.label.clone())
                     .unwrap_or_else(|| answer.to_string());
-                self.store.take_snapshot(&format!("在 {} 的确认门上选择「{label}」之前", q.stage))?;
+                self.store
+                    .take_snapshot(&format!("在 {} 的确认门上选择「{label}」之前", q.stage))?;
                 self.revise_inner(q.stage, &format!("用户在确认门选择了「{label}」"))
             }
             Some(Outcome::Approve) => {
-                self.store.take_snapshot(&format!("确认 {} 之前", q.stage))?;
+                self.store
+                    .take_snapshot(&format!("确认 {} 之前", q.stage))?;
                 let LoadedStage::Awaiting(awaiting) = self.store.load_stage(q.stage)? else {
                     return Err(StudioError::StateDrift {
                         detail: format!("门挂在 {} 上，但该阶段并非等待确认", q.stage),
@@ -282,7 +329,12 @@ impl Project {
                     self.store.stage_summary(q.stage)?.as_deref(),
                     None,
                 )?;
-                self.store.append_event(q.stage, "approved", &format!("已确认 {}", q.question_id), None)?;
+                self.store.append_event(
+                    q.stage,
+                    "approved",
+                    &format!("已确认 {}", q.question_id),
+                    None,
+                )?;
                 self.status()
             }
         }
@@ -322,7 +374,14 @@ impl Project {
             }
         };
 
-        self.store.save_stage(stage, StageState::Draft, attempt, outputs.as_ref(), None, None)?;
+        self.store.save_stage(
+            stage,
+            StageState::Draft,
+            attempt,
+            outputs.as_ref(),
+            None,
+            None,
+        )?;
         self.store.append_event(stage, "revised", message, None)?;
         self.rewind_after(stage)?;
         self.status()
@@ -339,7 +398,8 @@ impl Project {
     pub fn undo(&self) -> Result<Envelope> {
         let label = self.store.restore_snapshot()?;
         let stage = self.current_stage()?.unwrap_or(StageId::Review);
-        self.store.append_event(stage, "undone", &format!("已撤销：{label}"), None)?;
+        self.store
+            .append_event(stage, "undone", &format!("已撤销：{label}"), None)?;
         self.status()
     }
 
@@ -366,7 +426,14 @@ impl Project {
             let loaded = self.store.load_stage(stage)?;
             if loaded.state() != StageState::Draft {
                 let keep = loaded_outputs(&loaded).cloned();
-                self.store.save_stage(stage, StageState::Draft, loaded.attempt(), keep.as_ref(), None, None)?;
+                self.store.save_stage(
+                    stage,
+                    StageState::Draft,
+                    loaded.attempt(),
+                    keep.as_ref(),
+                    None,
+                    None,
+                )?;
                 rewound.push(stage.as_str());
             }
         }
@@ -385,7 +452,10 @@ impl Project {
     pub fn export(&self) -> Result<ExportResult> {
         let post = self.store.load_stage(StageId::Post)?;
         if post.state() != StageState::Approved {
-            return Err(StudioError::StageNotReady { stage: StageId::Post, blocked_on: StageId::Post });
+            return Err(StudioError::StageNotReady {
+                stage: StageId::Post,
+                blocked_on: StageId::Post,
+            });
         }
         let mut files = Vec::new();
         for (_, _, rel) in self.store.artifacts(Some(StageId::Post))? {
@@ -400,22 +470,31 @@ impl Project {
             let dst_rel = format!("output/{name}");
             let dst = self.bundle.resolve(&dst_rel)?;
             if src != dst {
-                std::fs::copy(&src, &dst).map_err(|e| StudioError::internal(format!("投递 {rel} 失败：{e}")))?;
+                std::fs::copy(&src, &dst)
+                    .map_err(|e| StudioError::internal(format!("投递 {rel} 失败：{e}")))?;
             }
             files.push(dst_rel);
         }
-        self.store.append_event(StageId::Post, "exported", &format!("投递 {} 个交付物", files.len()), None)?;
+        self.store.append_event(
+            StageId::Post,
+            "exported",
+            &format!("投递 {} 个交付物", files.len()),
+            None,
+        )?;
         Ok(ExportResult {
             files,
-            note: "交付物已放进 output/。这是唯一对用户可见的产物目录，中间媒体留在 media/。".into(),
+            note: "交付物已放进 output/。这是唯一对用户可见的产物目录，中间媒体留在 media/。"
+                .into(),
         })
     }
 
     /// 把阶段产物同步成人可读的 `stages/<stage>.json`，方便直接打开看和进 Git。
     fn mirror_stage_file(&self, stage: StageId, outputs: Option<&Outputs>) -> Result<()> {
         let Some(o) = outputs else { return Ok(()) };
-        let text = serde_json::to_string_pretty(o).map_err(|e| StudioError::internal(e.to_string()))?;
-        self.bundle.write(&format!("stages/{stage}.json"), &format!("{text}\n"))
+        let text =
+            serde_json::to_string_pretty(o).map_err(|e| StudioError::internal(e.to_string()))?;
+        self.bundle
+            .write(&format!("stages/{stage}.json"), &format!("{text}\n"))
     }
 
     /// 把错误包成信封返回，保证 `blocked_by.remedy` 一定在。
@@ -430,7 +509,10 @@ impl Project {
             blocked_by: Some(Blocked::from(e)),
             pending_question: None,
             next_action: None,
-            progress: Progress { completed: 0, total: STAGE_TOTAL },
+            progress: Progress {
+                completed: 0,
+                total: STAGE_TOTAL,
+            },
         })
     }
 }

@@ -18,9 +18,16 @@ pub fn pack(bundle: &Path, out: &Path, include_media: bool) -> std::io::Result<P
     let file = std::fs::File::create(out)?;
     let mut zip = zip::ZipWriter::new(file);
     let opts = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
-    let mut stats = PackStats { files: 0, bytes: 0, skipped_media: 0 };
+    let mut stats = PackStats {
+        files: 0,
+        bytes: 0,
+        skipped_media: 0,
+    };
 
-    for entry in walkdir::WalkDir::new(bundle).into_iter().filter_map(|e| e.ok()) {
+    for entry in walkdir::WalkDir::new(bundle)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
         if !entry.file_type().is_file() {
             continue;
         }
@@ -31,7 +38,8 @@ pub fn pack(bundle: &Path, out: &Path, include_media: bool) -> std::io::Result<P
         };
         let rel_str = rel.to_string_lossy().replace('\\', "/");
 
-        if rel_str.starts_with(".studio/studiod.lock") || rel_str.starts_with(".studio/trace.jsonl") {
+        if rel_str.starts_with(".studio/studiod.lock") || rel_str.starts_with(".studio/trace.jsonl")
+        {
             continue;
         }
         if !include_media && (rel_str.starts_with("media/") || rel_str.starts_with("output/")) {
@@ -64,7 +72,9 @@ pub fn unpack(archive: &Path, into: &Path) -> std::io::Result<usize> {
     let mut n = 0;
     for i in 0..zip.len() {
         let mut entry = zip.by_index(i)?;
-        let Some(rel) = entry.enclosed_name() else { continue };
+        let Some(rel) = entry.enclosed_name() else {
+            continue;
+        };
         let dest = into.join(rel);
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent)?;
@@ -133,7 +143,10 @@ mod tests {
         let target = b.path().parent().unwrap().join("restored.studio");
         let n = unpack(&out, &target).unwrap();
         assert_eq!(n, 5);
-        assert_eq!(std::fs::read_to_string(target.join("AGENTS.md")).unwrap(), "契约");
+        assert_eq!(
+            std::fs::read_to_string(target.join("AGENTS.md")).unwrap(),
+            "契约"
+        );
         assert!(target.join(".studio/studio.db").is_file());
 
         let e = unpack(&out, &target).unwrap_err();

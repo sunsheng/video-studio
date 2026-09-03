@@ -119,12 +119,24 @@ impl Submitted {
 
 impl Stage<Draft> {
     pub fn new(id: StageId) -> Self {
-        Stage { id, attempt: 1, outputs: None, question: None, _marker: PhantomData }
+        Stage {
+            id,
+            attempt: 1,
+            outputs: None,
+            question: None,
+            _marker: PhantomData,
+        }
     }
 
     /// 从持久化状态还原一个草稿（可能带着上一次尝试留下的产物）。
     pub fn resumed(id: StageId, attempt: u32, outputs: Option<Outputs>) -> Self {
-        Stage { id, attempt, outputs, question: None, _marker: PhantomData }
+        Stage {
+            id,
+            attempt,
+            outputs,
+            question: None,
+            _marker: PhantomData,
+        }
     }
 
     /// 提交产物。
@@ -137,7 +149,10 @@ impl Stage<Draft> {
         let gate = self.id.gate();
         match gate {
             Some(gate_id) => {
-                let c = confirmation.ok_or(StudioError::ConfirmationRequired { stage: self.id, gate: gate_id })?;
+                let c = confirmation.ok_or(StudioError::ConfirmationRequired {
+                    stage: self.id,
+                    gate: gate_id,
+                })?;
                 validate_confirmation(self.id, &c)?;
                 let question = Question {
                     question_id: gate_id.to_string(),
@@ -168,12 +183,20 @@ impl Stage<Draft> {
 impl Stage<AwaitingConfirmation> {
     /// 还原一个挂起中的门。
     pub fn resumed(id: StageId, attempt: u32, outputs: Outputs, question: Question) -> Self {
-        Stage { id, attempt, outputs: Some(outputs), question: Some(question), _marker: PhantomData }
+        Stage {
+            id,
+            attempt,
+            outputs: Some(outputs),
+            question: Some(question),
+            _marker: PhantomData,
+        }
     }
 
     pub fn question(&self) -> &Question {
         // 构造函数保证 AwaitingConfirmation 一定带着问题。
-        self.question.as_ref().expect("AwaitingConfirmation 必然携带 question")
+        self.question
+            .as_ref()
+            .expect("AwaitingConfirmation 必然携带 question")
     }
 
     /// 用户确认通过。
@@ -223,7 +246,13 @@ impl Stage<AwaitingConfirmation> {
 
 impl Stage<Approved> {
     pub fn resumed(id: StageId, attempt: u32, outputs: Option<Outputs>) -> Self {
-        Stage { id, attempt, outputs, question: None, _marker: PhantomData }
+        Stage {
+            id,
+            attempt,
+            outputs,
+            question: None,
+            _marker: PhantomData,
+        }
     }
 
     /// 回滚到草稿，重做该阶段。
@@ -255,8 +284,12 @@ impl LoadedStage {
         question: Option<Question>,
     ) -> Result<LoadedStage> {
         match state {
-            StageState::Draft => Ok(LoadedStage::Draft(Stage::<Draft>::resumed(id, attempt, outputs))),
-            StageState::Approved => Ok(LoadedStage::Approved(Stage::<Approved>::resumed(id, attempt, outputs))),
+            StageState::Draft => Ok(LoadedStage::Draft(Stage::<Draft>::resumed(
+                id, attempt, outputs,
+            ))),
+            StageState::Approved => Ok(LoadedStage::Approved(Stage::<Approved>::resumed(
+                id, attempt, outputs,
+            ))),
             StageState::AwaitingConfirmation => {
                 let outputs = outputs.ok_or_else(|| StudioError::StateDrift {
                     detail: format!("阶段 {id} 记为 awaiting_confirmation 却没有产物"),
@@ -264,7 +297,9 @@ impl LoadedStage {
                 let question = question.ok_or_else(|| StudioError::StateDrift {
                     detail: format!("阶段 {id} 记为 awaiting_confirmation 却没有确认门"),
                 })?;
-                Ok(LoadedStage::Awaiting(Stage::<AwaitingConfirmation>::resumed(id, attempt, outputs, question)))
+                Ok(LoadedStage::Awaiting(
+                    Stage::<AwaitingConfirmation>::resumed(id, attempt, outputs, question),
+                ))
             }
         }
     }
@@ -306,13 +341,19 @@ impl LoadedStage {
 fn validate_confirmation(stage: StageId, c: &Confirmation) -> Result<()> {
     let mut v = Vec::new();
     if c.prompt.trim().is_empty() {
-        v.push(Violation::new("confirmation.prompt", "确认问题的正文不能为空"));
+        v.push(Violation::new(
+            "confirmation.prompt",
+            "确认问题的正文不能为空",
+        ));
     }
     if c.options.is_empty() {
         v.push(Violation::new("confirmation.options", "至少要给出一个选项"));
     }
     if c.selection_type == SelectionType::Single && c.options.len() < 2 {
-        v.push(Violation::new("confirmation.options", "单选门至少要两个选项，否则用户没得选"));
+        v.push(Violation::new(
+            "confirmation.options",
+            "单选门至少要两个选项，否则用户没得选",
+        ));
     }
     if !c.options.iter().any(|o| o.outcome == Outcome::Approve) {
         v.push(Violation::new(
@@ -323,19 +364,31 @@ fn validate_confirmation(stage: StageId, c: &Confirmation) -> Result<()> {
     let mut seen = std::collections::HashSet::new();
     for (i, o) in c.options.iter().enumerate() {
         if o.id.trim().is_empty() {
-            v.push(Violation::new(format!("confirmation.options[{i}].id"), "选项 id 不能为空"));
+            v.push(Violation::new(
+                format!("confirmation.options[{i}].id"),
+                "选项 id 不能为空",
+            ));
         }
         if o.label.trim().is_empty() {
-            v.push(Violation::new(format!("confirmation.options[{i}].label"), "选项 label 不能为空"));
+            v.push(Violation::new(
+                format!("confirmation.options[{i}].label"),
+                "选项 label 不能为空",
+            ));
         }
         if !seen.insert(o.id.clone()) {
-            v.push(Violation::new(format!("confirmation.options[{i}].id"), format!("选项 id 重复：{}", o.id)));
+            v.push(Violation::new(
+                format!("confirmation.options[{i}].id"),
+                format!("选项 id 重复：{}", o.id),
+            ));
         }
     }
     if v.is_empty() {
         Ok(())
     } else {
-        Err(StudioError::SchemaViolation { stage, violations: v })
+        Err(StudioError::SchemaViolation {
+            stage,
+            violations: v,
+        })
     }
 }
 
@@ -389,7 +442,9 @@ mod tests {
     fn bad_confirmation_is_a_schema_violation() {
         let mut c = conf();
         c.options.clear();
-        let e = Stage::<Draft>::new(StageId::Script).submit(outs("script"), Some(c)).unwrap_err();
+        let e = Stage::<Draft>::new(StageId::Script)
+            .submit(outs("script"), Some(c))
+            .unwrap_err();
         assert_eq!(e.code(), "schema_violation");
     }
 
@@ -397,7 +452,9 @@ mod tests {
     fn single_select_needs_two_options() {
         let mut c = conf();
         c.options.truncate(1);
-        let e = Stage::<Draft>::new(StageId::Script).submit(outs("script"), Some(c)).unwrap_err();
+        let e = Stage::<Draft>::new(StageId::Script)
+            .submit(outs("script"), Some(c))
+            .unwrap_err();
         assert_eq!(e.code(), "schema_violation");
     }
 
@@ -405,13 +462,18 @@ mod tests {
     fn duplicate_option_ids_rejected() {
         let mut c = conf();
         c.options[1] = AnswerOption::new("approve", "又一个 approve");
-        let e = Stage::<Draft>::new(StageId::Script).submit(outs("script"), Some(c)).unwrap_err();
+        let e = Stage::<Draft>::new(StageId::Script)
+            .submit(outs("script"), Some(c))
+            .unwrap_err();
         assert_eq!(e.code(), "schema_violation");
     }
 
     #[test]
     fn unknown_answer_is_rejected_with_options() {
-        let awaiting = match Stage::<Draft>::new(StageId::Script).submit(outs("script"), Some(conf())).unwrap() {
+        let awaiting = match Stage::<Draft>::new(StageId::Script)
+            .submit(outs("script"), Some(conf()))
+            .unwrap()
+        {
             Submitted::AwaitingConfirmation(s) => s,
             _ => panic!("应当挂门"),
         };
@@ -424,7 +486,10 @@ mod tests {
     #[test]
     fn revise_then_resubmit_works_in_one_pass() {
         // 1. 提交每镜头 2 秒的版本，门挂起
-        let awaiting = match Stage::<Draft>::new(StageId::Script).submit(outs("script"), Some(conf())).unwrap() {
+        let awaiting = match Stage::<Draft>::new(StageId::Script)
+            .submit(outs("script"), Some(conf()))
+            .unwrap()
+        {
             Submitted::AwaitingConfirmation(s) => s,
             _ => panic!("应当挂门"),
         };
@@ -449,7 +514,10 @@ mod tests {
     /// 选中「打回重做」的选项不能把阶段标成通过——那正是前身项目的门做过的事。
     #[test]
     fn choosing_a_revise_option_is_not_an_approval() {
-        let awaiting = match Stage::<Draft>::new(StageId::Script).submit(outs("script"), Some(conf())).unwrap() {
+        let awaiting = match Stage::<Draft>::new(StageId::Script)
+            .submit(outs("script"), Some(conf()))
+            .unwrap()
+        {
             Submitted::AwaitingConfirmation(s) => s,
             _ => panic!("应当挂门"),
         };
@@ -457,7 +525,11 @@ mod tests {
         assert_eq!(e.code(), "unknown_answer");
         match &e {
             StudioError::UnknownAnswer { options, .. } => {
-                assert_eq!(options, &vec!["approve".to_string()], "只应把通过类选项列为候选");
+                assert_eq!(
+                    options,
+                    &vec!["approve".to_string()],
+                    "只应把通过类选项列为候选"
+                );
             }
             other => panic!("实际 {other}"),
         }
@@ -473,13 +545,18 @@ mod tests {
                 crate::contract::AnswerOption::revise("revise_b", "那样改"),
             ],
         };
-        let e = Stage::<Draft>::new(StageId::Script).submit(outs("script"), Some(c)).unwrap_err();
+        let e = Stage::<Draft>::new(StageId::Script)
+            .submit(outs("script"), Some(c))
+            .unwrap_err();
         assert_eq!(e.code(), "schema_violation");
     }
 
     #[test]
     fn undo_returns_to_draft_and_bumps_attempt() {
-        let approved = match Stage::<Draft>::new(StageId::Idea).submit(outs("brief"), None).unwrap() {
+        let approved = match Stage::<Draft>::new(StageId::Idea)
+            .submit(outs("brief"), None)
+            .unwrap()
+        {
             Submitted::Approved(s) => s,
             _ => panic!(),
         };
@@ -490,8 +567,14 @@ mod tests {
 
     #[test]
     fn loaded_stage_rejects_awaiting_without_question() {
-        let e = LoadedStage::load(StageId::Script, StageState::AwaitingConfirmation, 1, Some(outs("script")), None)
-            .unwrap_err();
+        let e = LoadedStage::load(
+            StageId::Script,
+            StageState::AwaitingConfirmation,
+            1,
+            Some(outs("script")),
+            None,
+        )
+        .unwrap_err();
         assert_eq!(e.code(), "state_drift");
     }
 

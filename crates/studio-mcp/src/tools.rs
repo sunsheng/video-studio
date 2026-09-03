@@ -29,89 +29,99 @@ fn stage_arg(desc: &str) -> Value {
 pub const TOOLS: [ToolSpec; 9] = [
     ToolSpec {
         name: "studio.status",
-        description: "读取决策信封：现在在哪个阶段、该谁行动、下一步要交什么。任何时候不确定就先调它。",
+        description:
+            "读取决策信封：现在在哪个阶段、该谁行动、下一步要交什么。任何时候不确定就先调它。",
         input_schema: no_args,
     },
     ToolSpec {
         name: "studio.schema",
-        description: "取回某个阶段产物的 JSON Schema。提交前先看它，不要去猜字段，也不要参考别处的产物。",
-        input_schema: || json!({
-            "type": "object",
-            "properties": { "stage": stage_arg("要查看契约的阶段") },
-            "required": ["stage"],
-            "additionalProperties": false
-        }),
+        description:
+            "取回某个阶段产物的 JSON Schema。提交前先看它，不要去猜字段，也不要参考别处的产物。",
+        input_schema: || {
+            json!({
+                "type": "object",
+                "properties": { "stage": stage_arg("要查看契约的阶段") },
+                "required": ["stage"],
+                "additionalProperties": false
+            })
+        },
     },
     ToolSpec {
         name: "studio.submit_stage",
         description: "提交当前阶段的产物。有确认门的阶段必须同时给出 confirmation；\
                       选项要用 outcome 声明是通过还是打回，不要靠 id 的字面意思暗示。",
-        input_schema: || json!({
-            "type": "object",
-            "properties": {
-                "outputs": {
-                    "type": "object",
-                    "description": "阶段产物。顶层键由 studio.status 的 next_action.required_outputs 给出。"
-                },
-                "summary": { "type": "string", "description": "一句话说明这次提交做了什么，会出现在时间线里。" },
-                "confirmation": {
-                    "type": "object",
-                    "description": "确认门。只有带门的阶段需要。",
-                    "properties": {
-                        "prompt": { "type": "string", "description": "问用户的话" },
-                        "selection_type": { "type": "string", "enum": ["single", "multi"] },
-                        "options": {
-                            "type": "array",
-                            "minItems": 1,
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "id": { "type": "string" },
-                                    "label": { "type": "string" },
-                                    "outcome": {
-                                        "type": "string",
-                                        "enum": ["approve", "revise"],
-                                        "description": "approve 通过并进入下一阶段；revise 把本阶段打回草稿。至少要有一个 approve。"
-                                    }
-                                },
-                                "required": ["id", "label"]
-                            }
-                        }
+        input_schema: || {
+            json!({
+                "type": "object",
+                "properties": {
+                    "outputs": {
+                        "type": "object",
+                        "description": "阶段产物。顶层键由 studio.status 的 next_action.required_outputs 给出。"
                     },
-                    "required": ["prompt", "options"]
-                }
-            },
-            "required": ["outputs"],
-            "additionalProperties": false
-        }),
+                    "summary": { "type": "string", "description": "一句话说明这次提交做了什么，会出现在时间线里。" },
+                    "confirmation": {
+                        "type": "object",
+                        "description": "确认门。只有带门的阶段需要。",
+                        "properties": {
+                            "prompt": { "type": "string", "description": "问用户的话" },
+                            "selection_type": { "type": "string", "enum": ["single", "multi"] },
+                            "options": {
+                                "type": "array",
+                                "minItems": 1,
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "id": { "type": "string" },
+                                        "label": { "type": "string" },
+                                        "outcome": {
+                                            "type": "string",
+                                            "enum": ["approve", "revise"],
+                                            "description": "approve 通过并进入下一阶段；revise 把本阶段打回草稿。至少要有一个 approve。"
+                                        }
+                                    },
+                                    "required": ["id", "label"]
+                                }
+                            }
+                        },
+                        "required": ["prompt", "options"]
+                    }
+                },
+                "required": ["outputs"],
+                "additionalProperties": false
+            })
+        },
     },
     ToolSpec {
         name: "studio.answer",
         description: "把用户对确认门的选择交回来。选中 outcome=revise 的选项会自动把阶段打回草稿。",
-        input_schema: || json!({
-            "type": "object",
-            "properties": {
-                "question_id": { "type": "string", "description": "来自 status 的 pending_question.question_id" },
-                "answer": { "type": "string", "description": "选项 id" }
-            },
-            "required": ["question_id", "answer"],
-            "additionalProperties": false
-        }),
+        input_schema: || {
+            json!({
+                "type": "object",
+                "properties": {
+                    "question_id": { "type": "string", "description": "来自 status 的 pending_question.question_id" },
+                    "answer": { "type": "string", "description": "选项 id" }
+                },
+                "required": ["question_id", "answer"],
+                "additionalProperties": false
+            })
+        },
     },
     ToolSpec {
         name: "studio.revise",
         description: "用户提出修改意见时调它。阶段回到草稿，可以立刻重新提交。\
                       它不会失败，也不需要先解除什么占用。作品的进度会整体退回到该阶段，\
                       它之后的阶段一律变回未执行——旧产物留着可以读出来参考。",
-        input_schema: || json!({
-            "type": "object",
-            "properties": {
-                "stage": stage_arg("要修改的阶段"),
-                "message": { "type": "string", "description": "用户的原话或归纳后的修改意见" }
-            },
-            "required": ["stage", "message"],
-            "additionalProperties": false
-        }),
+        input_schema: || {
+            json!({
+                "type": "object",
+                "properties": {
+                    "stage": stage_arg("要修改的阶段"),
+                    "message": { "type": "string", "description": "用户的原话或归纳后的修改意见" }
+                },
+                "required": ["stage", "message"],
+                "additionalProperties": false
+            })
+        },
     },
     ToolSpec {
         name: "studio.undo",
@@ -122,21 +132,25 @@ pub const TOOLS: [ToolSpec; 9] = [
     ToolSpec {
         name: "studio.stage_output",
         description: "读取某个阶段的完整产物。上游被改后，下游的旧产物仍可在这里读到，供参考着改。",
-        input_schema: || json!({
-            "type": "object",
-            "properties": { "stage": stage_arg("要读取的阶段") },
-            "required": ["stage"],
-            "additionalProperties": false
-        }),
+        input_schema: || {
+            json!({
+                "type": "object",
+                "properties": { "stage": stage_arg("要读取的阶段") },
+                "required": ["stage"],
+                "additionalProperties": false
+            })
+        },
     },
     ToolSpec {
         name: "studio.timeline",
         description: "读取用户可见的操作历史：每个阶段何时提交、何时挂门、何时被修订。",
-        input_schema: || json!({
-            "type": "object",
-            "properties": { "limit": { "type": "integer", "minimum": 1, "maximum": 500, "default": 50 } },
-            "additionalProperties": false
-        }),
+        input_schema: || {
+            json!({
+                "type": "object",
+                "properties": { "limit": { "type": "integer", "minimum": 1, "maximum": 500, "default": 50 } },
+                "additionalProperties": false
+            })
+        },
     },
     ToolSpec {
         name: "studio.export",
@@ -168,8 +182,16 @@ mod tests {
         for t in TOOLS.iter() {
             let s = (t.input_schema)();
             let props = s["properties"].as_object().unwrap();
-            assert!(!props.contains_key("run_id"), "{} 不该有 run_id 参数", t.name);
-            assert!(!props.contains_key("project"), "{} 不该有 project 参数", t.name);
+            assert!(
+                !props.contains_key("run_id"),
+                "{} 不该有 run_id 参数",
+                t.name
+            );
+            assert!(
+                !props.contains_key("project"),
+                "{} 不该有 project 参数",
+                t.name
+            );
         }
     }
 
@@ -179,7 +201,14 @@ mod tests {
         // 或 bundle 内文件路径，抽象层次就错了。
         for t in TOOLS.iter() {
             let s = (t.input_schema)().to_string();
-            for leak in ["commit", "branch", "prompt_id", "node_url", "db_path", "file_path"] {
+            for leak in [
+                "commit",
+                "branch",
+                "prompt_id",
+                "node_url",
+                "db_path",
+                "file_path",
+            ] {
                 assert!(!s.contains(leak), "{} 的参数泄露了实现细节：{leak}", t.name);
             }
         }
@@ -204,7 +233,11 @@ mod tests {
 
     #[test]
     fn stage_enums_cover_the_whole_graph() {
-        let s = (TOOLS.iter().find(|t| t.name == "studio.schema").unwrap().input_schema)();
+        let s = (TOOLS
+            .iter()
+            .find(|t| t.name == "studio.schema")
+            .unwrap()
+            .input_schema)();
         let e = s["properties"]["stage"]["enum"].as_array().unwrap();
         assert_eq!(e.len(), 9);
     }

@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: 测试与静态检查
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: 格式
+        run: cargo fmt --all -- --check
+
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: 测试
+        # 端到端测试不在这里跑——它需要一个真实的 Codex 会话驱动真实的
+        # MCP server，只在生产环境执行，见 docs/e2e.md。
+        run: cargo test --workspace
+
+      - name: 随包文档与代码一致
+        # AGENTS.md / SKILL.md / JSON Schema 全部由代码生成。
+        # 改了阶段图、工具注册表或错误码却没重新生成，这里会红。
+        run: |
+          cargo run -q -p studiod -- emit-assets --out assets --check

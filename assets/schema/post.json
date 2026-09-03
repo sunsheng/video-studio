@@ -1,0 +1,45 @@
+{
+  "$id": "https://github.com/sunsheng/video-studio/schema/post.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": true,
+  "description": "studio.submit_stage 在阶段 post 接受的 outputs 形状。顶层键固定为 post。",
+  "properties": {
+    "post": {
+      "additionalProperties": true,
+      "description": "后期结果（由控制面产出）",
+      "properties": {
+        "aspect_ratio": {
+          "description": "成片实际画幅",
+          "type": "string"
+        },
+        "cover": {
+          "description": "封面相对路径",
+          "type": "string"
+        },
+        "duration_seconds": {
+          "description": "成片实际时长",
+          "type": "number"
+        },
+        "subtitles": {
+          "description": "字幕相对路径",
+          "type": "string"
+        },
+        "video": {
+          "description": "成片的 bundle 内相对路径",
+          "type": "string"
+        }
+      },
+      "required": [
+        "video",
+        "duration_seconds",
+        "aspect_ratio"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "post"
+  ],
+  "title": "post 阶段产物",
+  "type": "object"
+}

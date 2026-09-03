@@ -1,0 +1,155 @@
+{
+  "$id": "https://github.com/sunsheng/video-studio/schema/storyboard.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": true,
+  "description": "studio.submit_stage 在阶段 storyboard 接受的 outputs 形状。顶层键固定为 storyboard。",
+  "properties": {
+    "storyboard": {
+      "additionalProperties": true,
+      "description": "逐镜头分镜：摄影机、灯光、构图与时长",
+      "properties": {
+        "aspect_ratio": {
+          "description": "画幅",
+          "enum": [
+            "9:16",
+            "16:9",
+            "4:3",
+            "1:1"
+          ],
+          "type": "string"
+        },
+        "character_lock": {
+          "description": "角色连续性锁定：外观、服装、机位签名、安全约束"
+        },
+        "shot_count": {
+          "description": "镜头数",
+          "type": "integer"
+        },
+        "shots": {
+          "description": "镜头表",
+          "items": {
+            "additionalProperties": true,
+            "description": "一个镜头",
+            "properties": {
+              "action_chain": {
+                "description": "动作链：起 -> 承 -> 收",
+                "type": "string"
+              },
+              "angle": {
+                "description": "机位角度",
+                "type": "string"
+              },
+              "background": {
+                "description": "背景",
+                "type": "string"
+              },
+              "camera_motion": {
+                "description": "镜头运动。每镜只保留一个主运动",
+                "type": "string"
+              },
+              "duration_seconds": {
+                "description": "时长（秒）",
+                "minimum": 0.1,
+                "type": "number"
+              },
+              "end": {
+                "description": "终点（秒）",
+                "minimum": 0.0,
+                "type": "number"
+              },
+              "first_frame": {
+                "description": "首帧",
+                "type": "string"
+              },
+              "foreground": {
+                "description": "前景",
+                "type": "string"
+              },
+              "last_frame": {
+                "description": "尾帧",
+                "type": "string"
+              },
+              "lighting_color": {
+                "description": "灯光与色调",
+                "type": "string"
+              },
+              "midground": {
+                "description": "中景",
+                "type": "string"
+              },
+              "purpose": {
+                "description": "这个镜头的作用",
+                "type": "string"
+              },
+              "shot_id": {
+                "description": "稳定标识，例如 sh01",
+                "type": "string"
+              },
+              "shot_size": {
+                "description": "景别",
+                "type": "string"
+              },
+              "sound": {
+                "description": "声音",
+                "type": "string"
+              },
+              "start": {
+                "description": "起点（秒）",
+                "minimum": 0.0,
+                "type": "number"
+              },
+              "subject": {
+                "description": "主体",
+                "type": "string"
+              },
+              "transition_to_next": {
+                "description": "转场方式",
+                "type": "string"
+              }
+            },
+            "required": [
+              "shot_id",
+              "start",
+              "end",
+              "duration_seconds",
+              "purpose",
+              "shot_size",
+              "camera_motion",
+              "subject",
+              "action_chain"
+            ],
+            "type": "object"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "timing_basis": {
+          "description": "时长依据。不平均切分时说明为什么",
+          "type": "string"
+        },
+        "title": {
+          "description": "标题",
+          "type": "string"
+        },
+        "total_duration_seconds": {
+          "description": "总时长",
+          "minimum": 1.0,
+          "type": "number"
+        }
+      },
+      "required": [
+        "title",
+        "aspect_ratio",
+        "total_duration_seconds",
+        "shot_count",
+        "shots"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "storyboard"
+  ],
+  "title": "storyboard 阶段产物",
+  "type": "object"
+}

@@ -58,15 +58,69 @@ pub struct StageSpec {
 
 /// 阶段图。顺序即执行顺序。
 pub const STAGE_GRAPH: [StageSpec; 9] = [
-    StageSpec { id: StageId::Idea,         capability: Capability::Idea,      kind: StageKind::Creative,      gate: None,                            output_key: "brief" },
-    StageSpec { id: StageId::Selection,    capability: Capability::Selection, kind: StageKind::Creative,      gate: Some("selection.approval"),      output_key: "selection" },
-    StageSpec { id: StageId::Script,       capability: Capability::Script,    kind: StageKind::Creative,      gate: Some("script.approval"),         output_key: "script" },
-    StageSpec { id: StageId::Storyboard,   capability: Capability::Director,  kind: StageKind::Creative,      gate: Some("storyboard.approval"),     output_key: "storyboard" },
-    StageSpec { id: StageId::VisualAssets, capability: Capability::Visual,    kind: StageKind::Hybrid,        gate: Some("visual_assets.approval"),  output_key: "asset_plan" },
-    StageSpec { id: StageId::PromptPack,   capability: Capability::Prompt,    kind: StageKind::Creative,      gate: Some("prompt_pack.approval"),    output_key: "prompt_pack" },
-    StageSpec { id: StageId::Render,       capability: Capability::Comfyui,   kind: StageKind::Deterministic, gate: None,                            output_key: "render" },
-    StageSpec { id: StageId::Post,         capability: Capability::Post,      kind: StageKind::Deterministic, gate: None,                            output_key: "post" },
-    StageSpec { id: StageId::Review,       capability: Capability::Review,    kind: StageKind::Deterministic, gate: None,                            output_key: "review" },
+    StageSpec {
+        id: StageId::Idea,
+        capability: Capability::Idea,
+        kind: StageKind::Creative,
+        gate: None,
+        output_key: "brief",
+    },
+    StageSpec {
+        id: StageId::Selection,
+        capability: Capability::Selection,
+        kind: StageKind::Creative,
+        gate: Some("selection.approval"),
+        output_key: "selection",
+    },
+    StageSpec {
+        id: StageId::Script,
+        capability: Capability::Script,
+        kind: StageKind::Creative,
+        gate: Some("script.approval"),
+        output_key: "script",
+    },
+    StageSpec {
+        id: StageId::Storyboard,
+        capability: Capability::Director,
+        kind: StageKind::Creative,
+        gate: Some("storyboard.approval"),
+        output_key: "storyboard",
+    },
+    StageSpec {
+        id: StageId::VisualAssets,
+        capability: Capability::Visual,
+        kind: StageKind::Hybrid,
+        gate: Some("visual_assets.approval"),
+        output_key: "asset_plan",
+    },
+    StageSpec {
+        id: StageId::PromptPack,
+        capability: Capability::Prompt,
+        kind: StageKind::Creative,
+        gate: Some("prompt_pack.approval"),
+        output_key: "prompt_pack",
+    },
+    StageSpec {
+        id: StageId::Render,
+        capability: Capability::Comfyui,
+        kind: StageKind::Deterministic,
+        gate: None,
+        output_key: "render",
+    },
+    StageSpec {
+        id: StageId::Post,
+        capability: Capability::Post,
+        kind: StageKind::Deterministic,
+        gate: None,
+        output_key: "post",
+    },
+    StageSpec {
+        id: StageId::Review,
+        capability: Capability::Review,
+        kind: StageKind::Deterministic,
+        gate: None,
+        output_key: "review",
+    },
 ];
 
 impl StageId {
@@ -104,7 +158,10 @@ impl StageId {
     }
 
     pub fn parse(s: &str) -> Option<StageId> {
-        STAGE_GRAPH.iter().find(|sp| sp.id.as_str() == s).map(|sp| sp.id)
+        STAGE_GRAPH
+            .iter()
+            .find(|sp| sp.id.as_str() == s)
+            .map(|sp| sp.id)
     }
 
     /// 下一个阶段；最后一个阶段返回 None。
@@ -178,8 +235,16 @@ impl StageKind {
 
 /// 全部 Skill 目录名。`run-management` 不对应阶段，单列。
 pub const SKILL_NAMES: [&str; 10] = [
-    "idea", "selection", "script", "director", "visual",
-    "prompt", "comfyui", "post", "review", "run-management",
+    "idea",
+    "selection",
+    "script",
+    "director",
+    "visual",
+    "prompt",
+    "comfyui",
+    "post",
+    "review",
+    "run-management",
 ];
 
 #[cfg(test)]
@@ -189,7 +254,12 @@ mod tests {
     #[test]
     fn index_matches_graph_order() {
         for (i, spec) in STAGE_GRAPH.iter().enumerate() {
-            assert_eq!(spec.id.index(), i, "{} 的 index 与 STAGE_GRAPH 顺序不一致", spec.id);
+            assert_eq!(
+                spec.id.index(),
+                i,
+                "{} 的 index 与 STAGE_GRAPH 顺序不一致",
+                spec.id
+            );
             assert_eq!(spec.id.spec().id, spec.id);
         }
     }
