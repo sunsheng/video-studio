@@ -324,6 +324,33 @@ fn every_call_is_traced_for_the_production_report() {
     assert!(records.iter().all(|r| r.duration_ms < 60_000));
 }
 
+/// 留痕记的是「作用在哪个阶段」，不是「调用之后停在哪个阶段」。
+///
+/// 这两者差一步：提交 idea 成功之后信封已经指向 selection。
+/// 按后者归因的话 idea 永远不会出现在报告里——真实跑一遍就抓到了这个。
+#[test]
+fn trace_attributes_calls_to_the_stage_they_acted_on() {
+    let mut h = Harness::new();
+    h.advance(StageId::Idea);
+    h.advance(StageId::Selection);
+
+    let records = Trace::read(&h.root);
+    let stages: Vec<&str> = records.iter().filter_map(|r| r.stage.as_deref()).collect();
+    assert!(
+        stages.contains(&"idea"),
+        "提交 idea 应当记在 idea 名下，实际：{stages:?}"
+    );
+    assert!(stages.contains(&"selection"));
+    assert!(
+        !stages.contains(&"script"),
+        "还没做剧本，不该有剧本的调用记录：{stages:?}"
+    );
+
+    // 确认门的应答记在门所属的阶段上
+    let answer = records.iter().find(|r| r.tool == "studio.answer").unwrap();
+    assert_eq!(answer.stage.as_deref(), Some("selection"));
+}
+
 #[test]
 fn a_directory_that_is_not_a_project_explains_itself() {
     let dir = tempfile::tempdir().unwrap();

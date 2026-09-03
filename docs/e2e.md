@@ -94,6 +94,21 @@ MCP server 每次工具调用往 `.studio/trace.jsonl` 追加一行，只记调�
 
 `studiod pack` 不会把 trace 打进包。
 
+## 换机器之后先跑协议层冒烟
+
+`scripts/replay-protocol.py` 不用 Codex，直接跟 `studiod serve` 说 JSON-RPC 走完
+六个阶段（中间重放一次「不要固定 2 秒」的修订）。它**不能替代**端到端——
+真正的端到端要验证的是 Codex 读了 AGENTS.md 和 SKILL.md 之后会不会正确使用
+工具面，那是脚本模拟不了的。但它能在换了机器、换了构建之后快速确认协议层没坏：
+
+```bash
+cargo build --release -p studiod
+cargo run -q -p studio-core --features fixtures --example export_fixtures > /tmp/fixtures.json
+./target/release/studiod init /tmp/replay.studio
+python3 scripts/replay-protocol.py /tmp/replay.studio /tmp/fixtures.json
+cd /tmp/replay.studio && studiod e2e report
+```
+
 ## 报告说未过之后
 
 拿着 `report.json` 回开发环境。常见几种形状：

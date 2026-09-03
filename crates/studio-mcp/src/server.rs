@@ -139,17 +139,17 @@ impl Server {
             );
         }
 
+        // 调用**之前**先记下作用在哪个阶段。用返回信封里的阶段是错的：
+        // 提交 idea 成功之后信封已经指向 selection，idea 就永远不会被记上。
+        let acted_stage = self.acted_stage(&args);
+
         let started = std::time::Instant::now();
         let outcome = self.dispatch(&name, &args);
         let elapsed = started.elapsed().as_millis() as u64;
 
         let (payload, is_error, rec) = match outcome {
             Ok(v) => {
-                let stage = v
-                    .get("project")
-                    .and_then(|p| p.get("stage"))
-                    .and_then(|s| s.as_str())
-                    .map(String::from);
+                let stage = acted_stage.clone();
                 let waiting = v
                     .get("waiting_on")
                     .and_then(|s| s.as_str())
@@ -183,7 +183,7 @@ impl Server {
                 let rec = TraceRecord {
                     at: now(),
                     tool: name.clone(),
-                    stage: None,
+                    stage: acted_stage.clone(),
                     ok: false,
                     error_code: Some(e.code().to_string()),
                     remedy_present: Some(!e.remedy().trim().is_empty()),
@@ -206,6 +206,21 @@ impl Server {
                 "structuredContent": payload
             }
         })
+    }
+
+    /// 这次调用作用在哪个阶段：显式给了 stage 就用它，否则就是当前阶段。
+    fn acted_stage(&self, args: &Value) -> Option<String> {
+        if let Some(s) = args.get("stage").and_then(|v| v.as_str()) {
+            return Some(s.to_string());
+        }
+        let p = self.project.as_ref()?;
+        if let Ok(Some(q)) = p.store().pending_question() {
+            return Some(q.stage.as_str().to_string());
+        }
+        p.current_stage()
+            .ok()
+            .flatten()
+            .map(|s| s.as_str().to_string())
     }
 
     fn project(&self) -> studio_core::Result<&Project> {
