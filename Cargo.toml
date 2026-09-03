@@ -1,0 +1,31 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/studio-core",
+    "crates/studio-store",
+    "crates/studio-engine",
+    "crates/studio-comfy",
+    "crates/studio-media",
+    "crates/studio-mcp",
+    "crates/studiod",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+license = "MIT"
+repository = "https://github.com/sunsheng/video-studio"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+rusqlite = { version = "0.32", features = ["bundled"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+sha2 = "0.10"
+fs2 = "0.4"
+ureq = { version = "2", features = ["json"] }
+clap = { version = "4", features = ["derive"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+walkdir = "2"
