@@ -220,8 +220,8 @@ mod tests {
     #[test]
     fn scan_finds_bundles_and_skips_plain_directories() {
         let d = tempfile::tempdir().unwrap();
-        studio_engine::init_project(&d.path().join("甲.studio"), "甲作品", "0.1.0", &[]).unwrap();
-        studio_engine::init_project(&d.path().join("乙.studio"), "乙作品", "0.1.0", &[]).unwrap();
+        studio_engine::init_project(d.path().join("甲.studio"), "甲作品", "0.1.0", &[]).unwrap();
+        studio_engine::init_project(d.path().join("乙.studio"), "乙作品", "0.1.0", &[]).unwrap();
         std::fs::create_dir_all(d.path().join("随便一个目录")).unwrap();
 
         let entries = scan(&[d.path().to_path_buf()], 2);
@@ -253,7 +253,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let outer = d.path().join("外.studio");
         studio_engine::init_project(&outer, "外", "0.1.0", &[]).unwrap();
-        studio_engine::init_project(&outer.join("媒体里的.studio"), "内", "0.1.0", &[]).unwrap();
+        studio_engine::init_project(outer.join("媒体里的.studio"), "内", "0.1.0", &[]).unwrap();
         let entries = scan(&[d.path().to_path_buf()], 3);
         assert_eq!(entries.len(), 1, "作品不嵌套，找到一个就不再往里走");
     }
