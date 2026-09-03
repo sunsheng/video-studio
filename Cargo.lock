@@ -899,7 +899,7 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
 name = "studio-comfy"
-version = "0.1.0"
+version = "0.10.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -911,7 +911,7 @@ dependencies = [
 
 [[package]]
 name = "studio-core"
-version = "0.1.0"
+version = "0.10.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -919,7 +919,7 @@ dependencies = [
 
 [[package]]
 name = "studio-engine"
-version = "0.1.0"
+version = "0.10.0"
 dependencies = [
  "chrono",
  "fs2",
@@ -933,7 +933,7 @@ dependencies = [
 
 [[package]]
 name = "studio-mcp"
-version = "0.1.0"
+version = "0.10.0"
 dependencies = [
  "chrono",
  "serde",
@@ -945,7 +945,7 @@ dependencies = [
 
 [[package]]
 name = "studio-media"
-version = "0.1.0"
+version = "0.10.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -956,7 +956,7 @@ dependencies = [
 
 [[package]]
 name = "studio-pipeline"
-version = "0.1.0"
+version = "0.10.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -969,7 +969,7 @@ dependencies = [
 
 [[package]]
 name = "studio-store"
-version = "0.1.0"
+version = "0.10.0"
 dependencies = [
  "chrono",
  "rusqlite",
@@ -982,7 +982,7 @@ dependencies = [
 
 [[package]]
 name = "studiod"
-version = "0.1.0"
+version = "0.10.0"
 dependencies = [
  "chrono",
  "clap",
