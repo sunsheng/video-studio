@@ -6,7 +6,8 @@
       ]
     },
     "source": "douyin-video-studio/validated_workflows/ltx2_5/flf2v_api.json",
-    "bindings_verified": false
+    "bindings_verified": false,
+    "unavailable_reason": "首尾帧变体的尺寸经由 ResizeImageMaskNode 推导，与 t2v/i2v 的 Primitive 链不同"
   },
   "210": {
     "inputs": {

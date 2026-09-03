@@ -22,6 +22,8 @@ pub struct Workflow {
     /// 绑错节点会静默产出错的画面，比直接报错难查得多。
     verified: bool,
     source: Option<String>,
+    /// 明确标注为不可用时的原因。没写就是「还没核验」。
+    unavailable_reason: Option<String>,
 }
 
 impl Workflow {
@@ -78,12 +80,17 @@ impl Workflow {
             .get("source")
             .and_then(|s| s.as_str())
             .map(String::from);
+        let unavailable_reason = meta
+            .get("unavailable_reason")
+            .and_then(|s| s.as_str())
+            .map(String::from);
         Ok(Workflow {
             graph: v,
             bindings,
             name: name.to_string(),
             verified,
             source,
+            unavailable_reason,
         })
     }
 
@@ -103,6 +110,19 @@ impl Workflow {
         self.source.as_deref()
     }
 
+    /// 为什么不可用。已核验的基线返回 None。
+    pub fn unavailable_reason(&self) -> Option<&str> {
+        if self.verified {
+            None
+        } else {
+            Some(
+                self.unavailable_reason
+                    .as_deref()
+                    .unwrap_or("参数绑定尚未核验"),
+            )
+        }
+    }
+
     /// 用来渲染之前必须核验过。
     pub fn require_verified(&self) -> Result<()> {
         if self.verified {
@@ -110,9 +130,10 @@ impl Workflow {
         }
         Err(StudioError::ModelContractViolation {
             detail: format!(
-                "基线 {} 的参数绑定尚未核验。绑错节点会静默产出错的画面，\
+                "基线 {} 当前不可用：{}。绑错节点会静默产出错的画面，\
                  所以在真机跑通并把 _studio.bindings_verified 改成 true 之前不允许用它渲染",
-                self.name
+                self.name,
+                self.unavailable_reason().unwrap_or("原因未记录")
             ),
         })
     }

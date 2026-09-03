@@ -6,7 +6,8 @@
       ]
     },
     "source": "douyin-video-studio/validated_workflows/wan_animate2/i2v_api.json",
-    "bindings_verified": false
+    "bindings_verified": false,
+    "unavailable_reason": "需要一段驱动视频作为输入，当前流水线不提供；且不属于默认三系列"
   },
   "239": {
     "inputs": {

@@ -334,7 +334,10 @@ fn cmd_workflows_check(dir: Option<PathBuf>) -> Result<(), String> {
                     if let Err(err) = wf.check() {
                         broken.push(format!("{name}: {}", err.message()));
                     } else if !wf.is_verified() {
-                        unverified.push(format!("{name}（参数：{}）", wf.parameters().join("、")));
+                        unverified.push(format!(
+                            "{name}\n            {}",
+                            wf.unavailable_reason().unwrap_or("原因未记录")
+                        ));
                     } else {
                         println!("  可用    {name}  参数：{}", wf.parameters().join("、"));
                     }
@@ -344,22 +347,23 @@ fn cmd_workflows_check(dir: Option<PathBuf>) -> Result<(), String> {
     }
 
     for u in &unverified {
-        println!("  待核验  {u}");
+        println!("  不可用  {u}");
     }
     for b in &broken {
         println!("  损坏    {b}");
     }
     println!();
     println!(
-        "共 {checked} 份：可用 {}，待核验 {}，损坏 {}",
+        "共 {checked} 份：可用 {}，不可用 {}，损坏 {}",
         checked - unverified.len() - broken.len(),
         unverified.len(),
         broken.len()
     );
     if !unverified.is_empty() {
         println!();
-        println!("待核验的基线不会被用来渲染。真机跑通之后，把它的");
-        println!("_studio.bindings_verified 改成 true，并补齐 bindings。");
+        println!("不可用的基线不会被用来渲染——绑错节点会静默产出错的画面。");
+        println!("在有 ComfyUI 的机器上跑通之后，补齐 _studio.bindings 并把");
+        println!("bindings_verified 改成 true 即可，不需要改代码。见 docs/TODO.md。");
     }
     if broken.is_empty() {
         Ok(())

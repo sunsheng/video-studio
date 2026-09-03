@@ -65,6 +65,7 @@ studiod list ~/videos                # 看看都有哪些作品
 - [架构](docs/architecture.md) · [状态机](docs/state-machine.md) · [工具面](docs/tool-surface.md) · [部署](docs/deployment.md)
 - [端到端验收](docs/e2e.md) —— 在生产环境怎么跑，报告怎么读
 - [ADR-0001 为什么是 bundle 模型](docs/decisions/ADR-0001-bundle-model.md)
+- [待办](docs/TODO.md) —— 还没做完的事，包括四份待核验的 workflow 基线
 
 ## License
 

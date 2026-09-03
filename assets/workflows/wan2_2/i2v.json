@@ -7,7 +7,8 @@
       ]
     },
     "source": "douyin-video-studio/validated_workflows/wan2_2/i2v_api.json",
-    "bindings_verified": false
+    "bindings_verified": false,
+    "unavailable_reason": "正负提示词与尺寸走的连线尚未确认（WanImageToVideo 的 width/height 来源、两个 CLIPTextEncode 哪个是负向）"
   },
   "98": {
     "inputs": {

@@ -51,6 +51,12 @@ workflows/
 `FORMAT-EXAMPLE.json` 是上面这段的可运行副本，用来对照格式；
 **它不是可用的基线**，不要放进模型系列目录。
 
+## 当前状态
+
+跑 `studiod workflows check` 看每份基线的状态。带 `unavailable_reason` 的
+被标为**不可用**，控制面拒绝用它们渲染。待核验的清单和卡点见
+[docs/TODO.md](../../docs/TODO.md)。
+
 ## 加一个新系列
 
 1. 在目标 ComfyUI 上真机跑通，导出 API 图

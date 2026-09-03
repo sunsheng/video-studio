@@ -7,7 +7,8 @@
       ]
     },
     "source": "douyin-video-studio/validated_workflows/wan2_2/flf2v_api.json",
-    "bindings_verified": false
+    "bindings_verified": false,
+    "unavailable_reason": "同 wan2_2/i2v，且首尾帧输入需要额外的图片上传流程"
   },
   "72": {
     "inputs": {
