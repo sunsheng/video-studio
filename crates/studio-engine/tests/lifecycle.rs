@@ -179,9 +179,12 @@ fn revise_rewinds_the_whole_project_to_that_stage() {
     assert!(t.iter().any(|e| e.kind == "rewound" && e.summary.contains("storyboard")));
 }
 
-/// 「改完发现还不如原来那版」——undo 把整部作品恢复到那次修订之前。
+/// 「改完发现还不如原来那版」——连按 undo 退回到那次修订之前。
+///
+/// 修订之后做了三步（revise、submit、answer），所以要按三次；
+/// 退回去之后旧剧本原样回来，被退回的下游阶段也恢复已通过。
 #[test]
-fn undo_restores_everything_to_before_the_revise() {
+fn undo_can_walk_back_past_a_revise() {
     let (_d, p) = new_project();
     for s in [StageId::Idea, StageId::Selection, StageId::Script, StageId::Storyboard] {
         advance(&p, s);
@@ -200,18 +203,48 @@ fn undo_restores_everything_to_before_the_revise() {
     p.answer(&env.pending_question.unwrap().question_id, "approve").unwrap();
     assert_eq!(p.status().unwrap().project.stage, StageId::Storyboard);
 
-    // 觉得还不如原来那版
+    // 觉得还不如原来那版：退回确认前、提交前、修订前
     assert!(p.undoable().unwrap().is_some());
+    p.undo().unwrap();
+    p.undo().unwrap();
     let env = p.undo().unwrap();
+
     assert_eq!(env.project.stage, StageId::VisualAssets, "分镜恢复已通过，下一步回到视觉资产");
     assert_eq!(env.progress.completed, 4);
     assert_eq!(p.stage_output(StageId::Script).unwrap(), original, "旧剧本内容应当原样回来");
+}
 
-    // 只有一层：快照用掉就没了
-    assert!(p.undoable().unwrap().is_none());
-    let e = p.undo().unwrap_err();
-    assert_eq!(e.code(), "invalid_transition");
-    assert!(e.remedy().contains("studio.revise"));
+/// 就是编辑器的 Ctrl+Z：连着按就一步步往回走，不限于撤销修订。
+#[test]
+fn undo_walks_back_one_step_at_a_time() {
+    let (_d, p) = new_project();
+    for s in [StageId::Idea, StageId::Selection, StageId::Script] {
+        advance(&p, s);
+    }
+    assert_eq!(p.status().unwrap().project.stage, StageId::Storyboard);
+    let depth = p.undo_depth().unwrap();
+    assert!(depth >= 5, "提交与确认都该压栈，实际 {depth}");
+
+    // 退一步：回到剧本确认之前，门重新挂着
+    let env = p.undo().unwrap();
+    assert_eq!(env.project.stage, StageId::Script);
+    assert_eq!(
+        env.pending_question.as_ref().map(|q| q.question_id.clone()),
+        Some("script.approval".to_string()),
+        "退回到确认之前，门应当还挂着"
+    );
+
+    // 再退一步：回到剧本提交之前
+    let env = p.undo().unwrap();
+    assert_eq!(env.project.stage, StageId::Script);
+    assert!(env.pending_question.is_none());
+    assert_eq!(env.progress.completed, 2);
+
+    // 再退两步：回到选题确认之前、提交之前
+    p.undo().unwrap();
+    let env = p.undo().unwrap();
+    assert_eq!(env.project.stage, StageId::Selection);
+    assert_eq!(env.progress.completed, 1);
 }
 
 #[test]

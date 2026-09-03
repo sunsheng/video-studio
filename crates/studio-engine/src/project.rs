@@ -207,6 +207,8 @@ impl Project {
         };
 
         schema::validate(stage, &outputs)?;
+        // 先校验再压栈：没通过校验的调用不该占掉一层撤销。
+        self.store.take_snapshot(&format!("提交 {stage} 之前"))?;
         let submitted = draft.submit(outputs, confirmation)?;
 
         let (state, question) = match &submitted {
@@ -261,9 +263,11 @@ impl Project {
                     .find(|o| o.id == answer)
                     .map(|o| o.label.clone())
                     .unwrap_or_else(|| answer.to_string());
-                self.revise(q.stage, &format!("用户在确认门选择了「{label}」"))
+                self.store.take_snapshot(&format!("在 {} 的确认门上选择「{label}」之前", q.stage))?;
+                self.revise_inner(q.stage, &format!("用户在确认门选择了「{label}」"))
             }
             Some(Outcome::Approve) => {
+                self.store.take_snapshot(&format!("确认 {} 之前", q.stage))?;
                 let LoadedStage::Awaiting(awaiting) = self.store.load_stage(q.stage)? else {
                     return Err(StudioError::StateDrift {
                         detail: format!("门挂在 {} 上，但该阶段并非等待确认", q.stage),
@@ -297,7 +301,11 @@ impl Project {
     /// 「改完发现还不如原来那版」时用得上。只保留最近一次，再修订一次就覆盖。
     /// 这不是版本管理，是编辑器的 Ctrl+Z：一层，不留历史列表。
     pub fn revise(&self, stage: StageId, message: &str) -> Result<Envelope> {
-        self.store.take_snapshot(&format!("修订 {stage} 之前：{message}"))?;
+        self.store.take_snapshot(&format!("修订 {stage} 之前"))?;
+        self.revise_inner(stage, message)
+    }
+
+    fn revise_inner(&self, stage: StageId, message: &str) -> Result<Envelope> {
         let loaded = self.store.load_stage(stage)?;
         let (attempt, outputs) = match loaded {
             LoadedStage::Awaiting(a) => {
@@ -320,12 +328,14 @@ impl Project {
         self.status()
     }
 
-    /// 撤销上一次修订，把作品整个恢复到那次 `revise` 之前。
+    /// 撤销上一步，就是编辑器的 Ctrl+Z。
     ///
-    /// 场景：改完剧本走到分镜，又觉得还不如原来那版——`undo` 之后旧剧本回来，
-    /// 分镜恢复已通过，下一步接着是视觉资产。
+    /// 每个改变状态的操作（提交、确认、修订）在动手前都压了一份快照，
+    /// `undo` 弹出最上面那份整个恢复回来。连着调就一步步往回走：
+    /// 走到分镜之后连按两次，就退回到剧本确认之前。
     ///
-    /// 只有一层。恢复之后快照即被消耗，不能连着撤销两次。
+    /// 恢复的是整部作品的状态，不只是某个阶段——所以「改完剧本发现不如原来
+    /// 那版」时，旧剧本回来的同时，被退回的下游阶段也恢复已通过。
     pub fn undo(&self) -> Result<Envelope> {
         let label = self.store.restore_snapshot()?;
         let stage = self.current_stage()?.unwrap_or(StageId::Review);
@@ -333,9 +343,14 @@ impl Project {
         self.status()
     }
 
-    /// 当前是否有可撤销的修订。
+    /// 栈顶那一步的说明，栈空则为 None。
     pub fn undoable(&self) -> Result<Option<String>> {
         self.store.snapshot_label()
+    }
+
+    /// 还能往回走几步。
+    pub fn undo_depth(&self) -> Result<usize> {
+        self.store.undo_depth()
     }
 
     /// 把 `from` 之后的所有阶段退回未执行。

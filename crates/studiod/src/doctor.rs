@@ -1,0 +1,193 @@
+//! 体检。
+//!
+//! 运行本程序的机器**不需要 GPU**，但需要 ffmpeg / ffprobe，
+//! 并且需要至少一个可达的 ComfyUI 节点（可以在另一台主机上）。
+//! 缺什么、去哪配、配好怎么验证，都在这里说清楚。
+
+use serde::{Deserialize, Serialize};
+use studio_comfy::{Comfy, NodeHealth};
+use studio_engine::Settings;
+use studio_media::{Media, ToolStatus};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Level {
+    Ok,
+    Warn,
+    Fail,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Check {
+    pub name: String,
+    pub level: Level,
+    pub detail: String,
+    /// 不通过时怎么修。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remedy: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Report {
+    pub healthy: bool,
+    pub program_dir: Option<String>,
+    pub bundle: Option<String>,
+    pub checks: Vec<Check>,
+    pub tools: Vec<ToolStatus>,
+    pub nodes: Vec<NodeHealth>,
+}
+
+pub fn run(program_dir: Option<&std::path::Path>, bundle: Option<&std::path::Path>) -> Report {
+    let settings = Settings::load(program_dir, bundle);
+    let media = Media::new(&settings);
+    let mut checks = Vec::new();
+    let mut tools = Vec::new();
+
+    for tool in ["ffmpeg", "ffprobe"] {
+        let st = media.probe_tool(tool);
+        if st.found {
+            checks.push(Check {
+                name: format!("{tool} 可用"),
+                level: Level::Ok,
+                detail: format!(
+                    "{}{}",
+                    st.path.clone().unwrap_or_default(),
+                    st.version.as_ref().map(|v| format!("（{v}）")).unwrap_or_default()
+                ),
+                remedy: None,
+            });
+        } else {
+            checks.push(Check {
+                name: format!("{tool} 缺失"),
+                level: Level::Fail,
+                detail: format!("找过：{}", st.looked_in.join("、")),
+                remedy: Some(format!(
+                    "装好 {tool} 后，或者把它的完整路径写进 .env：\n    {}_PATH=/你的路径/{tool}\n  \
+                     它不要求在 PATH 中。bundle 里的 .env 优先于程序目录的 .env。",
+                    tool.to_uppercase()
+                )),
+            });
+        }
+        tools.push(st);
+    }
+
+    let comfy = Comfy::from_settings(&settings);
+    let nodes = comfy.health();
+    let reachable = nodes.iter().filter(|n| n.reachable).count();
+    if reachable > 0 {
+        checks.push(Check {
+            name: "ComfyUI 节点".into(),
+            level: Level::Ok,
+            detail: format!("{reachable}/{} 个可达", nodes.len()),
+            remedy: None,
+        });
+    } else {
+        checks.push(Check {
+            name: "ComfyUI 节点全部不可达".into(),
+            level: Level::Warn,
+            detail: format!("试过：{}", comfy.nodes().join("、")),
+            remedy: Some(
+                "渲染之前必须至少有一个可达节点。在 .env 里配：\n    \
+                 COMFY_NODES=http://主机:9001,http://主机:9002\n  \
+                 本机不需要 GPU，节点可以在另一台机器上。\n  \
+                 提交给 ComfyUI 之前的六个阶段不受影响，现在就可以开始创作。"
+                    .into(),
+            ),
+        });
+    }
+
+    if let Some(root) = bundle {
+        checks.push(check_codex_config(root));
+    }
+
+    let healthy = !checks.iter().any(|c| c.level == Level::Fail);
+    Report {
+        healthy,
+        program_dir: program_dir.map(|p| p.display().to_string()),
+        bundle: bundle.map(|p| p.display().to_string()),
+        checks,
+        tools,
+        nodes,
+    }
+}
+
+/// 换机器或换安装位置之后，`.codex/config.toml` 里的路径会失效。
+fn check_codex_config(root: &std::path::Path) -> Check {
+    let path = root.join(".codex/config.toml");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Check {
+            name: "作品的 Codex 配置缺失".into(),
+            level: Level::Fail,
+            detail: format!("{} 不存在", path.display()),
+            remedy: Some("跑 `studiod doctor --fix` 重新生成。".into()),
+        };
+    };
+    let referenced = text
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("command = "))
+        .map(|v| v.trim().trim_matches('"').to_string());
+    match referenced {
+        Some(p) if std::path::Path::new(&p).is_file() => Check {
+            name: "作品的 Codex 配置".into(),
+            level: Level::Ok,
+            detail: format!("指向 {p}"),
+            remedy: None,
+        },
+        Some(p) => Check {
+            name: "作品指向的程序不存在".into(),
+            level: Level::Fail,
+            detail: format!("配置里写的是 {p}"),
+            remedy: Some(
+                "这部作品是在别的机器或别的安装位置建的。跑 `studiod doctor --fix` \
+                 把它改成当前程序的路径——bundle 的其它内容都是相对路径，可以照常用。"
+                    .into(),
+            ),
+        },
+        None => Check {
+            name: "作品的 Codex 配置不完整".into(),
+            level: Level::Fail,
+            detail: "找不到 command 行".into(),
+            remedy: Some("跑 `studiod doctor --fix` 重新生成。".into()),
+        },
+    }
+}
+
+/// 把 `.codex/config.toml` 里的程序路径改成当前二进制。
+pub fn fix_codex_config(root: &std::path::Path, studiod_path: &str) -> std::io::Result<()> {
+    let dir = root.join(".codex");
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(dir.join("config.toml"), crate::assets::codex_config(studiod_path))
+}
+
+pub fn render(report: &Report) -> String {
+    let mut s = String::new();
+    s.push_str("video-studio 体检\n\n");
+    if let Some(p) = &report.program_dir {
+        s.push_str(&format!("  程序目录  {p}\n"));
+    }
+    match &report.bundle {
+        Some(b) => s.push_str(&format!("  当前作品  {b}\n")),
+        None => s.push_str("  当前作品  （不在作品目录里，只检查全局环境）\n"),
+    }
+    s.push('\n');
+    for c in &report.checks {
+        let mark = match c.level {
+            Level::Ok => "OK  ",
+            Level::Warn => "注意",
+            Level::Fail => "缺失",
+        };
+        s.push_str(&format!("  [{mark}] {}\n         {}\n", c.name, c.detail));
+        if let Some(r) = &c.remedy {
+            for line in r.lines() {
+                s.push_str(&format!("         {line}\n"));
+            }
+        }
+        s.push('\n');
+    }
+    s.push_str(if report.healthy {
+        "结论：可以开始。\n"
+    } else {
+        "结论：有必须先解决的问题，见上面的「缺失」项。\n"
+    });
+    s
+}

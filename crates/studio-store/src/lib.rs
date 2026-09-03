@@ -87,12 +87,12 @@ impl Store {
                 at        TEXT NOT NULL
             );
             CREATE TABLE integrity (id INTEGER PRIMARY KEY CHECK (id = 1), digest TEXT NOT NULL);
-            -- 单槽快照：只保留最近一次 revise 之前的状态，供 undo 恢复。
-            -- 这不是版本管理，是编辑器的 Ctrl+Z：一层，不留历史列表。
-            CREATE TABLE undo_slot (
-                id         INTEGER PRIMARY KEY CHECK (id = 1),
-                label      TEXT NOT NULL,
-                taken_at   TEXT NOT NULL,
+            -- 撤销栈：每个改变状态的操作在动手前压一份快照，undo 弹出最上面那份。
+            -- 就是编辑器的 Ctrl+Z，不是版本管理——没有命名版本，也没有历史列表。
+            CREATE TABLE undo_stack (
+                seq            INTEGER PRIMARY KEY AUTOINCREMENT,
+                label          TEXT NOT NULL,
+                taken_at       TEXT NOT NULL,
                 stages_json    TEXT NOT NULL,
                 questions_json TEXT NOT NULL
             );
@@ -410,7 +410,10 @@ impl Store {
 
     // ---------- 撤销槽 ----------
 
-    /// 把当前的 stages 与 questions 存进单槽快照，覆盖上一份。
+    /// 最多保留多少层撤销。再深就把最旧的丢掉——快照带着完整产物，不能无限长。
+    const UNDO_DEPTH: usize = 50;
+
+    /// 压入一份快照。每个改变状态的操作在动手前调用。
     pub fn take_snapshot(&self, label: &str) -> Result<()> {
         let stages = self.dump_table(
             "SELECT stage, state, CAST(attempt AS TEXT), outputs_json, summary FROM stages ORDER BY stage",
@@ -423,35 +426,53 @@ impl Store {
         )?;
         self.conn
             .execute(
-                "INSERT INTO undo_slot (id, label, taken_at, stages_json, questions_json)
-                 VALUES (1, ?1, ?2, ?3, ?4)
-                 ON CONFLICT(id) DO UPDATE SET
-                   label = excluded.label, taken_at = excluded.taken_at,
-                   stages_json = excluded.stages_json, questions_json = excluded.questions_json",
+                "INSERT INTO undo_stack (label, taken_at, stages_json, questions_json) VALUES (?1, ?2, ?3, ?4)",
                 params![label, now(), stages.to_string(), questions.to_string()],
+            )
+            .map_err(oops)?;
+        self.conn
+            .execute(
+                "DELETE FROM undo_stack WHERE seq <= (
+                     SELECT MAX(seq) FROM undo_stack
+                 ) - ?1",
+                params![Self::UNDO_DEPTH as i64],
             )
             .map_err(oops)?;
         Ok(())
     }
 
-    /// 快照的说明文字，没有快照则为 None。
+    /// 栈里还剩几层可撤销。
+    pub fn undo_depth(&self) -> Result<usize> {
+        self.conn
+            .query_row("SELECT COUNT(*) FROM undo_stack", [], |r| r.get::<_, i64>(0))
+            .map(|n| n as usize)
+            .map_err(oops)
+    }
+
+    /// 栈顶那份快照的说明文字，栈空则为 None。
     pub fn snapshot_label(&self) -> Result<Option<String>> {
         self.conn
-            .query_row("SELECT label FROM undo_slot WHERE id = 1", [], |r| r.get::<_, String>(0))
+            .query_row(
+                "SELECT label FROM undo_stack ORDER BY seq DESC LIMIT 1",
+                [],
+                |r| r.get::<_, String>(0),
+            )
             .optional()
             .map_err(oops)
     }
 
-    /// 恢复快照。恢复后快照即被消耗，不能连续 undo 两次。
+    /// 弹出栈顶并恢复。连着调就一步步往回走。
     pub fn restore_snapshot(&self) -> Result<String> {
-        let row: Option<(String, String, String)> = self
+        let row: Option<(i64, String, String, String)> = self
             .conn
-            .query_row("SELECT label, stages_json, questions_json FROM undo_slot WHERE id = 1", [], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
-            })
+            .query_row(
+                "SELECT seq, label, stages_json, questions_json FROM undo_stack ORDER BY seq DESC LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
             .optional()
             .map_err(oops)?;
-        let Some((label, stages_json, questions_json)) = row else {
+        let Some((seq, label, stages_json, questions_json)) = row else {
             return Err(StudioError::InvalidTransition {
                 stage: StageId::Idea,
                 current: "no_snapshot",
@@ -483,7 +504,7 @@ impl Store {
                 )
                 .map_err(oops)?;
         }
-        self.conn.execute("DELETE FROM undo_slot WHERE id = 1", []).map_err(oops)?;
+        self.conn.execute("DELETE FROM undo_stack WHERE seq = ?1", params![seq]).map_err(oops)?;
         self.reseal()?;
         Ok(label)
     }
