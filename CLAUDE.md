@@ -55,6 +55,8 @@ cargo clippy --workspace --all-targets -- -D warnings
 - `studiod doctor` 检查本机环境（Codex、ComfyUI、ffmpeg、ffprobe 是否可用）
 - 根据检测结果，选择性运行相应的集成测试
 - **不得声称集成通过而不说明环境前置条件**
+- 环境变量里如果同时有 `OPENAI_API_KEY` 和 `OPENAI_BASE_URL`，就据此配置 Codex
+  用于测试或 CI；缺一个都不算满足 Codex 部署条件，按未装处理
 
 ### 真实验收
 
