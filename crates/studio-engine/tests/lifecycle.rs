@@ -402,7 +402,8 @@ fn a_second_session_on_the_same_bundle_is_refused() {
     let _first = Project::open(&root, None).unwrap();
     let e = Project::open(&root, None).unwrap_err();
     assert_eq!(e.code(), "project_busy");
-    assert!(e.remedy().contains("studiod init"));
+    assert!(e.remedy().contains("studio.status"));
+    assert!(!e.remedy().contains("studiod"));
 }
 
 #[test]

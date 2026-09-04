@@ -165,7 +165,7 @@ pub fn render(r: &Report) -> String {
         return format!(
             "执行侧报告 · {}\n\n  作品 {}\n\n  这部作品还没跑过确定性阶段（渲染 / 后期 / 验收）。\n  \
              提示词包确认之后控制面会自动开始，跑完再来看这份报告。\n  \
-             Agent 那一侧的报告用 `studiod e2e report`。\n",
+             Agent 那一侧的报告用 `studio-cli e2e report`。\n",
             r.generated_at, r.bundle
         );
     }
@@ -308,7 +308,10 @@ mod tests {
         assert!(!r.passed);
         let text = render(&r);
         assert!(text.contains("还没跑过确定性阶段"));
-        assert!(text.contains("studiod e2e report"), "要指明另一份报告在哪");
+        assert!(
+            text.contains("studio-cli e2e report"),
+            "要指明另一份报告在哪"
+        );
     }
 
     #[test]

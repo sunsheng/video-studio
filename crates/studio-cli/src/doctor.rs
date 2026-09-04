@@ -124,7 +124,7 @@ fn check_codex_config(root: &std::path::Path) -> Check {
             name: "作品的 Codex 配置缺失".into(),
             level: Level::Fail,
             detail: format!("{} 不存在", path.display()),
-            remedy: Some("跑 `studiod doctor --fix` 重新生成。".into()),
+            remedy: Some("跑 `studio-cli doctor --fix` 重新生成。".into()),
         };
     };
     // 路径可能是双引号串也可能是单引号字面量串（Windows 路径用后者）。
@@ -147,7 +147,7 @@ fn check_codex_config(root: &std::path::Path) -> Check {
             level: Level::Fail,
             detail: format!("配置里写的是 {p}"),
             remedy: Some(
-                "这部作品是在别的机器或别的安装位置建的。跑 `studiod doctor --fix` \
+                "这部作品是在别的机器或别的安装位置建的。跑 `studio-cli doctor --fix` \
                  把它改成当前程序的路径——bundle 的其它内容都是相对路径，可以照常用。"
                     .into(),
             ),
@@ -156,7 +156,7 @@ fn check_codex_config(root: &std::path::Path) -> Check {
             name: "作品的 Codex 配置不完整".into(),
             level: Level::Fail,
             detail: "找不到 command 行".into(),
-            remedy: Some("跑 `studiod doctor --fix` 重新生成。".into()),
+            remedy: Some("跑 `studio-cli doctor --fix` 重新生成。".into()),
         },
     }
 }
@@ -212,4 +212,132 @@ pub fn render(report: &Report) -> String {
         s.push_str("结论：全流程就绪。\n");
     }
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write_codex_config(root: &std::path::Path, toml_text: &str) {
+        let dir = root.join(".codex");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("config.toml"), toml_text).unwrap();
+    }
+
+    #[test]
+    fn missing_codex_config_is_a_fail_with_a_fix_command() {
+        let d = tempfile::tempdir().unwrap();
+        let c = check_codex_config(d.path());
+        assert_eq!(c.level, Level::Fail);
+        assert!(c.detail.contains("config.toml"));
+        assert!(c.remedy.unwrap().contains("studio-cli doctor --fix"));
+    }
+
+    #[test]
+    fn malformed_toml_is_treated_as_incomplete_not_a_crash() {
+        let d = tempfile::tempdir().unwrap();
+        write_codex_config(d.path(), "这不是合法的 toml {{{");
+        let c = check_codex_config(d.path());
+        assert_eq!(c.level, Level::Fail);
+        assert_eq!(c.name, "作品的 Codex 配置不完整");
+    }
+
+    #[test]
+    fn missing_command_key_is_incomplete() {
+        let d = tempfile::tempdir().unwrap();
+        write_codex_config(d.path(), "[mcp_servers.video-studio]\nother = \"x\"\n");
+        let c = check_codex_config(d.path());
+        assert_eq!(c.level, Level::Fail);
+        assert_eq!(c.detail, "找不到 command 行");
+    }
+
+    #[test]
+    fn stale_path_is_a_fail_that_names_the_broken_path() {
+        let d = tempfile::tempdir().unwrap();
+        fix_codex_config(d.path(), "/definitely/not/a/real/path/studiod").unwrap();
+        let c = check_codex_config(d.path());
+        assert_eq!(c.level, Level::Fail);
+        assert_eq!(c.name, "作品指向的程序不存在");
+        assert!(c.detail.contains("/definitely/not/a/real/path/studiod"));
+        assert!(c.remedy.unwrap().contains("studio-cli doctor --fix"));
+    }
+
+    #[test]
+    fn valid_path_passes() {
+        let d = tempfile::tempdir().unwrap();
+        let exe = std::env::current_exe().unwrap();
+        fix_codex_config(d.path(), &exe.display().to_string()).unwrap();
+        let c = check_codex_config(d.path());
+        assert_eq!(c.level, Level::Ok);
+        assert!(c.remedy.is_none());
+    }
+
+    #[test]
+    fn run_without_a_bundle_skips_the_codex_config_check() {
+        let report = run(None, None);
+        assert!(report.bundle.is_none());
+        assert!(!report.checks.iter().any(|c| c.name.contains("Codex 配置")));
+        // ffmpeg、ffprobe、ComfyUI 节点——不看 bundle 时总归只有这三项。
+        assert_eq!(report.checks.len(), 3);
+    }
+
+    #[test]
+    fn run_with_a_bundle_missing_codex_config_is_unhealthy() {
+        let d = tempfile::tempdir().unwrap();
+        let report = run(None, Some(d.path()));
+        assert!(!report.healthy, "缺 .codex/config.toml 应该判不健康");
+        assert!(report
+            .checks
+            .iter()
+            .any(|c| c.name.contains("Codex 配置缺失")));
+    }
+
+    #[test]
+    fn render_reports_the_worst_outcome_first() {
+        let report = Report {
+            healthy: false,
+            program_dir: None,
+            bundle: None,
+            checks: vec![Check {
+                name: "坏事".into(),
+                level: Level::Fail,
+                detail: "详情".into(),
+                remedy: Some("修一下".into()),
+            }],
+            tools: vec![],
+            nodes: vec![],
+        };
+        let text = render(&report);
+        assert!(text.contains("有必须先解决的问题"));
+        assert!(text.contains("坏事"));
+        assert!(text.contains("修一下"));
+    }
+
+    #[test]
+    fn render_distinguishes_warnings_from_a_clean_pass() {
+        let warn_only = Report {
+            healthy: true,
+            program_dir: None,
+            bundle: None,
+            checks: vec![Check {
+                name: "小问题".into(),
+                level: Level::Warn,
+                detail: "详情".into(),
+                remedy: None,
+            }],
+            tools: vec![],
+            nodes: vec![],
+        };
+        assert!(render(&warn_only).contains("现在就可以开始创作"));
+
+        let clean = Report {
+            healthy: true,
+            program_dir: None,
+            bundle: None,
+            checks: vec![],
+            tools: vec![],
+            nodes: vec![],
+        };
+        assert!(render(&clean).contains("全流程就绪"));
+    }
 }

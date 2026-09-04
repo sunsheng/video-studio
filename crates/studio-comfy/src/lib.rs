@@ -685,4 +685,57 @@ mod tests {
         let files = collect_files(&outputs);
         assert_eq!(files.len(), 3);
     }
+
+    #[test]
+    fn download_writes_the_response_body_to_the_destination_file() {
+        let s = stub(vec![("/view", json!({ "bytes": "这是产物内容" }))]);
+        let c = Comfy::new(vec![s.url.clone()], 5, 1);
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("nested/sh01.mp4");
+        let file = RemoteFile {
+            filename: "sh01.mp4".into(),
+            subfolder: String::new(),
+            r#type: "output".into(),
+        };
+        let n = c.download(&s.url, &file, &dest).unwrap();
+        assert!(n > 0);
+        assert!(dest.is_file(), "download 应当顺带建好中间目录");
+        let body = std::fs::read_to_string(&dest).unwrap();
+        assert!(body.contains("这是产物内容"));
+    }
+
+    #[test]
+    fn download_from_an_unreachable_node_fails_with_the_node_named() {
+        let c = Comfy::new(vec!["http://127.0.0.1:1".into()], 1, 1);
+        let file = RemoteFile {
+            filename: "sh01.mp4".into(),
+            subfolder: String::new(),
+            r#type: "output".into(),
+        };
+        let e = c
+            .download(
+                "http://127.0.0.1:1",
+                &file,
+                &std::path::PathBuf::from("/tmp/x.mp4"),
+            )
+            .unwrap_err();
+        assert_eq!(e.code(), "comfy_failed");
+        assert!(e.message().contains("127.0.0.1:1"));
+    }
+
+    #[test]
+    fn upload_image_returns_the_name_comfyui_assigned() {
+        let s = stub(vec![("/upload/image", json!({ "name": "已改名.png" }))]);
+        let c = Comfy::new(vec![s.url.clone()], 5, 1);
+        let name = c.upload_image(&s.url, "参考图.png", b"fake-bytes").unwrap();
+        assert_eq!(name, "已改名.png");
+    }
+
+    #[test]
+    fn upload_image_falls_back_to_the_given_name_when_the_response_omits_it() {
+        let s = stub(vec![("/upload/image", json!({}))]);
+        let c = Comfy::new(vec![s.url.clone()], 5, 1);
+        let name = c.upload_image(&s.url, "参考图.png", b"fake-bytes").unwrap();
+        assert_eq!(name, "参考图.png");
+    }
 }

@@ -191,7 +191,8 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let e = Bundle::open(d.path()).unwrap_err();
         assert_eq!(e.code(), "not_a_project");
-        assert!(e.remedy().contains("studiod init"));
+        assert!(e.remedy().contains("提醒用户"));
+        assert!(!e.remedy().contains("studiod"));
     }
 
     #[test]

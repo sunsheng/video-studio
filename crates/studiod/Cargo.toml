@@ -15,3 +15,8 @@ path = "src/main.rs"
 studio-mcp = { path = "../studio-mcp" }
 studio-pipeline = { path = "../studio-pipeline" }
 clap.workspace = true
+
+[dev-dependencies]
+studio-engine = { path = "../studio-engine" }
+serde_json.workspace = true
+tempfile = "3"

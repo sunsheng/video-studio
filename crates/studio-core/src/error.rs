@@ -159,18 +159,21 @@ impl StudioError {
                 };
                 format!(
                     "本作品已被{who}打开。一个 bundle 同时只能有一个会话：\
-                     关掉那个会话后重试，或用 `studiod init <另一个路径>` 新开一部作品。"
+                     关掉那个会话后调 studio.status() 重新确认状态即可继续。\
+                     如果用户是想同时另开一部新作品，这超出你的能力范围，\
+                     提醒用户自己在终端新建一个目录，不要代劳。"
                 )
             }
             StudioError::NotAProject { path } => format!(
-                "{path} 不是一部作品。用 `studiod init <路径>` 新建一部，然后在那个目录里打开 Codex。"
+                "{path} 不是一部作品，这个会话没有可用的工具。这超出你的能力范围，\
+                 提醒用户自己在终端新建一个作品目录，然后在那个目录里重新打开你，不要代劳。"
             ),
             StudioError::ComfyUnavailable { tried } => format!(
                 "没有健康的 ComfyUI 节点（试过 {}）。在 .env 里配好 COMFY_NODES 后，\
                  调 studio.status() 确认当前卡在 preview 还是 render，再对它调 \
                  studio.retry_stage(<该阶段>) 让控制面重新尝试——它会先停掉可能还在跑的 \
-                 worker，也会当场重新读取 `.env`，不需要重启 MCP 进程，也不需要在这部作品 \
-                 之外手动跑 `studiod` 子命令；节点恢复前不要降级换模型。",
+                 worker，也会当场重新读取 `.env`，不需要重启 MCP 进程，也不需要任何命令行 \
+                 介入；节点恢复前不要降级换模型。",
                 if tried.is_empty() { "无".to_string() } else { tried.join("、") }
             ),
             StudioError::ComfyFailed { node, detail } => format!(
@@ -183,15 +186,15 @@ impl StudioError {
             ),
             StudioError::ModelContractViolation { detail } => format!(
                 "固定模型契约不满足（{detail}）。这是硬停止，不允许静默替换成 pruned/量化变体。\
-                 跑 `studiod doctor` 看清缺哪个文件、该放到哪个节点上；补齐后调 \
-                 studio.revise(\"render\", <说明>) 重做。用户明确批准降级前不要换系列。"
+                 这超出你的能力范围，提醒用户自己体检确认缺哪个文件、该放到哪个节点上；\
+                 补齐后调 studio.revise(\"render\", <说明>) 重做。用户明确批准降级前不要换系列。"
             ),
             StudioError::ArtifactMissing { path } => format!(
                 "登记过的产物 {path} 不在磁盘上。调 studio.revise(stage, <原因>) 重做产出该文件的阶段。"
             ),
             StudioError::ToolUnavailable { tool, looked_in } => format!(
                 "找不到 {tool}（找过：{}）。在 bundle 或程序目录的 .env 里配 {}_PATH 指向可执行文件，\
-                 或把它放进 PATH；配好后跑 `studiod doctor` 验证。",
+                 或把它放进 PATH；这超出你的能力范围，提醒用户自己配好后确认一下即可。",
                 if looked_in.is_empty() { "PATH".to_string() } else { looked_in.join("、") },
                 tool.to_uppercase()
             ),
@@ -211,7 +214,8 @@ impl StudioError {
             },
             StudioError::Internal { detail } => format!(
                 "内部错误（{detail}）。调 studio.status() 确认状态是否完好；\
-                 若状态可用则重试该操作，否则把 .studio/logs/studiod.log 提给维护者。"
+                 若状态可用则重试该操作，否则把这条错误详情原样转告用户，\
+                 让用户自己联系维护者——不要去读 .studio/ 下的任何文件。"
             ),
         }
     }
@@ -407,17 +411,37 @@ mod tests {
         }
     }
 
-    /// remedy 必须指向一个能调的工具，而不是泛泛而谈。
+    /// remedy 必须指向一个能调的工具，或者（当 Agent 确实无能为力时）
+    /// 明确交给用户去终端处理——这也是一种可执行的下一步，AGENTS.md 自己
+    /// 就用这个措辞（"这超出你的能力范围，提醒用户自己在终端处理"）。
+    /// 不能是既不给工具、也不交给用户的空话。
     #[test]
     fn remedy_points_at_a_tool_or_command() {
         for e in one_of_each() {
             let r = e.remedy();
-            let actionable = r.contains("studio.") || r.contains("studiod ") || r.contains(".env");
+            let actionable = r.contains("studio.") || r.contains(".env") || r.contains("提醒用户");
             assert!(
                 actionable,
                 "{} 的 remedy 没给出可执行的下一步：{r}",
                 e.code()
             );
+        }
+    }
+
+    /// ADR-0002 的核心规则不只管生成的静态文档——`blocked_by.remedy` 是
+    /// Agent 卡住时第一个读到的文本，比 AGENTS.md 更容易被当场照着做。
+    /// 一旦这里点名了二进制，沙箱允许 shell 时 Agent 就有了绕过 MCP 的路径。
+    #[test]
+    fn no_remedy_names_the_cli_binaries() {
+        for e in one_of_each() {
+            let r = e.remedy();
+            for leak in ["studiod", "studio-cli"] {
+                assert!(
+                    !r.contains(leak),
+                    "{} 的 remedy 泄露了二进制名 {leak}：{r}",
+                    e.code()
+                );
+            }
         }
     }
 

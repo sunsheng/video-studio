@@ -352,7 +352,8 @@ mod tests {
         assert!(!e.remedy().is_empty());
         if e.code() == "tool_unavailable" {
             assert!(e.remedy().contains("FFPROBE_PATH"));
-            assert!(e.remedy().contains("studiod doctor"));
+            assert!(e.remedy().contains("提醒用户"));
+            assert!(!e.remedy().contains("studiod"));
         }
     }
 

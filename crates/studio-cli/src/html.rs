@@ -531,7 +531,7 @@ pub fn render_exec(r: &ExecReport) -> String {
 
     h.push_str(&format!(
         r#"<footer class="border-t border-slate-200 pt-6 text-xs text-slate-400 dark:border-slate-800 dark:text-slate-500">
-video-studio {ver} · 数据来自作品的 .studio/exec.jsonl · Agent 侧报告见 studiod e2e report
+video-studio {ver} · 数据来自作品的 .studio/exec.jsonl · Agent 侧报告见 studio-cli e2e report
 </footer></div></body>"#,
         ver = env!("CARGO_PKG_VERSION")
     ));
