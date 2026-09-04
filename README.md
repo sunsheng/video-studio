@@ -3,7 +3,7 @@
 文档式短视频生产工坊。**一个文件夹就是一部作品**——像一份 `.docx`，只有新建、继续、修订三个动作。
 
 - **运行时** Codex（通过 MCP 驱动）
-- **实现** Rust 单二进制，生产环境没有源码、没有解释器
+- **实现** Rust 两个二进制（`studiod` 服务 + `studio-cli` 工具），生产环境没有源码、没有解释器
 - **推理** ComfyUI HTTP API —— 运行本程序的机器**不需要 GPU**
 
 ## 安装
@@ -64,7 +64,7 @@ studio-cli list ~/videos                # 看看都有哪些作品
   （[在线排版版](https://claude.ai/code/artifact/8a3fe961-bcec-4f92-9c38-183d2d4a4ade)）
 - [架构](docs/architecture.md) · [状态机](docs/state-machine.md) · [工具面](docs/tool-surface.md) · [部署](docs/deployment.md)
 - [观测与验收](docs/e2e.md) —— 两份报告（Agent 侧 / 执行侧）怎么出、怎么读
-- [ADR-0001 为什么是 bundle 模型](docs/decisions/ADR-0001-bundle-model.md)
+- [架构决策记录](docs/decisions/) —— 为什么是 bundle 模型、为什么拆成两个二进制
 - [待办](docs/TODO.md) —— 还没做完的事，包括四份待核验的 workflow 基线
 
 ## License

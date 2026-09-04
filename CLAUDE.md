@@ -10,13 +10,17 @@ Markdown/配置，永远没有源码。
 studio-core     领域层。阶段图、typestate 状态机、错误枚举、契约类型、schema 校验。
                 ★ 零 I/O 依赖：不得依赖 rusqlite / ureq / std::fs 之外的任何 I/O。
                   状态机逻辑必须能在没有 GPU、没有数据库的机器上纯单元测试跑完。
-studio-store    SQLite 持久化。只被 engine 依赖。
+studio-store    SQLite 持久化。依赖 core。主要被 engine 依赖；studio-cli 的
+                `list` 也直接读它做跨作品扫描（只读，不经 MCP）。
 studio-engine   阶段循环、确认门、恢复、产物登记。依赖 core + store。
 studio-comfy    ComfyUI HTTP 客户端。★ 本机不需要 GPU，一切经 HTTP。
 studio-media    ffmpeg / ffprobe 外部进程编排。
-studio-mcp      MCP 协议层：工具注册表、schema、决策信封。依赖 engine。
+studio-mcp      MCP 协议层：工具注册表、schema、决策信封。依赖 core + engine。
+studio-pipeline 三个确定性阶段（渲染、后期、验收）的实现：向 ComfyUI 提交、
+                用 ffmpeg 拼接、用 ffprobe 核对。依赖 core + engine + comfy
+                + media。被 studiod 与 studio-cli 依赖。
 studiod         MCP server 二进制。唯一职能 serve，没有子命令、不接受参数。
-                由 Codex 自动拉起，Agent 不可见其命令行。
+                由 Codex 自动拉起，Agent 不可见其命令行。依赖 mcp + pipeline。
 studio-cli      人类操作 + 开发者工具二进制：init / doctor / pack / unpack /
                 list / emit-assets / e2e report / exec report /
                 workflows check。不出现在 Codex/Agent 的执行环境里。
