@@ -160,8 +160,10 @@ impl StudioError {
                 "{path} 不是一部作品。用 `studiod init <路径>` 新建一部，然后在那个目录里打开 Codex。"
             ),
             StudioError::ComfyUnavailable { tried } => format!(
-                "没有健康的 ComfyUI 节点（试过 {}）。在 .env 里配 COMFY_NODES，\
-                 然后跑 `studiod doctor` 确认可达；节点恢复前不要降级换模型。",
+                "没有健康的 ComfyUI 节点（试过 {}）。在 .env 里配好 COMFY_NODES 后，\
+                 调 studio.revise(\"render\", <说明>) 让控制面重新尝试——它会当场重新读取 \
+                 `.env`，不需要重启 MCP 进程，也不需要在这部作品之外手动跑 `studiod` 子命令；\
+                 节点恢复前不要降级换模型。",
                 if tried.is_empty() { "无".to_string() } else { tried.join("、") }
             ),
             StudioError::ComfyFailed { node, detail } => format!(

@@ -105,6 +105,17 @@ impl Pipeline {
             }
             let graph = wf.apply(&params)?;
 
+            // 落一份可以直接 curl 复现的请求体：节点故障时不用整套跑起来就能单独调试
+            // 这一镜——`curl -X POST <node>/prompt -H "Content-Type: application/json"
+            // --data @<bundle>/debug/<shot_id>.request.json`。写失败不影响主流程。
+            let debug_rel = format!("debug/{shot_id}.request.json");
+            if let Ok(body) = serde_json::to_string_pretty(&json!({
+                "prompt": graph,
+                "client_id": "video-studio"
+            })) {
+                let _ = ctx.bundle.write(&debug_rel, &format!("{body}\n"));
+            }
+
             let sub = ctx
                 .progress_and_step(
                     format!("{}/{} {shot_id} 提交到 {node}", i + 1, shots.len()),
@@ -112,6 +123,7 @@ impl Pipeline {
                 )
                 .shot(&shot_id)
                 .node(&node)
+                .with("debug_request", json!(debug_rel))
                 .done(comfy.submit(&node, &graph, "video-studio"))?;
 
             ctx.say(format!(
