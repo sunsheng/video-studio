@@ -65,3 +65,56 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 - 生产环境集成验收在宿主机跑 `scripts/smoke.sh`
 - 不得用 mock 通过来宣称链路跑通
+
+## 开发与 Codex 协同流程
+
+### 角色分工
+
+- **Claude Code**：写/改代码。
+- **Codex（本地，按需）**：对本次提交跑 E2E + Review，只关注 P0/P1 级问题，
+  P2 及以下（格式、非关键日志等）直接无视，不触发下面的循环。有没有 Codex
+  跟 ffmpeg/ffprobe 一样是按需的——由 `OPENAI_API_KEY`/`OPENAI_BASE_URL`
+  是否齐全决定，`studiod doctor` 判定，缺失不算环境异常，只是这一步的
+  条件不满足（见上面「环境检测」）。
+- **CI**：只跑 `cargo test` 和 `emit-assets --check`，不触发 Codex。
+
+### Codex E2E 的真实覆盖范围
+
+开发环境**一定没有 GPU、没有 ComfyUI**。Codex 能端到端跑通、且真能验证到
+东西的，只有 render 之前的六个阶段（idea → selection → script →
+storyboard → visual_assets → prompt_pack）——走完整 MCP 协议，含门与修订。
+`preview` / `render` / `post` / `review` 要真实 ComfyUI + GPU + ffmpeg，
+本地 Codex 跑不出真信号，顶多验证到「提交后结构化阻塞在
+`comfy_unavailable`」，**不能把这当成渲染链路已验证**。渲染链路的真实
+验收只能在装了 ComfyUI 的生产机器跑 `scripts/smoke.sh`。
+
+### 每轮提交
+
+1. 写/改代码。
+2. 本地 `cargo test` 自检，不过先修，不带着失败的单测往下走。
+3. **按功能点或优先级划出有意义的独立提交**，由 Claude Code 动态判断
+   哪些改动算一个完整单元——不是改一行就提交，也不是把所有改动攒成
+   一个大提交。每个提交做完就 `git push`，不允许攒着多个提交再一次性推。
+4. 等 CI 跑完单元测试；CI 失败立刻在 PR 里说明、优先修复，不计入下面的
+   Codex 循环次数。
+5. 本机能跑 Codex 时（见「角色分工」），对本次提交执行 E2E + Review，
+   只看 P0/P1。
+6. 把 Codex 的结论（P0/P1 结论的文字摘要——不是截图，Claude Code 没有
+   截图能力）同步进 PR 评论。无 P0/P1 驳回就通过；有驳回进入循环修复。
+
+### 循环修复
+
+Codex 报 P0/P1 后：改代码 → 本地单测 → commit + push（新 commit，
+标注「修复轮次 N」）→ 等 CI 通过 → 再跑一次 Codex → 结果同步 PR。
+
+**总共最多 3 次 Codex 审查**（第 5 步那次算第 1 次，循环里最多再跑 2 次）。
+3 次仍未通过就停，在 PR 里写明「Codex 循环超限，需人工介入」，等人处理。
+不为琐碎问题无限纠缠。
+
+### 异常情况
+
+- **本机跑不了 Codex**（没配 `OPENAI_API_KEY`/`OPENAI_BASE_URL`，或者
+  这个执行环境本来就起不了 Codex，比如没有本地 shell 的云端/远程会话）：
+  跳过第 5、6 步，在 PR 里标注「Codex 不可用，需人工复核」，等人处理。
+  这不是异常，是本来就有的两条腿之一——CI 单测该跑照跑。
+- **CI 单测失败**：立刻在 PR 里说明，优先修 CI，不计入 Codex 循环次数。
