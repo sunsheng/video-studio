@@ -3,7 +3,7 @@ name: comfyui
 description: 提交已确认且通过校验的 workflow，选择健康节点、跟踪执行并登记输出。
 ---
 
-<!-- 本文件由 `studiod emit-assets` 生成，请勿手改。 -->
+<!-- 本文件由代码生成，请勿手改。 -->
 
 # comfyui Skill
 

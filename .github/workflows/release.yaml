@@ -42,10 +42,12 @@ jobs:
             label: linux-x86_64
             target: x86_64-unknown-linux-gnu
             binary: studiod
+            cli_binary: studio-cli
           - os: windows-latest
             label: windows-x86_64
             target: x86_64-pc-windows-msvc
             binary: studiod.exe
+            cli_binary: studio-cli.exe
     steps:
       - uses: actions/checkout@v4
 
@@ -62,7 +64,7 @@ jobs:
           key: ${{ matrix.target }}
 
       - name: 构建
-        run: cargo build --release -p studiod --target ${{ matrix.target }}
+        run: cargo build --release -p studiod -p studio-cli --target ${{ matrix.target }}
 
       - name: 组装目录
         shell: bash
@@ -73,20 +75,22 @@ jobs:
           mkdir -p "$DIST"
 
           cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" "$DIST/"
+          cp "target/${{ matrix.target }}/release/${{ matrix.cli_binary }}" "$DIST/"
           cp config/default.toml "$DIST/config.toml"
           cp README.md LICENSE "$DIST/"
           echo "${{ needs.version.outputs.version }}" > "$DIST/VERSION"
 
           if [ "${{ runner.os }}" = "Linux" ]; then
-            strip "$DIST/${{ matrix.binary }}" || true
+            strip "$DIST/${{ matrix.binary }}" "$DIST/${{ matrix.cli_binary }}" || true
             cp scripts/install.sh "$DIST/install.sh"
             chmod +x "$DIST/install.sh"
           else
             cp scripts/install.ps1 "$DIST/install.ps1"
           fi
 
-          # 随包文档由二进制自己生成，保证与代码同版本。
-          "./$DIST/${{ matrix.binary }}" emit-assets --out "$DIST/assets"
+          # 随包文档由 studio-cli 生成，保证与代码同版本。studiod 本身没有
+          # 子命令，不能拿来生成——见 docs/decisions/ADR-0002。
+          "./$DIST/${{ matrix.cli_binary }}" emit-assets --out "$DIST/assets"
           cp "$DIST/assets/.env.example" "$DIST/.env.example"
           # 已验证 workflow 基线不是生成物，是仓库里的资产。
           cp -R assets/workflows "$DIST/assets/workflows"
@@ -114,19 +118,28 @@ jobs:
             unzip -q "$NAME.zip" -d smoke
           fi
           BIN="smoke/video-studio/${{ matrix.binary }}"
-          chmod +x "$BIN" || true
+          CLI="smoke/video-studio/${{ matrix.cli_binary }}"
+          chmod +x "$BIN" "$CLI" || true
+
+          # studiod 没有子命令，冒烟只验证 --version 和一次真实的 MCP
+          # initialize 握手（见 docs/decisions/ADR-0002）。
           "./$BIN" --version
-          "./$BIN" init smoke-work --title 冒烟
+          echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | "./$BIN" > mcp-smoke.json
+          node -e "const r=require('./mcp-smoke.json'); if(r.error){console.error(r);process.exit(1)}; console.log('mcp initialize ok')"
+
+          # 项目管理 / 开发工具全在 studio-cli 里。
+          "./$CLI" --version
+          "./$CLI" init smoke-work --title 冒烟
           test -f smoke-work/AGENTS.md
           test -f smoke-work/.agents/skills/script/SKILL.md
           test -f smoke-work/.codex/config.toml
           cat smoke-work/.codex/config.toml
           # 基线校验：绑定指向的节点必须都存在
-          "./$BIN" workflows check --dir smoke/video-studio/assets/workflows
+          "./$CLI" workflows check --dir smoke/video-studio/assets/workflows
           # list 能找到刚建的作品
-          "./$BIN" list . | grep -q 冒烟
+          "./$CLI" list . | grep -q 冒烟
           # doctor 在没有 ffmpeg/ComfyUI 的 runner 上只该是「注意」
-          "./$BIN" doctor --json > doctor.json
+          "./$CLI" doctor --json > doctor.json
           # windows runner 上 python3 未必在 PATH 里，用 node（两个平台都自带）。
           node -e "const d=require('./doctor.json'); if(!d.healthy){console.error(d);process.exit(1)}; console.log('doctor ok:', d.checks.length, '项检查')"
 

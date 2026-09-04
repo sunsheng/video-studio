@@ -3,7 +3,7 @@ name: script
 description: 创建短视频的故事结构、节奏与声音时间线。
 ---
 
-<!-- 本文件由 `studiod emit-assets` 生成，请勿手改。 -->
+<!-- 本文件由代码生成，请勿手改。 -->
 
 # script Skill
 

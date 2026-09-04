@@ -1,0 +1,14 @@
+//! `studio-cli` 的可测试部分。二进制入口见 `main.rs`。
+//!
+//! 这个 crate **不出现在 Codex/Agent 的执行环境里**——它是人类操作
+//! （建/体检/打包作品）和开发者工具（随包文档生成、留痕报告、
+//! workflow 基线校验），见 `docs/decisions/ADR-0002`。
+
+pub mod assets;
+pub mod doctor;
+pub mod e2e;
+pub mod exec_report;
+pub mod html;
+pub mod list;
+pub mod pack;
+pub mod rollout;

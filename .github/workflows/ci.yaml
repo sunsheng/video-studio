@@ -43,7 +43,8 @@ jobs:
         run: cargo test --workspace
 
       - name: 随包文档与代码一致
-        # AGENTS.md / SKILL.md / JSON Schema 全部由代码生成。
+        # AGENTS.md / SKILL.md / JSON Schema 全部由代码生成，生成工具在
+        # studio-cli 里（studiod 只做 serve，没有子命令）。
         # 改了阶段图、工具注册表或错误码却没重新生成，这里会红。
         run: |
-          cargo run -q -p studiod -- emit-assets --out assets --check
+          cargo run -q -p studio-cli -- emit-assets --out assets --check

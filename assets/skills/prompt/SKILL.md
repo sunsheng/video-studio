@@ -3,7 +3,7 @@ name: prompt
 description: 把已确认分镜与视觉资产编译成逐镜头 prompt 和 workflow 参数。
 ---
 
-<!-- 本文件由 `studiod emit-assets` 生成，请勿手改。 -->
+<!-- 本文件由代码生成，请勿手改。 -->
 
 # prompt Skill
 

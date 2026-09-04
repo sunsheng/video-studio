@@ -37,8 +37,9 @@ function Fail($msg) { Write-Error $msg; exit 1 }
 
 $scriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
 $localBinary = Join-Path $scriptDir 'studiod.exe'
+$localCli = Join-Path $scriptDir 'studio-cli.exe'
 
-if (Test-Path $localBinary) {
+if ((Test-Path $localBinary) -and (Test-Path $localCli)) {
     Write-Host "从 $scriptDir 就地安装"
     $stage = $scriptDir
     $temp = $null
@@ -57,7 +58,9 @@ if (Test-Path $localBinary) {
     Invoke-WebRequest -Uri $url -OutFile (Join-Path $temp 'pkg.zip')
     Expand-Archive -Path (Join-Path $temp 'pkg.zip') -DestinationPath (Join-Path $temp 'x') -Force
     $stage = Join-Path $temp 'x\video-studio'
-    if (-not (Test-Path (Join-Path $stage 'studiod.exe'))) { Fail '包里没有 studiod.exe，压缩包可能损坏。' }
+    if (-not ((Test-Path (Join-Path $stage 'studiod.exe')) -and (Test-Path (Join-Path $stage 'studio-cli.exe')))) {
+        Fail '包里没有 studiod.exe / studio-cli.exe，压缩包可能损坏。'
+    }
 }
 
 try {
@@ -73,9 +76,11 @@ try {
     Copy-Item -Path (Join-Path $stage '*') -Destination $Prefix -Recurse -Force
 
     $studiod = Join-Path $Prefix 'studiod.exe'
+    $studioCli = Join-Path $Prefix 'studio-cli.exe'
     Write-Host ''
     Write-Host "已安装到 $Prefix"
     & $studiod --version
+    & $studioCli --version
 
     if (-not (Test-Path (Join-Path $Prefix '.env')) -and (Test-Path (Join-Path $Prefix '.env.example'))) {
         Write-Host "提示：按需复制 $Prefix\.env.example 为 $Prefix\.env 配置 ffmpeg 路径与 ComfyUI 节点。"
@@ -83,16 +88,16 @@ try {
 
     if ($Init) {
         Write-Host ''
-        & $studiod init $Init
+        & $studioCli init $Init
     } else {
         Write-Host ''
         Write-Host '默认没有初始化作品。要新建一部：'
-        Write-Host "  $studiod init `$HOME\videos\我的第一部.studio"
+        Write-Host "  $studioCli init `$HOME\videos\我的第一部.studio"
     }
 
     Write-Host ''
     Write-Host '建议先体检一次：'
-    Write-Host "  $studiod doctor"
+    Write-Host "  $studioCli doctor"
 } finally {
     if ($temp -and (Test-Path $temp)) { Remove-Item -Recurse -Force $temp }
 }

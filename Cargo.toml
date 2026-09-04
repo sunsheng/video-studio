@@ -9,6 +9,7 @@ members = [
     "crates/studio-comfy",
     "crates/studio-pipeline",
     "crates/studiod",
+    "crates/studio-cli",
 ]
 
 [workspace.package]

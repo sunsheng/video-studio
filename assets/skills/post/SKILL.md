@@ -3,7 +3,7 @@ name: post
 description: 把生成片段拼接为交付视频，处理字幕、音频、封面。
 ---
 
-<!-- 本文件由 `studiod emit-assets` 生成，请勿手改。 -->
+<!-- 本文件由代码生成，请勿手改。 -->
 
 # post Skill
 

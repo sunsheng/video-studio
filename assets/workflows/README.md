@@ -53,7 +53,7 @@ workflows/
 
 ## 当前状态
 
-跑 `studiod workflows check` 看每份基线的状态。带 `unavailable_reason` 的
+跑 `studio-cli workflows check` 看每份基线的状态。带 `unavailable_reason` 的
 被标为**不可用**，控制面拒绝用它们渲染。待核验的清单和卡点见
 [docs/TODO.md](../../docs/TODO.md)。
 

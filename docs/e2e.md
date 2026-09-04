@@ -4,8 +4,8 @@
 
 | 报告 | 命令 | 看什么 | 数据来自 |
 |---|---|---|---|
-| Agent 侧 | `studiod e2e report` | 阶段推进、确认门、修订往返、token、有没有绕过 MCP | `.studio/trace.jsonl` + Codex rollout |
-| 执行侧 | `studiod exec report` | 逐镜头排在哪个节点、GPU 等了多久、后期哪一步慢 | `.studio/exec.jsonl` |
+| Agent 侧 | `studio-cli e2e report` | 阶段推进、确认门、修订往返、token、有没有绕过 MCP | `.studio/trace.jsonl` + Codex rollout |
+| 执行侧 | `studio-cli exec report` | 逐镜头排在哪个节点、GPU 等了多久、后期哪一步慢 | `.studio/exec.jsonl` |
 
 前者看协作，后者看吞吐。确定性阶段（渲染 / 后期 / 验收）跑在控制面的后台线程里，
 不经过 MCP，所以**不会出现在 Agent 侧那份报告里**——这也是为什么要两份。
@@ -14,27 +14,39 @@
 
 # 端到端验收
 
-**端到端测试不在开发环境跑。** 它需要一个真实的 Codex 会话驱动真实的 MCP
-server——开发环境没有 Codex，也没有 GPU、ComfyUI 和 ffmpeg。
+**含 render 的完整端到端不在开发环境跑。** render 需要真实 ComfyUI + GPU，
+开发环境没有，只能在生产环境跑。
+
+**render 之前的六个阶段（idea → prompt_pack）不一定要等生产环境。** 如果
+开发环境（Claude Code 容器）已经装好 Codex CLI 并配置了可用的 model
+provider（`codex doctor` 通过、`codex exec` 能正常应答），就可以在这里用
+真实 Codex 会话驱动 `studiod`（它没有子命令，被拉起就是 serve）走完
+前六个阶段，停在 `render`
+（`waiting_on: system`）。这比 `scripts/replay-protocol.py` 的脚本重放更
+真实：验证的是 Codex 读了 AGENTS.md / SKILL.md 之后会不会正确使用工具面，
+这是脚本模拟不了的。步骤同下面「在生产环境怎么跑」一节，只是走到第 7 步
+就停，不必往下走。
 
 分工是这样的：
 
 | 在哪 | 跑什么 | 产出 |
 |---|---|---|
 | 开发环境（Claude Code） | `cargo test --workspace` | 单元、引擎、MCP 协议一致性 |
-| 生产环境（有 Codex 的机器） | 真人 + Codex 走一遍 | `.studio/trace.jsonl` |
-| 生产环境 | `studiod e2e report` | `report.json` |
+| 开发环境（已配置 Codex） | 真实 Codex 会话走 render 前六阶段 | `.studio/trace.jsonl`，停在 `render` |
+| 生产环境（有 Codex 的机器） | 真人 + Codex 走完 render / 后期 | 完整 `.studio/trace.jsonl` |
+| 任一侧 | `studio-cli e2e report` | `report.json` |
 | 开发环境 | 读 `report.json` 分析、改代码 | 下一轮 |
 
-CI 里**不**跑端到端。
+CI 里**仍然不**跑端到端——这是改动碰了 MCP 工具面 / 阶段图时才做的验收，
+不是每次 PR 必跑的检查（见 CLAUDE.md「标准工作流程」）。
 
 ## 在生产环境怎么跑
 
 ### 1. 建一部干净的作品
 
 ```bash
-/opt/video-studio/studiod doctor          # 先体检
-/opt/video-studio/studiod init ~/e2e/千岛湖.studio
+/opt/video-studio/studio-cli doctor          # 先体检
+/opt/video-studio/studio-cli init ~/e2e/千岛湖.studio
 cd ~/e2e/千岛湖.studio
 ```
 
@@ -60,7 +72,7 @@ cd ~/e2e/千岛湖.studio
 ### 3. 出报告
 
 ```bash
-studiod e2e report \
+studio-cli e2e report \
   --rollout ~/.codex/sessions/<本次会话>.jsonl \
   --html ~/e2e/report.html \
   -o ~/e2e/report.json
@@ -78,7 +90,7 @@ studiod e2e report \
 ### 4. 渲染跑完之后再出一份执行侧报告
 
 ```bash
-studiod exec report --html ~/e2e/exec.html -o ~/e2e/exec.json
+studio-cli exec report --html ~/e2e/exec.html -o ~/e2e/exec.json
 ```
 
 这份覆盖 Agent 侧看不到的部分：
@@ -148,21 +160,21 @@ MCP server 每次工具调用往 `.studio/trace.jsonl` 追加一行，只记调�
 工具名、阶段、成功与否、错误码、那条阻塞有没有 remedy、耗时。
 **不记产物内容**，产物本身在 `stages/*.json` 里。
 
-`studiod pack` 不会把 trace 打进包。
+`studio-cli pack` 不会把 trace 打进包。
 
 ## 换机器之后先跑协议层冒烟
 
-`scripts/replay-protocol.py` 不用 Codex，直接跟 `studiod serve` 说 JSON-RPC 走完
+`scripts/replay-protocol.py` 不用 Codex，直接跟 `studiod` 说 JSON-RPC 走完
 六个阶段（中间重放一次「不要固定 2 秒」的修订）。它**不能替代**端到端——
 真正的端到端要验证的是 Codex 读了 AGENTS.md 和 SKILL.md 之后会不会正确使用
 工具面，那是脚本模拟不了的。但它能在换了机器、换了构建之后快速确认协议层没坏：
 
 ```bash
-cargo build --release -p studiod
+cargo build --release -p studiod -p studio-cli
 cargo run -q -p studio-core --features fixtures --example export_fixtures > /tmp/fixtures.json
-./target/release/studiod init /tmp/replay.studio
+./target/release/studio-cli init /tmp/replay.studio
 python3 scripts/replay-protocol.py /tmp/replay.studio /tmp/fixtures.json
-cd /tmp/replay.studio && studiod e2e report
+cd /tmp/replay.studio && studio-cli e2e report
 ```
 
 ## 报告说未过之后

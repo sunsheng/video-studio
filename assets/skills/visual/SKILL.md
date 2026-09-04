@@ -3,7 +3,7 @@ name: visual
 description: 规划并生成一致的角色卡、场景卡与参考资产。
 ---
 
-<!-- 本文件由 `studiod emit-assets` 生成，请勿手改。 -->
+<!-- 本文件由代码生成，请勿手改。 -->
 
 # visual Skill
 

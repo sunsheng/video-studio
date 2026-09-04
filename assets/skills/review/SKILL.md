@@ -3,7 +3,7 @@ name: review
 description: 检查成片的媒体完整性、时长、字幕、编码与发布风险。
 ---
 
-<!-- 本文件由 `studiod emit-assets` 生成，请勿手改。 -->
+<!-- 本文件由代码生成，请勿手改。 -->
 
 # review Skill
 

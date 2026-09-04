@@ -11,13 +11,26 @@ GitHub Actions 在 tag / 手动触发时构建两个平台的压缩包：
 
 ```
 video-studio/
-├── studiod / studiod.exe
+├── studiod / studiod.exe        # MCP server。没有子命令，不接受参数，
+│                                 # 唯一职能是 serve，由 Codex 自动拉起
+├── studio-cli / studio-cli.exe  # 人类操作 + 开发者工具：init / doctor /
+│                                 # pack / unpack / list / emit-assets /
+│                                 # e2e report / exec report / workflows check
 ├── assets/{AGENTS.md, skills/, schema/, codex/}
 ├── config.toml             # 出厂默认
 ├── .env.example
 ├── VERSION
 └── install.sh
 ```
+
+两个二进制并排放在同一目录里——`studiod` 靠这个约定找到 `studio-cli`
+生成的 `.codex/config.toml` 里写的自己的路径；反过来 `studio-cli init` 也
+靠这个约定，把 `command` 指向同目录下的 `studiod`，而不是自己。
+
+`studio-cli` **不出现在 Codex/Agent 的执行环境里**——AGENTS.md / SKILL.md
+里完全不提这两个二进制的名字或命令行语法，只暴露 MCP 工具面。生产环境部署
+时不要把 `studio-cli` 放进会被 Agent shell 命中的 PATH，只有人知道去哪
+调用它。见 `docs/decisions/ADR-0002`。
 
 解压到任意目录即可运行，程序不依赖安装位置（所有内部路径都相对二进制解析）。
 
@@ -43,7 +56,7 @@ install.ps1 [-Prefix DIR] [-Version TAG] [-Init BUNDLE] [-Force]        # Window
 ## 升级
 
 覆盖安装目录即可。已有 bundle 保留建时物化的 AGENTS.md 与 skills，
-行为不变；`studiod doctor --upgrade-assets` 由用户显式决定是否刷新。
+行为不变；`studio-cli doctor --upgrade-assets` 由用户显式决定是否刷新。
 
 ## 运行前提
 
@@ -51,4 +64,4 @@ install.ps1 [-Prefix DIR] [-Version TAG] [-Init BUNDLE] [-Force]        # Window
 - 需要 ffmpeg / ffprobe，可不在 PATH，见 `.env` 的 `FFMPEG_PATH` / `FFPROBE_PATH`
 - 需要至少一个可达的 ComfyUI 节点，见 `.env` 的 `COMFY_NODES`
 
-`studiod doctor` 会逐项检查并给出修复指引。
+`studio-cli doctor` 会逐项检查并给出修复指引。
