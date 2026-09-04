@@ -168,7 +168,10 @@ impl StudioError {
             ),
             StudioError::ComfyFailed { node, detail } => format!(
                 "节点 {node} 执行失败（{detail}）。用 studio.timeline() 看这一镜的历史；\
-                 确认是偶发就调 studio.revise(\"render\", <原因>) 重做该阶段。"
+                 内容本身没问题、只是这次执行失败了（节点抖动、超时）就调 \
+                 studio.retry_stage(\"render\")——它会先停掉可能还在跑的 worker 再干净重试。\
+                 怀疑是这个节点本身有问题，可以先调 studio.comfy.exclude_node 把它排除掉。\
+                 只有内容/提示词本身要改才用 studio.revise。"
             ),
             StudioError::ModelContractViolation { detail } => format!(
                 "固定模型契约不满足（{detail}）。这是硬停止，不允许静默替换成 pruned/量化变体。\

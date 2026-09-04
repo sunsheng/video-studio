@@ -1,4 +1,4 @@
-//! 九个工具的注册表。
+//! 工具注册表。
 //!
 //! **没有一个带 `run_id`**：服务端启动时认定当前工作目录就是当前项目。
 //! 这份注册表是工具面的唯一事实源——`studiod emit-assets` 从这里生成
@@ -26,7 +26,7 @@ fn stage_arg(desc: &str) -> Value {
     })
 }
 
-pub const TOOLS: [ToolSpec; 9] = [
+pub const TOOLS: [ToolSpec; 11] = [
     ToolSpec {
         name: "studio.status",
         description:
@@ -157,6 +157,37 @@ pub const TOOLS: [ToolSpec; 9] = [
         description: "把交付物投递到作品的 output/ 目录。后期阶段通过之后才可用。",
         input_schema: no_args,
     },
+    ToolSpec {
+        name: "studio.comfy.exclude_node",
+        description: "把一个 ComfyUI 节点加入本次会话的临时排除名单，选节点时会跳过它。\
+                      怀疑某个节点本身有问题（反复失败、迟迟连不上）时用它绕开，\
+                      不需要用户去改 .env。只在这次会话内生效，不是永久拓扑变更。",
+        input_schema: || {
+            json!({
+                "type": "object",
+                "properties": {
+                    "node": { "type": "string", "description": "要排除的节点地址，例如 http://127.0.0.1:9002" }
+                },
+                "required": ["node"],
+                "additionalProperties": false
+            })
+        },
+    },
+    ToolSpec {
+        name: "studio.retry_stage",
+        description: "干净地重试一个卡住的确定性阶段（render / post / review）：\
+                      先停掉可能还在跑的执行，再重新跑一次。用在「内容没问题，\
+                      只是这次执行失败了」——节点抖动、连接超时、偶发故障。\
+                      内容/提示词本身要改，用 studio.revise，不要用这个。",
+        input_schema: || {
+            json!({
+                "type": "object",
+                "properties": { "stage": stage_arg("要重试的确定性阶段") },
+                "required": ["stage"],
+                "additionalProperties": false
+            })
+        },
+    },
 ];
 
 pub fn tool_list() -> Value {
@@ -221,7 +252,7 @@ mod tests {
             assert!(n.starts_with("studio."), "{n} 缺少 studio. 前缀");
             assert!(seen.insert(n), "工具名重复：{n}");
         }
-        assert_eq!(seen.len(), 9);
+        assert_eq!(seen.len(), 11);
     }
 
     #[test]

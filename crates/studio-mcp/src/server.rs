@@ -290,6 +290,11 @@ impl Server {
                 to_value(p.timeline(limit)?)
             }
             "studio.export" => to_value(p.export()?),
+            "studio.comfy.exclude_node" => {
+                let node = str_arg(args, "node")?;
+                to_value(p.exclude_comfy_node(&node)?)
+            }
+            "studio.retry_stage" => to_value(p.retry_stage(stage_arg(args)?)?),
             other => Err(StudioError::internal(format!("工具 {other} 未接线"))),
         }
     }

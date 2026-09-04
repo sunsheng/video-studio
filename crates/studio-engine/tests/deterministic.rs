@@ -2,12 +2,35 @@
 //!
 //! 这里用一个假执行器，所以不需要 GPU、ComfyUI 或 ffmpeg。
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use studio_core::contract::{ProjectStatus, WaitingOn};
 use studio_core::{fixtures, Outputs, Result, StageId, StudioError};
 use studio_engine::executor::{ExecContext, StageExecutor};
 use studio_engine::{init_project, Project};
+
+fn submit_through_prompt_pack(p: &Project) {
+    for s in [
+        StageId::Idea,
+        StageId::Selection,
+        StageId::Script,
+        StageId::Storyboard,
+        StageId::VisualAssets,
+        StageId::PromptPack,
+    ] {
+        let env = p
+            .submit_stage(
+                fixtures::outputs(s),
+                Some(fixtures::summary(s)),
+                fixtures::confirmation(s),
+            )
+            .unwrap();
+        if let Some(q) = env.pending_question {
+            p.answer(&q.question_id, "approve").unwrap();
+        }
+    }
+}
 
 /// 照着 fixtures 产出结果的假执行器。
 struct Fake {
@@ -43,26 +66,7 @@ fn project_at_render(fail_at: Option<StageId>) -> (tempfile::TempDir, Project, A
         fail_at,
     });
     let p = Project::open_with(&root, None, exec).unwrap();
-
-    for s in [
-        StageId::Idea,
-        StageId::Selection,
-        StageId::Script,
-        StageId::Storyboard,
-        StageId::VisualAssets,
-        StageId::PromptPack,
-    ] {
-        let env = p
-            .submit_stage(
-                fixtures::outputs(s),
-                Some(fixtures::summary(s)),
-                fixtures::confirmation(s),
-            )
-            .unwrap();
-        if let Some(q) = env.pending_question {
-            p.answer(&q.question_id, "approve").unwrap();
-        }
-    }
+    submit_through_prompt_pack(&p);
     (dir, p, calls)
 }
 
@@ -204,25 +208,7 @@ fn retrying_after_editing_env_picks_up_the_new_nodes_without_reopening() {
     // Project::open_with 在这一刻缓存的 settings 之后不会再被用来跑 render——
     // 这正是本测试要证明的事。
     let p = Project::open_with(&root, None, exec).unwrap();
-    for s in [
-        StageId::Idea,
-        StageId::Selection,
-        StageId::Script,
-        StageId::Storyboard,
-        StageId::VisualAssets,
-        StageId::PromptPack,
-    ] {
-        let env = p
-            .submit_stage(
-                fixtures::outputs(s),
-                Some(fixtures::summary(s)),
-                fixtures::confirmation(s),
-            )
-            .unwrap();
-        if let Some(q) = env.pending_question {
-            p.answer(&q.question_id, "approve").unwrap();
-        }
-    }
+    submit_through_prompt_pack(&p);
 
     let env = poll_until(&p, 10, |e| e.blocked_by.is_some());
     assert_eq!(env.blocked_by.unwrap().code, "comfy_unavailable");
@@ -262,4 +248,161 @@ fn progress_shows_up_in_the_envelope_while_running() {
             "实际：{note}"
         );
     }
+}
+
+/// 一个跑得很慢、会主动检查取消标志的假执行器——用来证明修订/重试
+/// 真的会打断正在跑的 worker，而不是让它悄悄跑完再被状态盖过去。
+struct SlowExecutor {
+    started: Arc<AtomicBool>,
+    saw_cancel: Arc<AtomicBool>,
+}
+
+impl StageExecutor for SlowExecutor {
+    fn execute(&self, stage: StageId, ctx: &ExecContext<'_>) -> Result<Outputs> {
+        if stage != StageId::Render {
+            return Ok(fixtures::outputs(stage));
+        }
+        self.started.store(true, Ordering::SeqCst);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if ctx.is_cancelled() {
+                self.saw_cancel.store(true, Ordering::SeqCst);
+                return Err(StudioError::internal("渲染被中断"));
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        Ok(fixtures::outputs(stage))
+    }
+}
+
+fn project_stuck_mid_render() -> (
+    tempfile::TempDir,
+    Project,
+    Arc<AtomicBool>,
+    Arc<AtomicBool>,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("千岛湖.studio");
+    init_project(&root, fixtures::TITLE, "0.1.0-test", &[]).unwrap();
+    let started = Arc::new(AtomicBool::new(false));
+    let saw_cancel = Arc::new(AtomicBool::new(false));
+    let exec = Arc::new(SlowExecutor {
+        started: Arc::clone(&started),
+        saw_cancel: Arc::clone(&saw_cancel),
+    });
+    let p = Project::open_with(&root, None, exec).unwrap();
+    submit_through_prompt_pack(&p);
+
+    // 逼 ensure_worker 把它跑起来，再等到执行器真的进了 render 循环。
+    p.status().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !started.load(Ordering::SeqCst) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(started.load(Ordering::SeqCst), "worker 应当已经进入 render");
+    (dir, p, started, saw_cancel)
+}
+
+/// 这是 issue 复盘的那个 bug：`revise()` 之前只改状态，不取消正在跑的
+/// worker，旧线程跑完会拿着旧状态把新决定覆盖掉。现在 `revise` 必须先
+/// 停掉它。
+#[test]
+fn revise_stops_an_in_flight_worker_before_touching_state() {
+    let (_d, p, _started, saw_cancel) = project_stuck_mid_render();
+
+    p.revise(StageId::Render, "换一个更省显存的尺寸")
+        .unwrap();
+
+    assert!(
+        saw_cancel.load(Ordering::SeqCst),
+        "revise 必须先取消掉正在跑的 worker，不能放任它继续跑"
+    );
+}
+
+/// `retry_stage` 只对确定性阶段有意义——创作型/混合型阶段的重试是
+/// `studio.revise` 的事。
+#[test]
+fn retry_stage_requires_a_deterministic_stage() {
+    let (_d, p, _) = project_at_render(None);
+    let e = p.retry_stage(StageId::PromptPack).unwrap_err();
+    assert_eq!(e.code(), "invalid_transition");
+    assert!(e.remedy().contains("studio.revise") || e.remedy().contains("studio.status"));
+}
+
+/// `retry_stage` 同样必须先停掉可能还在跑的 worker，才清错误重新触发。
+#[test]
+fn retry_stage_stops_an_in_flight_worker_before_retrying() {
+    let (_d, p, _started, saw_cancel) = project_stuck_mid_render();
+
+    p.retry_stage(StageId::Render).unwrap();
+
+    assert!(
+        saw_cancel.load(Ordering::SeqCst),
+        "retry_stage 必须先取消掉正在跑的 worker"
+    );
+}
+
+/// 失败挂着时，`retry_stage` 清掉记录、干净重试，不需要经过 revise
+/// 那套「退回草稿、下游全部退回未执行」的逻辑。
+#[test]
+fn retry_stage_clears_a_recorded_failure_and_reruns_it() {
+    let (_d, p, _) = project_at_render(Some(StageId::Render));
+    let env = poll_until(&p, 10, |e| e.blocked_by.is_some());
+    assert_eq!(env.blocked_by.unwrap().code, "comfy_unavailable");
+
+    let env = p.retry_stage(StageId::Render).unwrap();
+    assert!(env.blocked_by.is_none(), "retry_stage 之后阻塞应当先解除");
+
+    // 这个假执行器每次都会失败在 Render，所以会再次卡住——这里只
+    // 关心「清掉了上一次记录、确实又跑了一次」，不是「这次会成功」。
+    let before = p
+        .timeline(200)
+        .unwrap()
+        .iter()
+        .filter(|e| e.kind == "retried")
+        .count();
+    assert_eq!(before, 1, "retry_stage 应当留一条可审计的时间线记录");
+}
+
+/// `studio.comfy.exclude_node` 排除的节点必须真的从执行器看到的
+/// `Settings::comfy_nodes()` 里消失——这是选节点时会跳过它的前提。
+#[test]
+fn excluded_nodes_disappear_from_the_settings_the_executor_sees() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("千岛湖.studio");
+    init_project(&root, fixtures::TITLE, "0.1.0-test", &[]).unwrap();
+    std::fs::write(
+        root.join(".env"),
+        "COMFY_NODES=http://a:9001,http://b:9002\n",
+    )
+    .unwrap();
+
+    let seen_nodes = Arc::new(Mutex::new(Vec::<Vec<String>>::new()));
+    struct RecordingExecutor {
+        seen: Arc<Mutex<Vec<Vec<String>>>>,
+    }
+    impl StageExecutor for RecordingExecutor {
+        fn execute(&self, stage: StageId, ctx: &ExecContext<'_>) -> Result<Outputs> {
+            if stage == StageId::Render {
+                self.seen.lock().unwrap().push(ctx.settings.comfy_nodes());
+            }
+            Ok(fixtures::outputs(stage))
+        }
+    }
+    let exec = Arc::new(RecordingExecutor {
+        seen: Arc::clone(&seen_nodes),
+    });
+    let p = Project::open_with(&root, None, exec).unwrap();
+    // 必须在触发 render 的 worker 之前排除——`ensure_worker` 在启动线程那一刻
+    // 就把当下的排除名单快照进 Settings，之后再排除对这次已经在跑的执行不生效。
+    p.exclude_comfy_node("http://a:9001/").unwrap();
+    submit_through_prompt_pack(&p);
+
+    let env = poll_until(&p, 10, |e| e.project.status == ProjectStatus::Completed);
+    assert_eq!(env.project.status, ProjectStatus::Completed);
+    assert_eq!(
+        seen_nodes.lock().unwrap().last().unwrap(),
+        &vec!["http://b:9002".to_string()],
+        "被排除的节点不该出现在执行器看到的节点列表里"
+    );
 }
