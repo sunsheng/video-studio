@@ -3,7 +3,7 @@ name: selection
 description: 从可行性、受众匹配和发布风险筛选 brief，给出推荐方案与取舍。
 ---
 
-<!-- 本文件由 `studiod emit-assets` 生成，请勿手改。 -->
+<!-- 本文件由代码生成，请勿手改。 -->
 
 # selection Skill
 

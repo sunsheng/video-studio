@@ -42,8 +42,8 @@ STAGE=""
 CLEANUP=""
 trap '[ -n "$CLEANUP" ] && rm -rf "$CLEANUP"' EXIT
 
-if [ -x "$SCRIPT_DIR/studiod" ]; then
-  # 就地安装：脚本和二进制在同一个目录里，说明用户已经解压好了。
+if [ -x "$SCRIPT_DIR/studiod" ] && [ -x "$SCRIPT_DIR/studio-cli" ]; then
+  # 就地安装：脚本和两个二进制在同一个目录里，说明用户已经解压好了。
   info "从 $SCRIPT_DIR 就地安装"
   STAGE="$SCRIPT_DIR"
 else
@@ -65,7 +65,8 @@ else
   curl -fSL --progress-bar "$URL" -o "$TMP/pkg.zip" || die "下载失败：$URL"
   unzip -q "$TMP/pkg.zip" -d "$TMP/x"
   STAGE="$TMP/x/video-studio"
-  [ -x "$STAGE/studiod" ] || die "包里没有可执行的 studiod，压缩包可能损坏。"
+  [ -x "$STAGE/studiod" ] && [ -x "$STAGE/studio-cli" ] \
+    || die "包里没有可执行的 studiod / studio-cli，压缩包可能损坏。"
 fi
 
 if [ -e "$PREFIX" ] && [ "$FORCE" -ne 1 ]; then
@@ -87,7 +88,7 @@ fi
 
 $SUDO mkdir -p "$PREFIX"
 $SUDO cp -R "$STAGE"/. "$PREFIX"/
-$SUDO chmod +x "$PREFIX/studiod"
+$SUDO chmod +x "$PREFIX/studiod" "$PREFIX/studio-cli"
 
 # 用户自己的 .env 不能被升级覆盖掉。
 if [ ! -f "$PREFIX/.env" ] && [ -f "$PREFIX/.env.example" ]; then
@@ -97,16 +98,17 @@ fi
 info ""
 info "已安装到 $PREFIX"
 "$PREFIX/studiod" --version
+"$PREFIX/studio-cli" --version
 
 if [ -n "$INIT_PATH" ]; then
   info ""
-  "$PREFIX/studiod" init "$INIT_PATH"
+  "$PREFIX/studio-cli" init "$INIT_PATH"
 else
   info ""
   info "默认没有初始化作品。要新建一部："
-  info "  $PREFIX/studiod init ~/videos/我的第一部.studio"
+  info "  $PREFIX/studio-cli init ~/videos/我的第一部.studio"
 fi
 
 info ""
 info "建议先体检一次："
-info "  $PREFIX/studiod doctor"
+info "  $PREFIX/studio-cli doctor"

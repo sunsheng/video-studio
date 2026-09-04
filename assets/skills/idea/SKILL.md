@@ -3,7 +3,7 @@ name: idea
 description: 把用户创意整理成可执行 brief，明确受众、平台、时长与发布风险。
 ---
 
-<!-- 本文件由 `studiod emit-assets` 生成，请勿手改。 -->
+<!-- 本文件由代码生成，请勿手改。 -->
 
 # idea Skill
 

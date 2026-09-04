@@ -53,7 +53,7 @@ Agent 打了 41 次工具调用，其中 **10 分钟、18 次调用**花在一�
 | 平面 | 是谁 | 对外协议 |
 |---|---|---|
 | Agent 面 | Codex 会话 | MCP (stdio) |
-| 控制面 | `studiod serve` | HTTP → ComfyUI；exec → ffmpeg |
+| 控制面 | `studiod`（没有子命令，被拉起就是 serve） | HTTP → ComfyUI；exec → ffmpeg |
 | 推理面 | ComfyUI 容器 | `/prompt`、`/history` |
 
 **运行控制面的机器不需要 GPU。** 见 [architecture.md](architecture.md)。
@@ -62,9 +62,9 @@ Agent 打了 41 次工具调用，其中 **10 分钟、18 次调用**花在一�
 
 见 [architecture.md](architecture.md) 与 [deployment.md](deployment.md)。要点：
 
-- 工作格式是 bundle 目录，交换格式是单文件 `.dvs`（`studiod pack`）
-- bundle 内一律相对路径，唯一指向外部的是 `.codex/config.toml` 里的程序路径，
-  换机器用 `studiod doctor --fix` 修正
+- 工作格式是 bundle 目录，交换格式是单文件 `.dvs`（`studio-cli pack`）
+- bundle 内一律相对路径，唯一指向外部的是 `.codex/config.toml` 里 `studiod`
+  的程序路径，换机器用 `studio-cli doctor --fix` 修正
 - 状态不外溢：不写 `~/.config`、不写全局注册表
 
 ## 5. MCP 工具面
@@ -112,7 +112,7 @@ typestate 把状态编码进类型参数，转换消耗自身。`Stage<AwaitingC
 旧剧本回来，分镜恢复已通过，下一步是视觉资产。
 
 栈深上限 50。**这不是版本管理**：没有命名版本、没有历史列表。
-要留版本请 `cp -r` 或 `studiod pack`。
+要留版本请 `cp -r` 或 `studio-cli pack`。
 
 ## 8. 错误契约
 
@@ -124,7 +124,7 @@ typestate 把状态编码进类型参数，转换消耗自身。`Stage<AwaitingC
 
 ## 9. 文档生成
 
-`AGENTS.md`、10 份 `SKILL.md`、9 份 JSON Schema 全部由 `studiod emit-assets`
+`AGENTS.md`、10 份 `SKILL.md`、9 份 JSON Schema 全部由 `studio-cli emit-assets`
 从阶段图、工具注册表和错误码枚举生成，CI 跑 `--check` 守着。
 
 一个测试专门守着「AGENTS.md 不得出现源码路径」——写这条时当场抓出生成模板里

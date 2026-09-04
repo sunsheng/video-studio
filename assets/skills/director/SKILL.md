@@ -3,7 +3,7 @@ name: director
 description: 把已确认剧本转成逐镜头分镜，定义景别、构图、机位、灯光与时长。
 ---
 
-<!-- 本文件由 `studiod emit-assets` 生成，请勿手改。 -->
+<!-- 本文件由代码生成，请勿手改。 -->
 
 # director Skill
 

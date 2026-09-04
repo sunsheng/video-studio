@@ -1,0 +1,36 @@
+[package]
+name = "studio-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "video-studio 的人类操作 + 开发者工具：init / doctor / pack / unpack / list / emit-assets / e2e report / exec report / workflows check。不出现在 Codex/Agent 的执行环境里，见 docs/decisions/ADR-0002。"
+
+[lib]
+name = "studio_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "studio-cli"
+path = "src/main.rs"
+
+[dependencies]
+studio-core = { path = "../studio-core" }
+studio-store = { path = "../studio-store" }
+studio-engine = { path = "../studio-engine" }
+studio-comfy = { path = "../studio-comfy" }
+studio-media = { path = "../studio-media" }
+studio-mcp = { path = "../studio-mcp" }
+studio-pipeline = { path = "../studio-pipeline" }
+serde.workspace = true
+serde_json.workspace = true
+clap.workspace = true
+chrono.workspace = true
+zip.workspace = true
+toml.workspace = true
+walkdir.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+studio-core = { path = "../studio-core", features = ["fixtures"] }

@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""协议层冒烟：不用 Codex，直接跟 studiod serve 说 JSON-RPC，走完提交给
+"""协议层冒烟：不用 Codex，直接跟 studiod 说 JSON-RPC，走完提交给
 ComfyUI 之前的六个阶段，中间重放一次「不要固定 2 秒」的修订。
 
 这**不是**端到端测试——真正的端到端需要一个真实 Codex 会话，只在生产环境跑，
 见 docs/e2e.md。这个脚本用来在换了机器、换了构建之后确认协议层还是通的。
 
-    cargo build --release -p studiod
+    cargo build --release -p studiod -p studio-cli
     cargo run -q -p studio-core --features fixtures --example export_fixtures > /tmp/fixtures.json
-    ./target/release/studiod init /tmp/replay.studio
+    ./target/release/studio-cli init /tmp/replay.studio
     python3 scripts/replay-protocol.py /tmp/replay.studio /tmp/fixtures.json
-    cd /tmp/replay.studio && studiod e2e report
+    cd /tmp/replay.studio && studio-cli e2e report
 """
 
 import json
@@ -28,8 +28,9 @@ def main() -> int:
     binary = Path(__file__).resolve().parent.parent / "target/release/studiod"
     fixtures = json.loads(fixtures_path.read_text())
 
+    # studiod 没有子命令、不接受参数——唯一行为就是 serve。
     proc = subprocess.Popen(
-        [str(binary), "serve"], cwd=bundle,
+        [str(binary)], cwd=bundle,
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1,
     )
     counter = [0]

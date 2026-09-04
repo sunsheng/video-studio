@@ -220,7 +220,7 @@ fn error_table() -> String {
 /// 生成 bundle 根目录的 AGENTS.md。
 pub fn agents_md() -> String {
     format!(
-        r#"<!-- 本文件由 `studiod emit-assets` 生成，请勿手改。 -->
+        r#"<!-- 本文件由代码生成，请勿手改。 -->
 
 # 这部作品
 
@@ -229,12 +229,14 @@ pub fn agents_md() -> String {
 
 - 想看另一部作品：退出，`cd` 到那个文件夹再打开。
 - 想另存一版：`cp -r 这个目录 另一个名字.studio`。
-- 想归档或发给别人：`studiod pack`。
+- 想归档、打包或发给别人：这些超出你的能力范围，提醒用户自己在终端处理，
+  不要代劳。
 
 ## 你只能通过 Studio MCP 改变状态
 
 创作判断由你来做，状态由控制面持有。**不要**用 shell 去读写这个目录里的
-状态，也不要试图直接执行 `studiod` 的子命令来推进阶段——它根本没有那种子命令。
+状态。你能看到的只有这份 MCP 工具面——没有能推进阶段的命令行，因为
+状态变更只有 MCP 一个入口。
 
 `.studio/` 是控制面私有的，里面是状态库、日志和锁。不要读，不要改。
 它有完整性校验，外部改动会在下一次调用时以 `state_drift` 暴露出来。
@@ -266,7 +268,7 @@ pub fn agents_md() -> String {
 分镜是照旧剧本做的，剧本一改它就不再成立。旧产物文件留着，你可以用
 `studio.stage_output` 读出来参考，重新提交时直接覆盖。
 
-程序不做版本管理。要留版本请让用户 `cp -r` 或 `studiod pack`。
+程序不做版本管理。要留版本请让用户 `cp -r`，或提醒他们自己在终端打包。
 
 ## 工具
 
@@ -278,8 +280,8 @@ pub fn agents_md() -> String {
 
 ## 用户在说什么
 
-- 「从头开始」「做一个新的」→ 这是一部新作品，让用户新建一个目录（`studiod init`）。
-  不要在当前作品里覆盖着做。
+- 「从头开始」「做一个新的」→ 这是一部新作品，让用户自己在终端新建一个
+  目录。不要在当前作品里覆盖着做。
 - 「继续」「下一步」「现在到哪了」→ 调 `studio.status`。上下文不在对话里，在这个文件夹里。
 - 「改一下 X」→ 调 `studio.revise`，然后重新提交。
 "#,
@@ -293,7 +295,7 @@ pub fn agents_md() -> String {
 fn skill_md(doc: &SkillDoc) -> String {
     let mut s = String::new();
     s.push_str(&format!(
-        "---\nname: {}\ndescription: {}\n---\n\n<!-- 本文件由 `studiod emit-assets` 生成，请勿手改。 -->\n\n",
+        "---\nname: {}\ndescription: {}\n---\n\n<!-- 本文件由代码生成，请勿手改。 -->\n\n",
         doc.name, doc.description
     ));
     s.push_str(&format!("# {} Skill\n\n", doc.name));
@@ -358,13 +360,14 @@ fn skill_md(doc: &SkillDoc) -> String {
     s
 }
 
-/// `.codex/config.toml`：把 MCP server 指向程序位置。
+/// `.codex/config.toml`：把 MCP server 指向 `studiod` 的位置。
+/// `studiod` 没有子命令、不接受参数——唯一行为就是 serve。
 pub fn codex_config(studiod_path: &str) -> String {
     format!(
-        "# 由 `studiod init` 生成。换机器或换安装位置后跑 `studiod doctor --fix` 修正这里。\n\
+        "# 由 `studio-cli init` 生成。换机器或换安装位置后跑\n\
+         # `studio-cli doctor --fix` 修正这里。\n\
          [mcp_servers.video-studio]\n\
-         command = {}\n\
-         args = [\"serve\"]\n",
+         command = {}\n",
         toml_path(studiod_path)
     )
 }
@@ -426,7 +429,7 @@ pub fn all_assets() -> Vec<(String, String)> {
     out
 }
 
-/// `studiod init` 要在 bundle 里物化的文件。
+/// `studio-cli init` 要在 bundle 里物化的文件。
 pub fn bundle_files(
     studiod_path: &str,
     title: &str,
@@ -463,6 +466,18 @@ mod tests {
                 !md.contains(leak),
                 "AGENTS.md 不该把 Agent 指向源码：{leak}"
             );
+        }
+    }
+
+    /// `studiod`/`studio-cli` 不该出现在 Agent 能读到的文档里——见
+    /// docs/decisions/ADR-0002。哪怕是「让用户自己跑 xxx」这种场景，
+    /// 只要 Agent 知道命令名和语法，沙箱允许 shell 时它就有能力自己跑，
+    /// 绕过 MCP。
+    #[test]
+    fn agents_md_never_names_the_cli_binaries() {
+        let md = agents_md();
+        for leak in ["studiod", "studio-cli"] {
+            assert!(!md.contains(leak), "AGENTS.md 不该提到二进制名：{leak}");
         }
     }
 
@@ -610,6 +625,20 @@ mod tests {
         );
         let cfg = &f.iter().find(|(p, _)| p == ".codex/config.toml").unwrap().1;
         assert!(cfg.contains("/opt/video-studio/studiod"));
-        assert!(cfg.contains("serve"));
+        assert!(!cfg.contains("args"), "studiod 没有子命令，不需要 args");
+    }
+
+    /// 同上，但对全部随包文档（含每份 SKILL.md）一起查，不只是 AGENTS.md。
+    #[test]
+    fn no_bundle_doc_names_the_cli_binaries() {
+        let f = bundle_files("/opt/video-studio/studiod", "千岛湖", "0.1.0", "minimax_h3");
+        for (path, content) in &f {
+            if path == ".codex/config.toml" {
+                continue; // 这个文件本来就要指向 studiod，规则不适用。
+            }
+            for leak in ["studiod", "studio-cli"] {
+                assert!(!content.contains(leak), "{path} 不该提到二进制名：{leak}");
+            }
+        }
     }
 }

@@ -19,7 +19,7 @@
 做法：在目标 ComfyUI 上跑通一次，确认每个参数落到哪个节点的哪个输入，
 补进 `assets/workflows/<系列>/<用途>.json` 的 `_studio.bindings`，
 删掉 `unavailable_reason`，把 `bindings_verified` 改成 `true`。
-**不需要改代码。** 改完跑 `studiod workflows check` 验证。
+**不需要改代码。** 改完跑 `studio-cli workflows check` 验证。
 
 已核验可用的六份（`minimax_h3` 三份、`wan2_2/t2v`、`ltx2_5` 两份）可以作参考。
 

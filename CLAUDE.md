@@ -1,7 +1,8 @@
 # video-studio 开发契约
 
 本仓库用 Claude Code 开发，产物在 Codex 上运行。**开发环境和运行环境彻底分开**：
-生产机器上只有一个二进制加若干 Markdown/配置，永远没有源码。
+生产机器上只有两个二进制（`studiod` 服务 + `studio-cli` 工具）加若干
+Markdown/配置，永远没有源码。
 
 ## 分层（由 crate 依赖强制）
 
@@ -14,20 +15,27 @@ studio-engine   阶段循环、确认门、恢复、产物登记。依赖 core +
 studio-comfy    ComfyUI HTTP 客户端。★ 本机不需要 GPU，一切经 HTTP。
 studio-media    ffmpeg / ffprobe 外部进程编排。
 studio-mcp      MCP 协议层：工具注册表、schema、决策信封。依赖 engine。
-studiod         唯一二进制：init / serve / doctor / emit-assets / pack / unpack /
-                list / e2e report / exec report / workflows check。
+studiod         MCP server 二进制。唯一职能 serve，没有子命令、不接受参数。
+                由 Codex 自动拉起，Agent 不可见其命令行。
+studio-cli      人类操作 + 开发者工具二进制：init / doctor / pack / unpack /
+                list / emit-assets / e2e report / exec report /
+                workflows check。不出现在 Codex/Agent 的执行环境里。
 ```
 
 反向依赖一律禁止。`studio-core` 新增依赖需要在 PR 描述里说明理由。
 
 ## 硬规则
 
-1. **二进制不提供任何变更型子命令。** 只有 `init`、`serve`、`doctor`、`emit-assets`、
-   `pack`、`unpack`，以及只读的 `list`、`e2e report`、`exec report`、
-   `workflows check`。绝不允许出现 `studiod submit-stage` 这类东西——
-   状态变更只有 MCP 一个入口，绕过就不存在实现。
+1. **`studiod` 没有子命令，不接受任何参数。** 唯一行为是 serve。绝不允许出现
+   `studiod submit-stage` 这类东西——状态变更只有 MCP 一个入口，子命令列表
+   怎么裁都消不掉「Agent 拿到二进制直接绕过 MCP」这条路径，只有物理上不
+   存在子命令才行。项目管理（`init`/`doctor`/`pack`/`unpack`/`list`）和
+   开发者工具（`emit-assets`/`e2e report`/`exec report`/`workflows check`）
+   都在 `studio-cli` 里，且 `studio-cli` **不出现在 Codex/Agent 的执行环境
+   里**——AGENTS.md / SKILL.md 不提这两个二进制的名字或命令行语法，见
+   `docs/decisions/ADR-0002`。
 2. **Markdown 不手写。** `assets/AGENTS.md` 与各 `SKILL.md` 中涉及工具名、阶段名、
-   确认门、错误码的段落由 `studiod emit-assets` 生成。CI 跑 `emit-assets --check`。
+   确认门、错误码的段落由 `studio-cli emit-assets` 生成。CI 跑 `emit-assets --check`。
 3. **每个错误都必须有 remedy。** `StudioError::remedy()` 是穷尽 match，不允许 `_ =>`。
    没有 remedy 的错误视为实现缺陷。
 4. **bundle 内一律相对路径。** 数据库、`project.toml`、stages JSON 里不得出现绝对路径。
@@ -40,7 +48,7 @@ studiod         唯一二进制：init / serve / doctor / emit-assets / pack / u
 1. **改代码/文档 → 本机验证**：`cargo fmt --all -- --check`、
    `cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`；
    碰到随包文档（AGENTS.md / SKILL.md / JSON Schema）再加
-   `emit-assets --out assets --check`。
+   `cargo run -q -p studio-cli -- emit-assets --out assets --check`。
 2. **commit → push** 到指定分支。
 3. **create PR**。
 4. **wait CI**：订阅该 PR 的活动（`subscribe_pr_activity`），不要创建完就结束。
@@ -75,15 +83,16 @@ cargo clippy --workspace --all-targets -- -D warnings
 - **ComfyUI + GPU：** 如果本机装有，可通过 HTTP 运行 `studio-comfy` 的集成测试
 - **Codex 环境（不含 render）：** 如果本机装有 Codex CLI 且已配置好可用的
   model provider（`codex doctor` 通过、`codex exec` 能正常应答），可以用
-  真实 Codex 会话驱动 `studiod serve` 走 render 之前的六个阶段
-  （idea → prompt_pack），验证 Agent 是否正确使用工具面。这不是「完整端到端」：
-  render 及之后仍然需要真实 ComfyUI + GPU，只能在生产环境跑。
+  真实 Codex 会话驱动 `studiod`（它没有子命令，直接执行即 serve）走
+  render 之前的六个阶段（idea → prompt_pack），验证 Agent 是否正确使用
+  工具面。这不是「完整端到端」：render 及之后仍然需要真实 ComfyUI + GPU，
+  只能在生产环境跑。
 
 ### 环境检测
 
-- `studiod doctor` 检查 ComfyUI、ffmpeg、ffprobe 是否可用；在作品目录里运行时，
-  还检查该作品 `.codex/config.toml` 指向的程序路径是否仍然有效。
-  **它不检测本机是否装有 Codex CLI 本身**——那用 `codex doctor` 查。
+- `studio-cli doctor` 检查 ComfyUI、ffmpeg、ffprobe 是否可用；在作品目录里
+  运行时，还检查该作品 `.codex/config.toml` 指向的 `studiod` 路径是否仍然
+  有效。**它不检测本机是否装有 Codex CLI 本身**——那用 `codex doctor` 查。
 - 根据检测结果，选择性运行相应的集成测试
 - **不得声称集成通过而不说明环境前置条件**
 

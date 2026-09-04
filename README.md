@@ -34,10 +34,10 @@ irm https://raw.githubusercontent.com/sunsheng/video-studio/main/scripts/install
 ## 快速开始
 
 ```bash
-studiod doctor                       # 体检：ffmpeg / ComfyUI 可达性
-studiod init ~/videos/千岛湖.studio   # 新建一部作品
-cd ~/videos/千岛湖.studio && codex    # 打开它
-studiod list ~/videos                # 看看都有哪些作品
+studio-cli doctor                       # 体检：ffmpeg / ComfyUI 可达性
+studio-cli init ~/videos/千岛湖.studio   # 新建一部作品
+cd ~/videos/千岛湖.studio && codex       # 打开它（studiod 被自动拉起）
+studio-cli list ~/videos                # 看看都有哪些作品
 ```
 
 之后就是对话：说创意 → 逐阶段确认 → 出片。想改就说「不要固定 2 秒」，Agent 会调 `studio.revise`。
