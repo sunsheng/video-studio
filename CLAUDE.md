@@ -56,7 +56,10 @@ cargo clippy --workspace --all-targets -- -D warnings
 - 根据检测结果，选择性运行相应的集成测试
 - **不得声称集成通过而不说明环境前置条件**
 - 环境变量里如果同时有 `OPENAI_API_KEY` 和 `OPENAI_BASE_URL`，就据此配置 Codex
-  用于测试或 CI；缺一个都不算满足 Codex 部署条件，按未装处理
+  用于本机测试；缺一个都不算满足 Codex 部署条件，按未装处理
+- **CI 中不运行 Codex 端到端测试。** 不管上述两个环境变量是否存在，CI 只跑
+  本机必能通过的 `cargo test` 和 `emit-assets --check`；Codex 端到端测试只在
+  本机手动按需触发，不接入 CI 流水线
 
 ### 真实验收
 
