@@ -1,4 +1,4 @@
-//! 一部完整作品的样例产物，覆盖九个阶段。
+//! 一部完整作品的样例产物，覆盖十个阶段。
 //!
 //! 素材取自 2026-09-03 那次真实会话：「10 秒 5 个镜头的千岛湖游玩 vlog，
 //! 主角 20 岁女性，长发黑发白裙板鞋，欢乐，30 度侧脸」。
@@ -241,6 +241,19 @@ pub fn outputs(stage: StageId) -> Outputs {
             }),
         ),
 
+        StageId::Preview => wrap(
+            stage,
+            json!({
+                "shots": [
+                    { "shot_id": "sh01", "node": "http://127.0.0.1:9001", "prompt_id": "pv-sh01", "path": "media/preview/sh01.mp4", "width": 480, "height": 854, "duration_seconds": 1.4 },
+                    { "shot_id": "sh02", "node": "http://127.0.0.1:9002", "prompt_id": "pv-sh02", "path": "media/preview/sh02.mp4", "width": 480, "height": 854, "duration_seconds": 2.0 },
+                    { "shot_id": "sh03", "node": "http://127.0.0.1:9003", "prompt_id": "pv-sh03", "path": "media/preview/sh03.mp4", "width": 480, "height": 854, "duration_seconds": 2.4 },
+                    { "shot_id": "sh04", "node": "http://127.0.0.1:9004", "prompt_id": "pv-sh04", "path": "media/preview/sh04.mp4", "width": 480, "height": 854, "duration_seconds": 2.0 },
+                    { "shot_id": "sh05", "node": "http://127.0.0.1:9005", "prompt_id": "pv-sh05", "path": "media/preview/sh05.mp4", "width": 480, "height": 854, "duration_seconds": 2.2 }
+                ]
+            }),
+        ),
+
         StageId::Render => wrap(
             stage,
             json!({
@@ -302,6 +315,10 @@ pub fn confirmation(stage: StageId) -> Option<Confirmation> {
             "是否确认这份逐镜头提示词？确认后开始占用 GPU 渲染。",
             "确认提示词，开始渲染",
         ),
+        StageId::Preview => (
+            "480p 预览已生成，构图与内容是否符合预期？确认后开始正式 1080p 渲染。",
+            "预览符合预期，开始正式渲染",
+        ),
         _ => return None,
     };
     Some(Confirmation {
@@ -323,6 +340,7 @@ pub fn summary(stage: StageId) -> &'static str {
         StageId::Storyboard => "五镜头分镜完成，锁定30度侧脸与安全动作",
         StageId::VisualAssets => "规划统一角色卡、三张场景卡与一张道具卡",
         StageId::PromptPack => "逐镜头提示词与workflow参数编译完成",
+        StageId::Preview => "五个镜头 480p 预览生成完成",
         StageId::Render => "五个镜头渲染完成",
         StageId::Post => "拼接、字幕与封面完成",
         StageId::Review => "验收通过",

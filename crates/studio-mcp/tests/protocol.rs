@@ -152,7 +152,7 @@ fn status_tells_the_agent_what_to_do_first() {
     assert_eq!(env["waiting_on"], "agent");
     assert_eq!(env["next_action"]["kind"], "submit_stage");
     assert_eq!(env["next_action"]["schema_ref"], "idea");
-    assert_eq!(env["progress"]["total"], 9);
+    assert_eq!(env["progress"]["total"], 10);
 }
 
 #[test]
@@ -185,10 +185,10 @@ fn the_six_stages_before_comfyui_run_end_to_end_over_mcp() {
 
     let (env, _) = h.call("studio.status", json!({}));
     assert_eq!(env["progress"]["completed"], 6);
-    assert_eq!(env["project"]["stage"], "render");
+    assert_eq!(env["project"]["stage"], "preview");
     assert_eq!(
         env["waiting_on"], "system",
-        "轮到 ComfyUI 了，Agent 只需观察"
+        "轮到 ComfyUI 了（先出便宜的预览），Agent 只需观察"
     );
     assert!(env["blocked_by"].is_null());
 

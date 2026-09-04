@@ -648,6 +648,32 @@ pub fn stage_schema(stage: StageId) -> Schema {
             vec!["core_model_family", "shots"],
         ),
 
+        StageId::Preview => obj(
+            "480p 预览结果登记（由控制面产出）。花贵的正式渲染之前，先出便宜的\
+             低分辨率预览让人工确认构图与内容——帧数/时长不变，只降分辨率。",
+            vec![(
+                "shots",
+                arr(
+                    "每镜头一条",
+                    obj(
+                        "一镜预览结果",
+                        vec![
+                            ("shot_id", text("镜头标识")),
+                            ("node", text("承载的 ComfyUI 节点")),
+                            ("prompt_id", text("ComfyUI 的 prompt_id，用于追溯")),
+                            ("path", text("预览文件的 bundle 内相对路径，media/preview/ 下")),
+                            ("width", int("预览宽度（480 短边缩放后）")),
+                            ("height", int("预览高度（480 短边缩放后）")),
+                            ("duration_seconds", num("实际时长")),
+                        ],
+                        vec!["shot_id", "node", "prompt_id", "path"],
+                    ),
+                    1,
+                ),
+            )],
+            vec!["shots"],
+        ),
+
         StageId::Render => obj(
             "渲染结果登记（由控制面产出）",
             vec![(

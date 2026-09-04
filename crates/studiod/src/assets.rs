@@ -570,7 +570,7 @@ mod tests {
     }
 
     #[test]
-    fn assets_cover_agents_ten_skills_and_nine_schemas() {
+    fn assets_cover_agents_ten_skills_and_ten_schemas() {
         let a = all_assets();
         assert_eq!(
             a.iter().filter(|(p, _)| p.starts_with("skills/")).count(),
@@ -578,7 +578,7 @@ mod tests {
         );
         assert_eq!(
             a.iter().filter(|(p, _)| p.starts_with("schema/")).count(),
-            9
+            10
         );
         assert!(a.iter().any(|(p, _)| p == "AGENTS.md"));
         assert!(a.iter().all(|(_, c)| !c.is_empty()));

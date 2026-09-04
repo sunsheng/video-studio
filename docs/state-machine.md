@@ -32,11 +32,19 @@ impl Stage<AwaitingConfirmation> {
 | 4 | storyboard | director | creative | `storyboard.approval` |
 | 5 | visual_assets | visual | hybrid | `visual_assets.approval` |
 | 6 | prompt_pack | prompt | creative | `prompt_pack.approval` |
-| 7 | render | comfyui | deterministic | — |
-| 8 | post | post | deterministic | — |
-| 9 | review | review | deterministic | — |
+| 7 | preview | comfyui | deterministic | `preview.approval` |
+| 8 | render | comfyui | deterministic | — |
+| 9 | post | post | deterministic | — |
+| 10 | review | review | deterministic | — |
 
 门在阶段**产出之后**暂停。`prompt_pack` 上那道门是花 GPU 时间前的最后一关。
+
+`preview` 是唯一一个「控制面自动执行、但仍带确认门」的阶段：执行完不直接判
+`Approved`，而是走跟 Agent 提交带门阶段完全一样的 `AwaitingConfirmation`
+状态挂起，等 480p 预览的构图/内容被确认，才轮到花钱的正式 `render`。
+它自己不产出独立内容，所以它的门选「有问题」（或直接对它调
+`studio.revise`）统一重定向退回 `prompt_pack`，不是退回 `preview` 自己——
+`StageId::revise_target()` 是这条重定向规则的唯一事实源。
 
 ## 并发
 

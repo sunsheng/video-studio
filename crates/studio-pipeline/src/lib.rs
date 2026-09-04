@@ -11,6 +11,7 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use studio_comfy::Comfy;
+use studio_core::contract::{AnswerOption, Confirmation, SelectionType};
 use studio_core::{Outputs, Result, StageId, StudioError};
 use studio_engine::executor::{ExecContext, StageExecutor};
 use studio_media::Media;
@@ -19,6 +20,60 @@ use workflow::Workflow;
 /// 单镜提交-等待-下载失败后允许重试的次数。第一次用调用方给的节点，
 /// 之后每次重试都重新调 `pick_node()`——不认定原节点还活着。
 const MAX_SHOT_ATTEMPTS: u32 = 3;
+
+/// 预览阶段的短边目标像素——只降分辨率，帧数/时长照抄提示词包，不变。
+const PREVIEW_SHORT_EDGE: i64 = 480;
+
+/// `render` 和 `preview` 共享同一套提交-等待-下载逻辑，区别只在于目标
+/// 分辨率和产物落盘的位置。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GenerateMode {
+    /// 正式尺寸，落在 `media/`。
+    Render,
+    /// 480p 短边预览，落在 `media/preview/`，不占用后续 `render` 的产物路径。
+    Preview,
+}
+
+impl GenerateMode {
+    fn dest_dir(self) -> &'static str {
+        match self {
+            GenerateMode::Render => "media",
+            GenerateMode::Preview => "media/preview",
+        }
+    }
+
+    fn debug_dir(self) -> &'static str {
+        match self {
+            GenerateMode::Render => "debug",
+            GenerateMode::Preview => "debug/preview",
+        }
+    }
+}
+
+/// 按短边等比缩放到 `target_short_edge`，长边取整到偶数——多数视频编码器
+/// 和扩散模型都要求宽高为偶数。不关心 16 像素对齐：那是模型自己的事
+/// （参见 workflow 请求 1080 实际吐出 1072 的记录），预览阶段更不必较真。
+fn scale_to_short_edge(width: i64, height: i64, target_short_edge: i64) -> (i64, i64) {
+    if width <= 0 || height <= 0 {
+        return (target_short_edge, target_short_edge);
+    }
+    let portrait_or_square = width <= height;
+    let (short, long) = if portrait_or_square {
+        (width, height)
+    } else {
+        (height, width)
+    };
+    let scale = target_short_edge as f64 / short as f64;
+    let mut new_long = (long as f64 * scale).round() as i64;
+    if new_long % 2 != 0 {
+        new_long += 1;
+    }
+    if portrait_or_square {
+        (target_short_edge, new_long)
+    } else {
+        (new_long, target_short_edge)
+    }
+}
 
 pub struct Pipeline {
     /// 已验证 workflow 基线的所在目录，通常是程序目录下的 `assets/workflows`。
@@ -42,12 +97,31 @@ impl Pipeline {
 impl StageExecutor for Pipeline {
     fn execute(&self, stage: StageId, ctx: &ExecContext<'_>) -> Result<Outputs> {
         match stage {
+            StageId::Preview => self.preview(ctx),
             StageId::Render => self.render(ctx),
             StageId::Post => self.post(ctx),
             StageId::Review => self.review(ctx),
             other => Err(StudioError::internal(format!(
                 "{other} 不是确定性阶段，不该走到这里"
             ))),
+        }
+    }
+
+    /// preview 执行完不直接判过，用这份文案挂起等确认；确认后才轮到
+    /// 花钱的正式渲染。revise 一律退回 prompt_pack——preview 自己不产出
+    /// 独立内容，问题只可能出在 prompt_pack 决定的内容上。
+    fn gate_confirmation(&self, stage: StageId) -> Option<Confirmation> {
+        match stage {
+            StageId::Preview => Some(Confirmation {
+                prompt: "480p 预览已生成，构图与内容是否符合预期？确认后开始正式 1080p 渲染。"
+                    .to_string(),
+                selection_type: SelectionType::Single,
+                options: vec![
+                    AnswerOption::new("approve", "预览符合预期，开始正式渲染"),
+                    AnswerOption::revise("revise", "预览有问题，退回提示词重新调整"),
+                ],
+            }),
+            _ => None,
         }
     }
 }
@@ -73,7 +147,31 @@ impl Pipeline {
     /// 理论上十几分钟就能全部跑完。产出仍按镜头在提示词包里的原始顺序落回
     /// `shots` 数组——`post` 阶段拼接靠的是这个顺序，不是谁先完工。
     fn render(&self, ctx: &ExecContext<'_>) -> Result<Outputs> {
-        let pack = need(&ctx.inputs, "prompt_pack", StageId::Render)?;
+        let results = self.generate(ctx, StageId::Render, GenerateMode::Render)?;
+        Ok(wrap(StageId::Render, json!({ "shots": results })))
+    }
+
+    /// 480p 短边预览：跟 `render` 共享同一套提交-等待-下载与并发逻辑，
+    /// 只把目标分辨率换成短边 480、产物落到 `media/preview/`。
+    /// 帧数、帧率、提示词照抄提示词包，不变——便宜的只是分辨率。
+    fn preview(&self, ctx: &ExecContext<'_>) -> Result<Outputs> {
+        let results = self.generate(ctx, StageId::Preview, GenerateMode::Preview)?;
+        Ok(wrap(StageId::Preview, json!({ "shots": results })))
+    }
+
+    /// 按当下健康的节点数分片并发生成：每个健康节点固定绑一个 worker 线程，
+    /// 各镜头放共享队列，谁先跑完自己手上那镜就去认领下一镜。
+    ///
+    /// 实测单镜十来分钟，串行渲染 8 镜可能超过一个半小时；8 个健康节点并发
+    /// 理论上十几分钟就能全部跑完。产出仍按镜头在提示词包里的原始顺序落回
+    /// `shots` 数组——`post` 阶段拼接靠的是这个顺序，不是谁先完工。
+    fn generate(
+        &self,
+        ctx: &ExecContext<'_>,
+        stage: StageId,
+        mode: GenerateMode,
+    ) -> Result<Vec<Value>> {
+        let pack = need(&ctx.inputs, "prompt_pack", stage)?;
         let shots = pack["shots"]
             .as_array()
             .ok_or_else(|| StudioError::internal("提示词包里没有 shots"))?;
@@ -111,7 +209,7 @@ impl Pipeline {
                     let idx = queue.lock().unwrap().pop_front();
                     let Some(idx) = idx else { return };
                     let shot = &shots[idx];
-                    match self.render_shot(ctx, comfy, node, idx, total, shot) {
+                    match self.generate_shot(ctx, comfy, node, idx, total, shot, mode) {
                         Ok(v) => results.lock().unwrap()[idx] = Some(v),
                         Err(e) => {
                             let mut f = failure.lock().unwrap();
@@ -131,20 +229,19 @@ impl Pipeline {
         if ctx.is_cancelled() {
             return Err(StudioError::internal("渲染被中断"));
         }
-        let results = results
+        Ok(results
             .into_inner()
             .unwrap()
             .into_iter()
             .map(|v| v.expect("队列排空后每个下标都该有结果或已提前返回错误"))
-            .collect::<Vec<_>>();
-
-        Ok(wrap(StageId::Render, json!({ "shots": results })))
+            .collect())
     }
 
     /// 一个镜头的提交-等待-下载，失败时最多重试 [`MAX_SHOT_ATTEMPTS`] 次。
     /// 第一次尝试用调用方给的（worker 绑定的）节点；重试不再信任原节点还活着，
     /// 每次都重新调 `pick_node()`，可能落到别的健康节点上。
-    fn render_shot(
+    #[allow(clippy::too_many_arguments)]
+    fn generate_shot(
         &self,
         ctx: &ExecContext<'_>,
         comfy: &Comfy,
@@ -152,6 +249,7 @@ impl Pipeline {
         idx: usize,
         total: usize,
         shot: &Value,
+        mode: GenerateMode,
     ) -> Result<Value> {
         let shot_id = shot["shot_id"].as_str().unwrap_or("shot").to_string();
         let wf_name =
@@ -175,12 +273,30 @@ impl Pipeline {
                 params.insert(k.clone(), v.clone());
             }
         }
+        // 只有 preview 才覆盖尺寸；render 用提示词包原样的宽高，
+        // dims 留 None 表示「结果里不需要单独报宽高」。
+        let dims = if mode == GenerateMode::Preview {
+            let width = shot
+                .get("width")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(PREVIEW_SHORT_EDGE);
+            let height = shot
+                .get("height")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(PREVIEW_SHORT_EDGE);
+            let (pw, ph) = scale_to_short_edge(width, height, PREVIEW_SHORT_EDGE);
+            params.insert("width".to_string(), json!(pw));
+            params.insert("height".to_string(), json!(ph));
+            Some((pw, ph))
+        } else {
+            None
+        };
         let graph = wf.apply(&params)?;
 
         // 落一份可以直接 curl 复现的请求体：节点故障时不用整套跑起来就能单独调试
         // 这一镜——`curl -X POST <node>/prompt -H "Content-Type: application/json"
-        // --data @<bundle>/debug/<shot_id>.request.json`。写失败不影响主流程。
-        let debug_rel = format!("debug/{shot_id}.request.json");
+        // --data @<bundle>/<debug_dir>/<shot_id>.request.json`。写失败不影响主流程。
+        let debug_rel = format!("{}/{shot_id}.request.json", mode.debug_dir());
         if let Ok(body) = serde_json::to_string_pretty(&json!({
             "prompt": graph,
             "client_id": "video-studio"
@@ -200,7 +316,9 @@ impl Pipeline {
                 comfy.pick_node()?
             };
 
-            match self.render_shot_once(ctx, comfy, &node, idx, total, &shot_id, &graph, &debug_rel, shot) {
+            match self.generate_shot_once(
+                ctx, comfy, &node, idx, total, &shot_id, &graph, &debug_rel, shot, mode, dims,
+            ) {
                 Ok(v) => return Ok(v),
                 Err(e) => {
                     if attempt < MAX_SHOT_ATTEMPTS {
@@ -218,7 +336,7 @@ impl Pipeline {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn render_shot_once(
+    fn generate_shot_once(
         &self,
         ctx: &ExecContext<'_>,
         comfy: &Comfy,
@@ -229,6 +347,8 @@ impl Pipeline {
         graph: &Value,
         debug_rel: &str,
         shot: &Value,
+        mode: GenerateMode,
+        dims: Option<(i64, i64)>,
     ) -> Result<Value> {
         let sub = ctx
             .progress_and_step(
@@ -255,7 +375,7 @@ impl Pipeline {
             .extension()
             .map(|e| e.to_string_lossy().to_string())
             .unwrap_or_else(|| "mp4".into());
-        let rel = format!("media/{shot_id}.{ext}");
+        let rel = format!("{}/{shot_id}.{ext}", mode.dest_dir());
         let dest = ctx.bundle.resolve(&rel)?;
         let bytes = ctx
             .progress_and_step(
@@ -269,14 +389,30 @@ impl Pipeline {
             .done(comfy.download(node, first, &dest))?;
         let _ = bytes;
 
-        Ok(json!({
-            "shot_id": shot_id,
-            "node": node,
-            "prompt_id": sub.prompt_id,
-            "path": rel,
-            "duration_seconds": shot.get("length_frames").and_then(|f| f.as_f64()).unwrap_or(0.0)
-                / shot.get("fps").and_then(|f| f.as_f64()).unwrap_or(30.0)
-        }))
+        let duration_seconds = shot.get("length_frames").and_then(|f| f.as_f64()).unwrap_or(0.0)
+            / shot.get("fps").and_then(|f| f.as_f64()).unwrap_or(30.0);
+
+        Ok(match mode {
+            GenerateMode::Render => json!({
+                "shot_id": shot_id,
+                "node": node,
+                "prompt_id": sub.prompt_id,
+                "path": rel,
+                "duration_seconds": duration_seconds
+            }),
+            GenerateMode::Preview => {
+                let (width, height) = dims.expect("preview 模式下 dims 必然算过");
+                json!({
+                    "shot_id": shot_id,
+                    "node": node,
+                    "prompt_id": sub.prompt_id,
+                    "path": rel,
+                    "width": width,
+                    "height": height,
+                    "duration_seconds": duration_seconds
+                })
+            }
+        })
     }
 
     fn post(&self, ctx: &ExecContext<'_>) -> Result<Outputs> {
@@ -554,7 +690,15 @@ mod render_tests {
         let shot = shot("sh01");
         // 首选节点是个根本没在监听的端口——提交必然失败，逼出重试路径。
         let result = pipeline
-            .render_shot(&ctx, &comfy, "http://127.0.0.1:1", 0, 1, &shot)
+            .generate_shot(
+                &ctx,
+                &comfy,
+                "http://127.0.0.1:1",
+                0,
+                1,
+                &shot,
+                GenerateMode::Render,
+            )
             .unwrap();
         assert_eq!(result["node"], json!(good.url), "重试应当落到唯一健康的节点上");
         assert_eq!(result["shot_id"], json!("sh01"));
@@ -591,5 +735,49 @@ mod render_tests {
             assert_eq!(got[i]["shot_id"], json!(*id), "结果顺序必须与提示词包一致");
             assert_eq!(got[i]["path"], json!(format!("media/{id}.mp4")));
         }
+    }
+
+    /// preview 复用 render 同一套并发/重试逻辑，但落到 media/preview/、
+    /// 尺寸按短边 480 缩放——帧数/时长照抄提示词包，不变。
+    #[test]
+    fn preview_scales_resolution_and_writes_under_media_preview() {
+        let bundle_dir = tempfile::tempdir().unwrap();
+        let baselines_dir = tempfile::tempdir().unwrap();
+        write_baseline(baselines_dir.path());
+        let good = healthy_node();
+        let (bundle, settings) = scaffold(bundle_dir.path(), std::slice::from_ref(&good.url));
+
+        let pipeline = Pipeline::new(baselines_dir.path().to_path_buf());
+        let recorder = ExecRecorder::at(bundle.root());
+        // 竖屏 1080x1920，跟真实提示词包一致；短边 1080 缩到 480。
+        let mut sh01 = shot("sh01");
+        sh01["width"] = json!(1080);
+        sh01["height"] = json!(1920);
+        sh01["length_frames"] = json!(42);
+        sh01["fps"] = json!(30);
+        let ctx = ExecContext {
+            bundle: &bundle,
+            settings: &settings,
+            inputs: json!({ "prompt_pack": { "shots": [sh01] } }),
+            progress: &ProgressNote::default(),
+            recorder: &recorder,
+            cancelled: &AtomicBool::new(false),
+        };
+
+        let outputs = pipeline.preview(&ctx).unwrap();
+        let got = &outputs["preview"]["shots"][0];
+        assert_eq!(got["path"], json!("media/preview/sh01.mp4"));
+        assert_eq!(got["width"], json!(480));
+        assert_eq!(got["height"], json!(854));
+        assert_eq!(got["duration_seconds"], json!(42.0 / 30.0));
+    }
+
+    #[test]
+    fn scale_to_short_edge_keeps_aspect_and_rounds_to_even() {
+        assert_eq!(scale_to_short_edge(1080, 1920, 480), (480, 854));
+        assert_eq!(scale_to_short_edge(1920, 1080, 480), (854, 480));
+        assert_eq!(scale_to_short_edge(1024, 1024, 480), (480, 480));
+        // 已经比目标短边还小也照样缩放，不做「已经够小就跳过」的特殊分支。
+        assert_eq!(scale_to_short_edge(0, 0, 480), (480, 480));
     }
 }

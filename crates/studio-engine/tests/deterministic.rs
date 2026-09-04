@@ -67,6 +67,11 @@ fn project_at_render(fail_at: Option<StageId>) -> (tempfile::TempDir, Project, A
     });
     let p = Project::open_with(&root, None, exec).unwrap();
     submit_through_prompt_pack(&p);
+    // preview 也是控制面自动执行的确定性阶段，但带确认门——除非这次故意
+    // 让它自己失败，否则替用户把门点过去，好让 render 接着自动跑。
+    if fail_at != Some(StageId::Preview) {
+        approve_preview_gate(&p);
+    }
     (dir, p, calls)
 }
 
@@ -86,18 +91,30 @@ fn poll_until(
     }
 }
 
+/// 等 preview 的确认门弹出来（或者它直接失败挂了），替用户点
+/// 「确认，继续」——preview 是唯一「控制面自动执行、但仍带确认门」的
+/// 确定性阶段，render 前必须先经过这一步。
+fn approve_preview_gate(p: &Project) {
+    let env = poll_until(p, 10, |e| {
+        e.pending_question.as_ref().map(|q| q.stage) == Some(StageId::Preview)
+            || e.blocked_by.is_some()
+    });
+    if let Some(q) = env.pending_question {
+        p.answer(&q.question_id, "approve").unwrap();
+    }
+}
+
 #[test]
 fn the_control_plane_runs_render_post_review_on_its_own() {
     let (_d, p, calls) = project_at_render(None);
 
-    // 门一通过就轮到控制面。执行器可能已经跑掉几步了，所以只断言
-    // 「现在是确定性阶段、等的是控制面」，不去赌具体停在哪一步。
+    // preview 的门已经在 project_at_render 里被自动确认过。执行器可能
+    // 已经跑掉几步了，所以只断言「现在是确定性阶段、等的是控制面」，
+    // 不去赌具体停在哪一步。
     let env = p.status().unwrap();
     assert!(
-        matches!(
-            env.project.stage,
-            StageId::Render | StageId::Post | StageId::Review
-        ) || env.project.status == ProjectStatus::Completed,
+        matches!(env.project.stage, StageId::Render | StageId::Post | StageId::Review)
+            || env.project.status == ProjectStatus::Completed,
         "实际停在 {:?}",
         env.project.stage
     );
@@ -114,24 +131,31 @@ fn the_control_plane_runs_render_post_review_on_its_own() {
     assert_eq!(
         env.project.status,
         ProjectStatus::Completed,
-        "三个确定性阶段应当自动跑完"
+        "四个确定性阶段应当自动跑完（preview 的门已提前确认）"
     );
-    assert_eq!(env.progress.completed, 9);
+    assert_eq!(env.progress.completed, 10);
     assert_eq!(
         calls.load(Ordering::SeqCst),
-        3,
-        "render / post / review 各跑一次"
+        4,
+        "preview / render / post / review 各跑一次"
     );
 
     // 产物落盘且可读
-    for s in [StageId::Render, StageId::Post, StageId::Review] {
+    for s in [StageId::Preview, StageId::Render, StageId::Post, StageId::Review] {
         let out = p.stage_output(s).unwrap();
         assert!(out.get(s.output_key()).is_some(), "{s} 应当有产物");
         assert!(p.bundle().root().join(format!("stages/{s}.json")).is_file());
     }
 
     let t = p.timeline(200).unwrap();
-    assert_eq!(t.iter().filter(|e| e.kind == "succeeded").count(), 3);
+    assert_eq!(
+        t.iter().filter(|e| e.kind == "succeeded").count(),
+        3,
+        "render / post / review 无门，直接判过；preview 走的是 gate_opened + approved"
+    );
+    // 5 个创作型确认门（selection/script/storyboard/visual_assets/prompt_pack）
+    // 加上 preview 自己那道门，一共 6 次。
+    assert_eq!(t.iter().filter(|e| e.kind == "gate_opened").count(), 6);
 }
 
 /// 执行失败要变成带 remedy 的阻塞，而不是默默卡住。
@@ -189,13 +213,17 @@ fn retrying_after_editing_env_picks_up_the_new_nodes_without_reopening() {
     }
     impl StageExecutor for RecordingExecutor {
         fn execute(&self, stage: StageId, ctx: &ExecContext<'_>) -> Result<Outputs> {
+            // 只关心 render 自己的节点列表和重试次数；preview 顺带跑过去就好。
+            if stage != StageId::Render {
+                return Ok(fixtures::outputs(stage));
+            }
             let nodes = ctx.settings.comfy_nodes();
             let is_first = {
                 let mut a = self.attempts.lock().unwrap();
                 a.push(nodes.clone());
                 a.len() == 1
             };
-            if stage == StageId::Render && is_first {
+            if is_first {
                 return Err(StudioError::ComfyUnavailable { tried: nodes });
             }
             Ok(fixtures::outputs(stage))
@@ -209,6 +237,7 @@ fn retrying_after_editing_env_picks_up_the_new_nodes_without_reopening() {
     // 这正是本测试要证明的事。
     let p = Project::open_with(&root, None, exec).unwrap();
     submit_through_prompt_pack(&p);
+    approve_preview_gate(&p);
 
     let env = poll_until(&p, 10, |e| e.blocked_by.is_some());
     assert_eq!(env.blocked_by.unwrap().code, "comfy_unavailable");
@@ -292,6 +321,8 @@ fn project_stuck_mid_render() -> (
     });
     let p = Project::open_with(&root, None, exec).unwrap();
     submit_through_prompt_pack(&p);
+    // SlowExecutor 对 preview 直接返回（只在 render 上慢），门一开就能过。
+    approve_preview_gate(&p);
 
     // 逼 ensure_worker 把它跑起来，再等到执行器真的进了 render 循环。
     p.status().unwrap();
@@ -397,6 +428,7 @@ fn excluded_nodes_disappear_from_the_settings_the_executor_sees() {
     // 就把当下的排除名单快照进 Settings，之后再排除对这次已经在跑的执行不生效。
     p.exclude_comfy_node("http://a:9001/").unwrap();
     submit_through_prompt_pack(&p);
+    approve_preview_gate(&p);
 
     let env = poll_until(&p, 10, |e| e.project.status == ProjectStatus::Completed);
     assert_eq!(env.project.status, ProjectStatus::Completed);

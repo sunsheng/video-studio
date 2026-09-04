@@ -175,7 +175,7 @@ pub const TOOLS: [ToolSpec; 11] = [
     },
     ToolSpec {
         name: "studio.retry_stage",
-        description: "干净地重试一个卡住的确定性阶段（render / post / review）：\
+        description: "干净地重试一个卡住的确定性阶段（preview / render / post / review）：\
                       先停掉可能还在跑的执行，再重新跑一次。用在「内容没问题，\
                       只是这次执行失败了」——节点抖动、连接超时、偶发故障。\
                       内容/提示词本身要改，用 studio.revise，不要用这个。",
@@ -270,6 +270,6 @@ mod tests {
             .unwrap()
             .input_schema)();
         let e = s["properties"]["stage"]["enum"].as_array().unwrap();
-        assert_eq!(e.len(), 9);
+        assert_eq!(e.len(), 10);
     }
 }

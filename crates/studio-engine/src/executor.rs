@@ -259,6 +259,14 @@ pub trait StageExecutor: Send + Sync {
     fn is_wired(&self) -> bool {
         true
     }
+
+    /// 确定性阶段执行成功、且该阶段声明了确认门时，用这份文案把它挂起等待
+    /// 确认，而不是直接判过。多数确定性阶段没有门（`stage.gate()` 是
+    /// `None`），这个方法根本不会被调用。返回 `None` 时引擎会退回一份
+    /// 通用文案——覆盖它只是为了给出更贴合场景的措辞（比如 preview）。
+    fn gate_confirmation(&self, _stage: StageId) -> Option<studio_core::Confirmation> {
+        None
+    }
 }
 
 /// 测试与「还没接线」时用的执行器：什么都不做，直接说自己不可用。

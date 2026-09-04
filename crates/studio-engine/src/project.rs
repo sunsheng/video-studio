@@ -11,8 +11,8 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use studio_core::contract::{
-    ActionKind, Blocked, Envelope, NextAction, Outcome, Progress, ProjectInfo, ProjectStatus,
-    WaitingOn,
+    ActionKind, AnswerOption, Blocked, Envelope, NextAction, Outcome, Progress, ProjectInfo,
+    ProjectStatus, Question, SelectionType, WaitingOn,
 };
 use studio_core::state::{LoadedStage, Stage, StageState, Submitted};
 use studio_core::{schema, Confirmation, Event, Outputs, Result, StageId, StageKind, StudioError};
@@ -384,7 +384,12 @@ impl Project {
                     .unwrap_or_else(|| answer.to_string());
                 self.store
                     .take_snapshot(&format!("在 {} 的确认门上选择「{label}」之前", q.stage))?;
-                self.revise_inner(q.stage, &format!("用户在确认门选择了「{label}」"))
+                // preview 没有独立内容，它的门选「有问题」时要退回 prompt_pack，
+                // 不是退回 preview 自己——revise_target() 是这条重定向规则的唯一事实源。
+                self.revise_inner(
+                    q.stage.revise_target(),
+                    &format!("用户在确认门选择了「{label}」"),
+                )
             }
             Some(Outcome::Approve) => {
                 self.store
@@ -432,7 +437,8 @@ impl Project {
         self.stop_worker();
         self.store.take_snapshot(&format!("修订 {stage} 之前"))?;
         self.clear_recorded_error()?;
-        self.revise_inner(stage, message)
+        // preview 自己不产出独立内容，修订它统一重定向到 prompt_pack。
+        self.revise_inner(stage.revise_target(), message)
     }
 
     fn revise_inner(&self, stage: StageId, message: &str) -> Result<Envelope> {
@@ -737,7 +743,7 @@ impl Project {
     }
 }
 
-const STAGE_TOTAL: usize = 9;
+const STAGE_TOTAL: usize = 10;
 
 fn loaded_outputs(l: &LoadedStage) -> Option<&Outputs> {
     match l {
@@ -801,8 +807,12 @@ fn run_deterministic(
         let Ok(loaded) = store.load_stage(stage) else {
             return;
         };
-        if loaded.state() == StageState::Approved {
-            continue;
+        match loaded.state() {
+            StageState::Approved => continue,
+            // 门还挂着（比如 preview 执行完但用户/Agent 还没确认），
+            // 控制面不该继续往下跑，交回去等应答。
+            StageState::AwaitingConfirmation => return,
+            StageState::Draft => {}
         }
         if stage.kind() != StageKind::Deterministic {
             // 轮到需要 Agent 或用户的阶段了，交回去。
@@ -835,18 +845,51 @@ fn run_deterministic(
                     );
                     return;
                 }
-                let _ = store.save_stage(
-                    stage,
-                    StageState::Approved,
-                    loaded.attempt(),
-                    Some(&outputs),
-                    None,
-                    None,
-                );
                 let text = serde_json::to_string_pretty(&outputs).unwrap_or_default();
                 let _ = bundle.write(&format!("stages/{stage}.json"), &format!("{text}\n"));
-                let _ = store.append_event(stage, "succeeded", &format!("{stage} 完成"), None);
-                progress.clear();
+
+                match stage.gate() {
+                    None => {
+                        let _ = store.save_stage(
+                            stage,
+                            StageState::Approved,
+                            loaded.attempt(),
+                            Some(&outputs),
+                            None,
+                            None,
+                        );
+                        let _ =
+                            store.append_event(stage, "succeeded", &format!("{stage} 完成"), None);
+                        progress.clear();
+                    }
+                    Some(gate_id) => {
+                        // 确定性阶段也能带门（目前只有 preview）：执行完不直接判过，
+                        // 挂起等确认——用跟「Agent 提交带门阶段」完全一样的
+                        // AwaitingConfirmation 状态，answer/revise 两条路径都不需要
+                        // 知道这次挂起是控制面自己执行出来的还是 Agent 提交出来的。
+                        let confirmation = executor
+                            .gate_confirmation(stage)
+                            .unwrap_or_else(|| generic_gate_confirmation(stage, gate_id));
+                        let question = Question {
+                            question_id: gate_id.to_string(),
+                            stage,
+                            prompt: confirmation.prompt,
+                            selection_type: confirmation.selection_type,
+                            options: confirmation.options,
+                        };
+                        let _ = store.save_stage(
+                            stage,
+                            StageState::AwaitingConfirmation,
+                            loaded.attempt(),
+                            Some(&outputs),
+                            None,
+                            Some(&question),
+                        );
+                        let _ = store.append_event(stage, "gate_opened", &question.prompt, None);
+                        progress.clear();
+                        return;
+                    }
+                }
             }
             Err(e) => {
                 record_failure(&store, stage, &e);
@@ -855,6 +898,20 @@ fn run_deterministic(
         }
     }
     progress.clear();
+}
+
+/// 通用确认门文案，供没有覆盖 [`StageExecutor::gate_confirmation`] 的执行器
+/// 兜底——保证「确定性阶段带门」这件事不会因为某个执行器（尤其是测试用的
+/// 假执行器）没接线具体文案就悄悄失效。
+fn generic_gate_confirmation(stage: StageId, gate: &str) -> Confirmation {
+    Confirmation {
+        prompt: format!("{stage} 已由控制面执行完成，确认门 {gate} 等待确认。"),
+        selection_type: SelectionType::Single,
+        options: vec![
+            AnswerOption::new("approve", "确认，继续下一阶段"),
+            AnswerOption::revise("revise", "有问题，退回修改"),
+        ],
+    }
 }
 
 fn record_failure(store: &Store, stage: StageId, e: &StudioError) {

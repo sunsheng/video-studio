@@ -36,9 +36,10 @@
 | 4 | `storyboard` | `director` | creative（你产出全部内容） | `storyboard.approval` |
 | 5 | `visual_assets` | `visual` | hybrid（你定内容，控制面执行） | `visual_assets.approval` |
 | 6 | `prompt_pack` | `prompt` | creative（你产出全部内容） | `prompt_pack.approval` |
-| 7 | `render` | `comfyui` | deterministic（控制面执行，你只观察） | — |
-| 8 | `post` | `post` | deterministic（控制面执行，你只观察） | — |
-| 9 | `review` | `review` | deterministic（控制面执行，你只观察） | — |
+| 7 | `preview` | `comfyui` | deterministic（控制面执行，你只观察） | `preview.approval` |
+| 8 | `render` | `comfyui` | deterministic（控制面执行，你只观察） | — |
+| 9 | `post` | `post` | deterministic（控制面执行，你只观察） | — |
+| 10 | `review` | `review` | deterministic（控制面执行，你只观察） | — |
 
 
 门在阶段**产出之后**暂停。`prompt_pack` 那道门是花 GPU 时间之前的最后一关。
@@ -70,6 +71,8 @@
 | `studio.stage_output` | 读取某个阶段的完整产物。上游被改后，下游的旧产物仍可在这里读到，供参考着改。 |
 | `studio.timeline` | 读取用户可见的操作历史：每个阶段何时提交、何时挂门、何时被修订。 |
 | `studio.export` | 把交付物投递到作品的 output/ 目录。后期阶段通过之后才可用。 |
+| `studio.comfy.exclude_node` | 把一个 ComfyUI 节点加入本次会话的临时排除名单，选节点时会跳过它。怀疑某个节点本身有问题（反复失败、迟迟连不上）时用它绕开，不需要用户去改 .env。只在这次会话内生效，不是永久拓扑变更。 |
+| `studio.retry_stage` | 干净地重试一个卡住的确定性阶段（preview / render / post / review）：先停掉可能还在跑的执行，再重新跑一次。用在「内容没问题，只是这次执行失败了」——节点抖动、连接超时、偶发故障。内容/提示词本身要改，用 studio.revise，不要用这个。 |
 
 
 ## 错误码
