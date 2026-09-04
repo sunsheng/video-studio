@@ -9,8 +9,269 @@
 //! 指向了源码，而它照做了。这里反过来：文档就是代码的投影。
 
 use studio_core::error::ERROR_CODES;
-use studio_core::{schema, StageId, StageKind};
+use studio_core::{fixtures, lexicon, schema, StageId, StageKind};
 use studio_mcp::TOOLS;
+
+/// 方法层：**怎么想**，区别于 SKILL.md 管的**交什么**。
+///
+/// 散文是源文件（跟着代码走、参与 review），词表和样例由代码插进去——
+/// 手写的词表迟早会和 schema 的 `enum` 对不上，手抄的样例迟早会和契约漂移。
+/// 占位符形如 `<!-- 词表:camera_motion -->` 与 `<!-- 样例:storyboard -->`。
+///
+/// 全部按需加载：SKILL.md 只给索引，Agent 用到哪份读哪份。默认一份都不进
+/// 上下文——前身项目把 30 行模型文件名塞进每个会话的教训在这里同样适用。
+const DOCTRINE: [(&str, &str); 11] = [
+    ("README.md", include_str!("../assets/doctrine/README.md")),
+    (
+        "story/structure.md",
+        include_str!("../assets/doctrine/story/structure.md"),
+    ),
+    (
+        "story/hook.md",
+        include_str!("../assets/doctrine/story/hook.md"),
+    ),
+    (
+        "story/voice.md",
+        include_str!("../assets/doctrine/story/voice.md"),
+    ),
+    (
+        "camera/grammar.md",
+        include_str!("../assets/doctrine/camera/grammar.md"),
+    ),
+    (
+        "camera/lighting.md",
+        include_str!("../assets/doctrine/camera/lighting.md"),
+    ),
+    (
+        "camera/blocking.md",
+        include_str!("../assets/doctrine/camera/blocking.md"),
+    ),
+    (
+        "consistency/bible.md",
+        include_str!("../assets/doctrine/consistency/bible.md"),
+    ),
+    (
+        "audio/design.md",
+        include_str!("../assets/doctrine/audio/design.md"),
+    ),
+    (
+        "failure/modes.md",
+        include_str!("../assets/doctrine/failure/modes.md"),
+    ),
+    (
+        "exemplars/script.md",
+        include_str!("../assets/doctrine/exemplars/script.md"),
+    ),
+];
+
+/// 黄金样例：批注是散文，产物本身从 fixtures 来。
+const EXEMPLARS: [(&str, StageId, &str); 2] = [
+    (
+        "exemplars/storyboard.md",
+        StageId::Storyboard,
+        include_str!("../assets/doctrine/exemplars/storyboard.md"),
+    ),
+    (
+        "exemplars/prompt_pack.md",
+        StageId::PromptPack,
+        include_str!("../assets/doctrine/exemplars/prompt_pack.md"),
+    ),
+];
+
+/// 一个模型系列的能力卡。
+///
+/// 「可注入参数」这一栏是**基线的投影**：写了基线没绑定的参数会被静默跳过，
+/// 不报错也不生效。这张表就是为了让 Agent 提前知道哪些字段白写。
+/// 一个测试守着它与 `assets/workflows/<family>/<mode>.json` 的
+/// `_studio.bindings` 完全一致——基线一改，测试就红。
+struct ModelCard {
+    family: &'static str,
+    title: &'static str,
+    /// `(模式, 可注入参数, 是否已核验)`
+    modes: &'static [(&'static str, &'static [&'static str], bool)],
+    prose: &'static str,
+}
+
+const MODEL_CARDS: [ModelCard; 3] = [
+    ModelCard {
+        family: "minimax_h3",
+        title: "MiniMax 系列（默认核心系列）",
+        modes: &[
+            (
+                "t2v",
+                &[
+                    "positive",
+                    "width",
+                    "height",
+                    "length_frames",
+                    "fps",
+                    "seed",
+                ],
+                true,
+            ),
+            (
+                "i2v",
+                &[
+                    "positive",
+                    "width",
+                    "height",
+                    "length_frames",
+                    "fps",
+                    "seed",
+                ],
+                true,
+            ),
+            (
+                "r2v",
+                &[
+                    "positive",
+                    "width",
+                    "height",
+                    "length_frames",
+                    "fps",
+                    "seed",
+                ],
+                true,
+            ),
+        ],
+        prose: include_str!("../assets/models/minimax_h3.md"),
+    },
+    ModelCard {
+        family: "wan2_2",
+        title: "Wan 系列",
+        modes: &[
+            (
+                "t2v",
+                &[
+                    "positive",
+                    "negative",
+                    "width",
+                    "height",
+                    "length_frames",
+                    "fps",
+                    "seed",
+                ],
+                true,
+            ),
+            ("i2v", &["seed"], false),
+            ("flf2v", &["seed"], false),
+        ],
+        prose: include_str!("../assets/models/wan2_2.md"),
+    },
+    ModelCard {
+        family: "ltx2_5",
+        title: "LTX 系列",
+        modes: &[
+            (
+                "t2v",
+                &[
+                    "positive",
+                    "negative",
+                    "width",
+                    "height",
+                    "duration_seconds",
+                    "fps",
+                    "seed",
+                ],
+                true,
+            ),
+            (
+                "i2v",
+                &[
+                    "positive",
+                    "negative",
+                    "width",
+                    "height",
+                    "duration_seconds",
+                    "fps",
+                    "seed",
+                ],
+                true,
+            ),
+        ],
+        prose: include_str!("../assets/models/ltx2_5.md"),
+    },
+];
+
+/// 这个 Skill 该读哪几份方法文档。路径是 bundle 内的相对路径。
+///
+/// **不是「全部读一遍」**：默认一份都不加载，用到哪份读哪份。
+fn doctrine_for(skill: &str) -> &'static [&'static str] {
+    match skill {
+        "idea" => &[
+            ".agents/doctrine/story/hook.md",
+            ".agents/doctrine/story/structure.md",
+        ],
+        "selection" => &[".agents/doctrine/story/hook.md"],
+        "script" => &[
+            ".agents/doctrine/story/structure.md",
+            ".agents/doctrine/story/voice.md",
+            ".agents/doctrine/audio/design.md",
+            ".agents/doctrine/exemplars/script.md",
+        ],
+        "director" => &[
+            ".agents/doctrine/camera/grammar.md",
+            ".agents/doctrine/camera/blocking.md",
+            ".agents/doctrine/camera/lighting.md",
+            ".agents/doctrine/consistency/bible.md",
+            ".agents/doctrine/audio/design.md",
+            ".agents/doctrine/exemplars/storyboard.md",
+        ],
+        "visual" => &[".agents/doctrine/consistency/bible.md"],
+        "prompt" => &[
+            ".agents/models/",
+            ".agents/doctrine/consistency/bible.md",
+            ".agents/doctrine/quality/banned.md",
+            ".agents/doctrine/exemplars/prompt_pack.md",
+        ],
+        "comfyui" => &[".agents/doctrine/failure/modes.md"],
+        "review" => &[".agents/doctrine/quality/checklist.md"],
+        "run-management" => &[".agents/doctrine/failure/modes.md"],
+        _ => &[],
+    }
+}
+
+/// 提交之前逐条过的自检项。阶段名从阶段图来，条目写在这里。
+fn checklist(stage: StageId) -> &'static [&'static str] {
+    match stage {
+        StageId::Idea => &[
+            "钩子在前 3 秒内成立，且说得出具体是什么画面",
+            "对模糊输入的判断写进了 assumptions，没有私下假设也没有反复追问",
+            "success_metrics 每一条都能被验收，不是「效果好」这类说法",
+        ],
+        StageId::Selection => &[
+            "推荐说清了牺牲什么，不是只讲优点",
+            "风险分成可规避 / 需用户决定 / 不可接受三类",
+        ],
+        StageId::Script => &[
+            "各拍时长之和精确等于总时长（自己加一遍）",
+            "时长按内容分配，timing_rule 写的是依据不是结果",
+            "每一拍都说得出自己的 beat_type，且不与上一拍重复",
+            "无口播也写清了环境声来源与字幕策略",
+        ],
+        StageId::Storyboard => &[
+            "每镜说得出 shot_function，说不出就删掉这一镜",
+            "每镜三条物理事实齐全，且都是拍得出来的",
+            "每镜只有一个主运镜，且落在受控词表里",
+            "镜头时长与剧本各拍对齐，总和一致",
+            "角色外观串逐镜逐字相同（复制粘贴，不要复述）",
+            "每镜的 audio 都写了，没有留空",
+        ],
+        StageId::VisualAssets => &[
+            "每个跨镜头复用的角色、场景、道具都有卡",
+            "一致性锁定写明了外观、机位签名、环境与排版禁止项",
+        ],
+        StageId::PromptPack => &[
+            "逐项对照能力卡：写的每个参数这条基线都吃",
+            "不支持负向提示词的系列，约束改写成了正向的完整句子",
+            "身份锁在每一镜里逐字出现，没有写成「同一位…」",
+            "没有禁用词（cinematic / 电影感 / 唯美这类）",
+            "种子固定并记录，尺寸与帧数按各镜时长算准",
+            "audio 写了三层，没有放弃原生音频",
+        ],
+        StageId::Preview | StageId::Render | StageId::Post | StageId::Review => &[],
+    }
+}
 
 /// 一个 Skill 的散文部分。可生成的段落不写在这里。
 struct SkillDoc {
@@ -180,6 +441,203 @@ const SKILLS: [SkillDoc; 10] = [
     },
 ];
 
+/// 一张词表的 Markdown 表格。
+fn vocabulary_table(name: &str) -> String {
+    let Some(rows) = lexicon::vocabulary(name) else {
+        return String::new();
+    };
+    let mut s = format!("| `{name}` 取值 | 说明 |\n|---|---|\n");
+    for (value, label) in rows {
+        s.push_str(&format!("| `{value}` | {label} |\n"));
+    }
+    s
+}
+
+/// 分镜运镜到 MiniMax 运镜指令的对照表。
+fn minimax_camera_table() -> String {
+    let mut s = String::from("| 分镜的 `camera_motion` | 提示词里写 | 说明 |\n|---|---|---|\n");
+    for motion in lexicon::CAMERA_MOTIONS {
+        let command = lexicon::minimax_camera_command(motion).unwrap_or("");
+        let label = lexicon::CAMERA_MOTION_LABELS
+            .iter()
+            .find(|(k, _)| *k == motion)
+            .map(|(_, v)| *v)
+            .unwrap_or("");
+        s.push_str(&format!("| `{motion}` | `{command}` | {label} |\n"));
+    }
+    s
+}
+
+/// 把一份散文里的占位符换成生成内容。
+///
+/// 认两种：`<!-- 词表:<名字> -->` 和 `<!-- 样例:<阶段> -->`。
+/// 换不掉的占位符会原样留下，由测试抓出来——静默留下一个空洞比报错更难查。
+fn fill_placeholders(src: &str) -> String {
+    let mut out = String::with_capacity(src.len());
+    for line in src.lines() {
+        let trimmed = line.trim();
+        let filled = match trimmed
+            .strip_prefix("<!-- 词表:")
+            .and_then(|r| r.strip_suffix(" -->"))
+        {
+            Some("minimax_camera") => Some(minimax_camera_table()),
+            Some(name) if lexicon::vocabulary(name).is_some() => Some(vocabulary_table(name)),
+            _ => None,
+        };
+        let filled = filled.or_else(|| {
+            trimmed
+                .strip_prefix("<!-- 样例:")
+                .and_then(|r| r.strip_suffix(" -->"))
+                .and_then(StageId::parse)
+                .map(exemplar_json)
+        });
+        match filled {
+            Some(block) => out.push_str(block.trim_end()),
+            None => out.push_str(line),
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// 某个阶段的黄金样例，取自契约样例本身，所以不会和 schema 漂移。
+fn exemplar_json(stage: StageId) -> String {
+    let outputs = fixtures::outputs(stage);
+    let json = serde_json::to_string_pretty(&outputs).unwrap_or_default();
+    format!("```json\n{json}\n```")
+}
+
+/// 禁用词表。取自代码里的词表，不手写。
+fn banned_md() -> String {
+    let mut s = String::from(
+        "# 禁用词\n\n\
+         这些词的共同点：**它们不描述任何可拍的东西**。\
+         对模型是噪声，对人是废话。\n\n\
+         ## Tier 1：出现即改\n\n\
+         写了就是没写。把它们换成具体的、能被摄影机记录的描述。\n\n",
+    );
+    for w in lexicon::BANNED_TIER1 {
+        s.push_str(&format!("- `{w}`\n"));
+    }
+    s.push_str(
+        "\n## Tier 2：同一段里出现两个以上就是问题\n\n\
+         单独用未必错，堆在一起就是形容词汤。\n\n",
+    );
+    for w in lexicon::BANNED_TIER2 {
+        s.push_str(&format!("- `{w}`\n"));
+    }
+    s.push_str(
+        "\n## 还有一类：写了内心状态\n\n\
+         `他很难过` `她感到兴奋` `气氛紧张`——模型拍不出情绪，只能拍行为。\n\n\
+         | 写了 | 改成 |\n|---|---|\n\
+         | 他很难过 | 他把下巴埋进围巾，视线避开镜头 |\n\
+         | 她很紧张 | 她反复用拇指刮杯壁的水珠 |\n\
+         | 气氛紧张 | 两个人的影子在墙上快要碰到 |\n\n\
+         ## 一个判断标准\n\n\
+         把这句话换到另一个完全不同的片子里，还成立吗？\
+         成立，就说明它什么都没说。\n",
+    );
+    s
+}
+
+/// 逐阶段的提交前自检清单。阶段与确认门从阶段图来。
+fn checklist_md() -> String {
+    let mut s = String::from(
+        "# 提交前自检\n\n\
+         逐条过。过不了的不要提交——退回来重做比往下走便宜得多，\
+         尤其是提示词那道门之后就开始花 GPU 时间了。\n\n",
+    );
+    for stage in StageId::all() {
+        let items = checklist(stage);
+        if items.is_empty() {
+            continue;
+        }
+        s.push_str(&format!("## `{stage}`\n\n"));
+        for item in items {
+            s.push_str(&format!("- [ ] {item}\n"));
+        }
+        s.push('\n');
+    }
+    s.push_str(
+        "## 所有创作阶段通用\n\n\
+         - [ ] 没有不可拍的描述（情绪、氛围、「很美」）\n\
+         - [ ] 没有 Tier 1 禁用词\n\
+         - [ ] 换一个题材就不成立——如果换了还成立，说明写得太空\n",
+    );
+    s
+}
+
+/// 一个模型系列的能力卡。表格是基线的投影，散文是人写的语法要点。
+fn model_card_md(card: &ModelCard) -> String {
+    let mut s = format!(
+        "# {}\n\n`{}`\n\n## 这条系列吃什么\n\n",
+        card.title, card.family
+    );
+    s.push_str("| 模式 | 可用 | 可注入参数 |\n|---|---|---|\n");
+    for (mode, params, verified) in card.modes {
+        let params = if *verified {
+            params
+                .iter()
+                .map(|p| format!("`{p}`"))
+                .collect::<Vec<_>>()
+                .join("、")
+        } else {
+            "—".to_string()
+        };
+        s.push_str(&format!(
+            "| `{}/{}` | {} | {} |\n",
+            card.family,
+            mode,
+            if *verified { "是" } else { "**否**" },
+            params
+        ));
+    }
+
+    // 没被任何已核验模式绑定的参数 = 写了会被静默丢弃的参数。
+    let mut supported: Vec<&str> = Vec::new();
+    for (_, params, verified) in card.modes {
+        if *verified {
+            for p in *params {
+                if !supported.contains(p) {
+                    supported.push(p);
+                }
+            }
+        }
+    }
+    let mut dropped: Vec<&str> = Vec::new();
+    for p in [
+        "negative",
+        "references",
+        "length_frames",
+        "duration_seconds",
+    ] {
+        if !supported.contains(&p) {
+            dropped.push(p);
+        }
+    }
+    if !dropped.is_empty() {
+        s.push_str(&format!(
+            "\n**写了会被静默丢弃**：{}。\
+             这些参数在这条系列上没有绑定——不报错、不留痕、也不生效。\n",
+            dropped
+                .iter()
+                .map(|p| format!("`{p}`"))
+                .collect::<Vec<_>>()
+                .join("、")
+        ));
+    }
+    if card.modes.iter().any(|(_, _, v)| !v) {
+        s.push_str(
+            "\n标着「否」的模式尚未在真机上核验绑定，**不要选它们**——\
+             绑错节点会静默产出错的画面，比直接报错更难查。\n",
+        );
+    }
+    s.push('\n');
+    s.push_str(fill_placeholders(card.prose).trim_end());
+    s.push('\n');
+    s
+}
+
 fn stage_table() -> String {
     let mut s = String::from("| # | 阶段 | 能力 | 类型 | 确认门 |\n|---|---|---|---|---|\n");
     for (i, stage) in StageId::all().enumerate() {
@@ -258,6 +716,19 @@ pub fn agents_md() -> String {
 3. **被挡住时照 `blocked_by.remedy` 做。** 每一条阻塞都带着可执行的下一步。
    如果 remedy 说不通，那是控制面的缺陷，报告出来，不要绕过去。
 
+## 方法手册
+
+上面三条讲的是**怎么交**。**怎么写得好**是另一回事，写在
+`.agents/doctrine/` 里：镜头语法、光与色、调度、结构与钩子、声音设计、
+一致性、失败模式、禁用词，还有一部完整作品的黄金样例。
+每个 Skill 会指出自己该读哪几份，索引在 `.agents/doctrine/README.md`。
+
+各个模型系列吃的参数**不一样**——写了某条系列没有绑定的参数会被静默丢弃，
+不报错也不生效。写提示词之前先看 `.agents/models/` 里对应系列那一份。
+
+这些文件用你的文件读取工具直接读，**按需读，不要一次全读**。
+唯一的禁区还是 `.studio/`。
+
 ## 阶段与确认门
 
 {stage_table}
@@ -316,6 +787,22 @@ fn skill_md(doc: &SkillDoc) -> String {
     }
     s.push('\n');
 
+    let doctrine = doctrine_for(doc.name);
+    if !doctrine.is_empty() {
+        s.push_str("## 方法\n\n");
+        s.push_str(
+            "职责说的是**交什么**，下面这几份说的是**怎么想**——什么算好、\
+             怎么避开已知的坑、写好的长什么样。动手之前读，别凭感觉写。\n\n",
+        );
+        for path in doctrine {
+            s.push_str(&format!("- `{path}`\n"));
+        }
+        s.push_str(
+            "\n这些文件就在这部作品的目录里，用你的文件读取工具直接读。\
+             （`.studio/` 是控制面私有的，那个不要碰。）\n\n",
+        );
+    }
+
     if let Some(stage) = doc.stage {
         s.push_str("## 输入输出\n\n");
         s.push_str(&format!(
@@ -351,6 +838,18 @@ fn skill_md(doc: &SkillDoc) -> String {
          schema 不合规时 `message` 会精确指到出错的字段路径，例如 \
          `script.story_arc[1].duration_seconds`。\n\n",
     );
+
+    if let Some(stage) = doc.stage {
+        let items = checklist(stage);
+        if !items.is_empty() {
+            s.push_str("## 提交前自检\n\n");
+            s.push_str("逐条过。过不了就别提交——退回来重做比往下走便宜得多。\n\n");
+            for item in items {
+                s.push_str(&format!("- [ ] {item}\n"));
+            }
+            s.push('\n');
+        }
+    }
 
     if !doc.notes.is_empty() {
         s.push_str("## 注意\n\n");
@@ -422,6 +921,26 @@ pub fn env_example() -> String {
     .to_string()
 }
 
+/// 方法层与模型能力卡：`(相对路径, 内容)`。
+///
+/// 与 SKILL.md 的分工：那边是契约（交什么、被挡住怎么办），这边是方法
+/// （怎么想、什么算好）。按需加载，默认一份都不进上下文。
+fn doctrine_files() -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for (path, src) in DOCTRINE.iter() {
+        out.push((format!("doctrine/{path}"), fill_placeholders(src)));
+    }
+    for (path, _, src) in EXEMPLARS.iter() {
+        out.push((format!("doctrine/{path}"), fill_placeholders(src)));
+    }
+    out.push(("doctrine/quality/checklist.md".to_string(), checklist_md()));
+    out.push(("doctrine/quality/banned.md".to_string(), banned_md()));
+    for card in MODEL_CARDS.iter() {
+        out.push((format!("models/{}.md", card.family), model_card_md(card)));
+    }
+    out
+}
+
 /// 全部随包分发的资产：`(相对路径, 内容)`。
 pub fn all_assets() -> Vec<(String, String)> {
     let mut out = vec![("AGENTS.md".to_string(), agents_md())];
@@ -433,6 +952,7 @@ pub fn all_assets() -> Vec<(String, String)> {
             serde_json::to_string_pretty(&schema::stage_schema_document(stage)).unwrap_or_default();
         out.push((format!("schema/{stage}.json"), format!("{json}\n")));
     }
+    out.extend(doctrine_files());
     out.push((".env.example".to_string(), env_example()));
     out
 }
@@ -459,6 +979,9 @@ pub fn bundle_files(
             skill_md(doc),
         ));
     }
+    for (path, content) in doctrine_files() {
+        out.push((format!(".agents/{path}"), content));
+    }
     out
 }
 
@@ -474,6 +997,205 @@ mod tests {
                 !md.contains(leak),
                 "AGENTS.md 不该把 Agent 指向源码：{leak}"
             );
+        }
+    }
+
+    /// 方法层文档和能力卡也是 Agent 读得到的东西，同一套约束照样适用——
+    /// 泄漏一处，「Agent 永远没有理由去翻源码」这条就破了。
+    #[test]
+    fn no_packaged_doc_points_at_source_code_or_names_the_binaries() {
+        for (path, content) in all_assets() {
+            if !path.ends_with(".md") {
+                continue;
+            }
+            for leak in ["stage_graph.rs", "mcp_server.rs", "src/", "crates/", ".py"] {
+                assert!(
+                    !content.contains(leak),
+                    "{path} 不该把 Agent 指向源码：{leak}"
+                );
+            }
+            for leak in ["studiod", "studio-cli"] {
+                assert!(!content.contains(leak), "{path} 不该提到二进制名：{leak}");
+            }
+        }
+    }
+
+    /// 换不掉的占位符会在文档里留下一个空洞：Agent 看到的是一句注释，
+    /// 不是词表，而且没有任何东西会报错。
+    #[test]
+    fn every_placeholder_gets_filled() {
+        for (path, content) in all_assets() {
+            assert!(
+                !content.contains("<!-- 词表:") && !content.contains("<!-- 样例:"),
+                "{path} 里有没被替换的占位符"
+            );
+        }
+    }
+
+    /// 方法层必须真的带着方法：词表进得去，样例进得去，
+    /// 禁用词表和自检清单是从代码里长出来的。
+    #[test]
+    fn doctrine_carries_the_vocabularies_and_the_exemplars() {
+        let files: std::collections::HashMap<_, _> = doctrine_files().into_iter().collect();
+
+        let grammar = &files["doctrine/camera/grammar.md"];
+        for motion in lexicon::CAMERA_MOTIONS {
+            assert!(grammar.contains(motion), "镜头语法里缺运镜 {motion}");
+        }
+        for size in lexicon::SHOT_SIZES {
+            assert!(grammar.contains(size), "镜头语法里缺景别 {size}");
+        }
+
+        let lighting = &files["doctrine/camera/lighting.md"];
+        for source in lexicon::LIGHTING_SOURCES {
+            assert!(lighting.contains(source), "光与色里缺光源 {source}");
+        }
+
+        let banned = &files["doctrine/quality/banned.md"];
+        for w in lexicon::BANNED_TIER1 {
+            assert!(banned.contains(w), "禁用词表里缺 {w}");
+        }
+
+        // 样例来自契约样例本身，所以不会和 schema 漂移。
+        let sb = &files["doctrine/exemplars/storyboard.md"];
+        assert!(sb.contains("three_facts") && sb.contains("push_in"));
+        let pack = &files["doctrine/exemplars/prompt_pack.md"];
+        assert!(
+            pack.contains(studio_core::fixtures::IDENTITY_LOCK),
+            "提示词样例里应当看得见身份锁本身"
+        );
+
+        let checklist = &files["doctrine/quality/checklist.md"];
+        for stage in StageId::all() {
+            if !checklist_items_exist(stage) {
+                continue;
+            }
+            assert!(checklist.contains(stage.as_str()), "自检清单缺阶段 {stage}");
+        }
+    }
+
+    fn checklist_items_exist(stage: StageId) -> bool {
+        !checklist(stage).is_empty()
+    }
+
+    /// 能力卡的「可注入参数」是基线的投影。两边对不上，Agent 就会照着
+    /// 一张过期的表写提示词，而写错的参数是被**静默丢弃**的。
+    #[test]
+    fn model_cards_match_the_verified_baselines() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../assets/workflows")
+            .canonicalize()
+            .expect("找不到基线目录");
+        for card in MODEL_CARDS.iter() {
+            for (mode, params, verified) in card.modes {
+                let path = root.join(card.family).join(format!("{mode}.json"));
+                let text = std::fs::read_to_string(&path)
+                    .unwrap_or_else(|e| panic!("读不到基线 {}：{e}", path.display()));
+                let json: serde_json::Value =
+                    serde_json::from_str(&text).expect("基线不是合法 JSON");
+                let studio = &json["_studio"];
+
+                let disk_verified = studio["bindings_verified"].as_bool().unwrap_or(false);
+                assert_eq!(
+                    disk_verified, *verified,
+                    "{}/{mode} 的核验状态与能力卡不一致",
+                    card.family
+                );
+
+                let mut disk: Vec<&str> = studio["bindings"]
+                    .as_object()
+                    .expect("基线缺少 _studio.bindings")
+                    .keys()
+                    .map(|k| k.as_str())
+                    .collect();
+                disk.sort_unstable();
+
+                // 未核验的基线不许拿来渲染，能力卡上也就不列参数。
+                let mut card_params: Vec<&str> = if *verified {
+                    params.to_vec()
+                } else {
+                    disk.clone()
+                };
+                card_params.sort_unstable();
+                assert_eq!(
+                    card_params, disk,
+                    "{}/{mode} 的可注入参数与基线的 _studio.bindings 对不上",
+                    card.family
+                );
+            }
+        }
+    }
+
+    /// 能力卡必须把「写了会被丢弃」的参数点出来——这是它存在的主要理由。
+    #[test]
+    fn minimax_card_warns_that_negative_is_dropped() {
+        let card = MODEL_CARDS
+            .iter()
+            .find(|c| c.family == "minimax_h3")
+            .unwrap();
+        let md = model_card_md(card);
+        assert!(md.contains("写了会被静默丢弃"), "没有点出被丢弃的参数");
+        assert!(md.contains("`negative`"), "没有点名 negative");
+        assert!(md.contains("`references`"), "没有点名 references");
+    }
+
+    /// LTX 用的是按秒计的时长参数，写 length_frames 会被丢弃——
+    /// 这是三条系列里最容易踩的一处差异。
+    #[test]
+    fn ltx_card_warns_about_the_duration_parameter() {
+        let card = MODEL_CARDS.iter().find(|c| c.family == "ltx2_5").unwrap();
+        let md = model_card_md(card);
+        assert!(md.contains("duration_seconds"));
+        assert!(md.contains("`length_frames`"), "没有点名会被丢弃的参数");
+    }
+
+    /// 每个创作阶段的 Skill 都要指得出方法文档，并带上自检清单——
+    /// 只有契约没有方法，产出就是填表。
+    #[test]
+    fn creative_skills_carry_doctrine_and_a_checklist() {
+        for doc in SKILLS.iter() {
+            let Some(stage) = doc.stage else { continue };
+            if stage.kind() == StageKind::Deterministic {
+                continue;
+            }
+            let md = skill_md(doc);
+            assert!(
+                !doctrine_for(doc.name).is_empty(),
+                "{} 没有方法文档",
+                doc.name
+            );
+            assert!(
+                md.contains("## 方法"),
+                "{} 的 SKILL.md 缺方法索引",
+                doc.name
+            );
+            assert!(
+                md.contains("## 提交前自检"),
+                "{} 的 SKILL.md 缺自检清单",
+                doc.name
+            );
+            for path in doctrine_for(doc.name) {
+                assert!(md.contains(path), "{} 没列出 {path}", doc.name);
+            }
+        }
+    }
+
+    /// Skill 指向的方法文档必须真的会被物化出来，否则 Agent 会去读一个不存在的文件。
+    #[test]
+    fn every_referenced_doctrine_file_is_actually_shipped() {
+        let shipped: Vec<String> = doctrine_files()
+            .into_iter()
+            .map(|(p, _)| format!(".agents/{p}"))
+            .collect();
+        for doc in SKILLS.iter() {
+            for path in doctrine_for(doc.name) {
+                let ok = if let Some(dir) = path.strip_suffix('/') {
+                    shipped.iter().any(|s| s.starts_with(dir))
+                } else {
+                    shipped.iter().any(|s| s == path)
+                };
+                assert!(ok, "{} 指向的 {path} 不在随包文件里", doc.name);
+            }
         }
     }
 

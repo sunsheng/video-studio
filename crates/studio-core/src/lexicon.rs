@@ -108,6 +108,72 @@ pub const MINIMAX_CAMERA_COMMANDS: [(&str, &str); 15] = [
     ("handheld_shake", "[Shake]"),
 ];
 
+/// 景别的中文说法。
+pub const SHOT_SIZE_LABELS: [(&str, &str); 7] = [
+    ("extreme_wide", "大远景：人在环境里很小，交代地理关系"),
+    ("wide", "远景：人全身加大量环境"),
+    ("medium_wide", "中远景：膝盖以上，看得清动作和环境"),
+    ("medium", "中景：腰以上，动作与表情兼顾"),
+    ("medium_close", "中近景：胸以上，表情为主"),
+    ("close", "近景：肩以上，脸占主要面积"),
+    ("extreme_close", "特写：眼睛、手、物件的局部"),
+];
+
+/// 机位角度的中文说法。
+pub const ANGLE_LABELS: [(&str, &str); 7] = [
+    ("eye_level", "平视：中性，没有理由就用它"),
+    ("low", "仰拍：主体显得有力、有压迫感"),
+    ("high", "俯拍：主体显得弱小、被审视"),
+    ("overhead", "顶视：图形化，强调布局而非人"),
+    ("dutch", "斜角：画面失衡，表示不安"),
+    ("over_shoulder", "过肩：交代两人关系与视线"),
+    ("pov", "主观视角：观众成为角色的眼睛"),
+];
+
+/// 光源的中文说法。
+pub const LIGHTING_SOURCE_LABELS: [(&str, &str); 8] = [
+    ("daylight", "自然日光"),
+    ("moonlight", "月光：冷、暗、方向单一"),
+    ("practical", "实用光：画面里能看见的灯，最容易出效果"),
+    ("firelight", "火光：暖、跳动、方向低"),
+    ("fluorescent", "荧光灯：偏绿、平、无情绪"),
+    ("overcast", "阴天：大面积柔光，无明显方向"),
+    ("mixed", "混合光：冷暖并存，需说明各自方向"),
+    ("artificial", "人造光：影棚或不明来源的布光"),
+];
+
+/// 光型的中文说法。
+pub const LIGHTING_KEY_LABELS: [(&str, &str); 8] = [
+    ("soft", "柔光：阴影边缘柔和，皮肤平整"),
+    ("hard", "硬光：阴影边缘锐利，反差大"),
+    ("top", "顶光：眼窝落影，压迫感"),
+    ("side", "侧光：一半亮一半暗，立体"),
+    ("back", "逆光：主体压暗，边缘发光"),
+    ("rim", "轮廓光：只有一道边光，把人从暗背景里分离"),
+    ("silhouette", "剪影：主体全黑，只剩形状"),
+    ("bottom", "底光：反常规照明，用于失常与恐怖"),
+];
+
+/// 镜头职能的中文说法。
+pub const SHOT_FUNCTION_LABELS: [(&str, &str); 3] = [
+    ("change_emotion", "改变情绪：看完这一镜，观众的感受变了"),
+    ("advance_action", "推进动作：看完这一镜，故事往前走了一步"),
+    (
+        "raise_pressure",
+        "增加压力：看完这一镜，观众更担心或更期待了",
+    ),
+];
+
+/// 拍点类型的中文说法。
+pub const BEAT_TYPE_LABELS: [(&str, &str); 6] = [
+    ("hook", "勾住：给一个不看下去会难受的理由"),
+    ("setup", "交代：谁、在哪、什么状态"),
+    ("develop", "推进：信息量最大的地方"),
+    ("turn", "转折：观众的预期被改写"),
+    ("payoff", "兑现：前面埋的东西在这里结算"),
+    ("resolve", "收束：给一个能停住的画面"),
+];
+
 /// `camera_motion` 的中文说法，写给人看的那一列。
 pub const CAMERA_MOTION_LABELS: [(&str, &str); 15] = [
     ("static", "固定机位"),
@@ -195,6 +261,48 @@ pub fn minimax_camera_command(motion: &str) -> Option<&'static str> {
         .map(|(_, v)| *v)
 }
 
+/// 全部词表，按名字取「取值 + 中文说法」。
+///
+/// 随包分发的方法层文档里的词表表格由这里生成，不手写——
+/// 手写的表格迟早会和 schema 的 `enum` 对不上。
+pub fn vocabulary(name: &str) -> Option<&'static [(&'static str, &'static str)]> {
+    Some(match name {
+        "shot_size" => &SHOT_SIZE_LABELS,
+        "angle" => &ANGLE_LABELS,
+        "camera_motion" => &CAMERA_MOTION_LABELS,
+        "lighting_source" => &LIGHTING_SOURCE_LABELS,
+        "lighting_key" => &LIGHTING_KEY_LABELS,
+        "shot_function" => &SHOT_FUNCTION_LABELS,
+        "beat_type" => &BEAT_TYPE_LABELS,
+        _ => return None,
+    })
+}
+
+/// 每个词表的取值集合，用来和 [`vocabulary`] 对账。
+pub fn values(name: &str) -> Option<&'static [&'static str]> {
+    Some(match name {
+        "shot_size" => &SHOT_SIZES,
+        "angle" => &ANGLES,
+        "camera_motion" => &CAMERA_MOTIONS,
+        "lighting_source" => &LIGHTING_SOURCES,
+        "lighting_key" => &LIGHTING_KEYS,
+        "shot_function" => &SHOT_FUNCTIONS,
+        "beat_type" => &BEAT_TYPES,
+        _ => return None,
+    })
+}
+
+/// 有中文说法的词表名。
+pub const VOCABULARIES: [&str; 7] = [
+    "shot_size",
+    "angle",
+    "camera_motion",
+    "lighting_source",
+    "lighting_key",
+    "shot_function",
+    "beat_type",
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -214,6 +322,31 @@ mod tests {
         }
         assert_eq!(MINIMAX_CAMERA_COMMANDS.len(), CAMERA_MOTIONS.len());
         assert_eq!(CAMERA_MOTION_LABELS.len(), CAMERA_MOTIONS.len());
+    }
+
+    /// 词表少一条中文说法，生成出来的文档就会缺一行——
+    /// Agent 于是不知道那个取值是什么意思，也就不会用它。
+    #[test]
+    fn every_vocabulary_value_has_a_label() {
+        for name in VOCABULARIES {
+            let values = values(name).unwrap_or_else(|| panic!("{name} 没有取值集合"));
+            let labels = vocabulary(name).unwrap_or_else(|| panic!("{name} 没有中文说法"));
+            assert_eq!(
+                values.len(),
+                labels.len(),
+                "{name} 的取值与中文说法数量对不上"
+            );
+            for v in values {
+                assert!(
+                    labels.iter().any(|(k, _)| k == v),
+                    "{name} 的取值 {v} 没有中文说法"
+                );
+            }
+            for (k, text) in labels {
+                assert!(values.contains(k), "{name} 的中文说法里有多余的取值 {k}");
+                assert!(!text.is_empty(), "{name}.{k} 的中文说法是空的");
+            }
+        }
     }
 
     #[test]

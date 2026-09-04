@@ -16,7 +16,8 @@ name = "studio-cli"
 path = "src/main.rs"
 
 [dependencies]
-studio-core = { path = "../studio-core" }
+# fixtures：随包分发的黄金样例直接由它生成，避免样例和契约各写一份、慢慢漂移。
+studio-core = { path = "../studio-core", features = ["fixtures"] }
 studio-store = { path = "../studio-store" }
 studio-engine = { path = "../studio-engine" }
 studio-comfy = { path = "../studio-comfy" }
