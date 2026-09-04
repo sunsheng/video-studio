@@ -140,14 +140,25 @@ impl Project {
         Ok(None)
     }
 
-    fn completed_count(&self) -> Result<usize> {
-        let mut n = 0;
+    /// 已通过阶段数与第一个未通过阶段，**一次扫描**内一起算出。
+    ///
+    /// 确定性阶段跑在后台线程里，用自己的连接写状态；如果这里分两次扫描
+    /// （先数完通过数，再单独找第一个未通过阶段），两次扫描之间足够让
+    /// 后台线程把最后一个阶段提交为 Approved——这时 completed 还停在
+    /// 扫描时的旧值，current 却已经是最新的 None（全部通过），信封里就会
+    /// 出现「completed=9 但 status=Completed」这种自相矛盾的组合。
+    /// 合并成一次扫描后两者必然来自同一批读取，不会再对不上。
+    fn progress_and_current(&self) -> Result<(usize, Option<StageId>)> {
+        let mut completed = 0;
+        let mut current = None;
         for stage in StageId::all() {
             if self.store.load_stage(stage)?.state() == StageState::Approved {
-                n += 1;
+                completed += 1;
+            } else if current.is_none() {
+                current = Some(stage);
             }
         }
-        Ok(n)
+        Ok((completed, current))
     }
 
     /// 已通过阶段的产物，作为下一阶段的输入。
@@ -185,9 +196,8 @@ impl Project {
     fn envelope(&self, blocked: Option<&StudioError>) -> Result<Envelope> {
         let title = self.store.title()?;
         let pending = self.store.pending_question()?;
-        let completed = self.completed_count()?;
         let total = STAGE_TOTAL;
-        let current = self.current_stage()?;
+        let (completed, current) = self.progress_and_current()?;
 
         let (stage, status, waiting_on, next_action) = match (&pending, current) {
             (Some(q), _) => (q.stage, ProjectStatus::Active, WaitingOn::User, None),
