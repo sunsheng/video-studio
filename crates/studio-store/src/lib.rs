@@ -41,6 +41,11 @@ impl Store {
             .map_err(oops)?;
         conn.pragma_update(None, "foreign_keys", "ON")
             .map_err(oops)?;
+        // WAL 允许并发读，但写锁一次只能有一个连接拿到——同一个 bundle
+        // 上可能同时有主连接和确定性阶段 worker 各自开着一个连接，
+        // 忙锁不设超时的话，撞车时会立即报 SQLITE_BUSY 而不是排队等一下。
+        conn.busy_timeout(std::time::Duration::from_secs(5))
+            .map_err(oops)?;
         let store = Store { conn };
         store.verify_integrity()?;
         Ok(store)
@@ -50,6 +55,8 @@ impl Store {
     pub fn create(path: &std::path::Path, title: &str, program_version: &str) -> Result<Store> {
         let conn = Connection::open(path).map_err(oops)?;
         conn.pragma_update(None, "journal_mode", "WAL")
+            .map_err(oops)?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))
             .map_err(oops)?;
         conn.execute_batch(
             r#"
@@ -216,20 +223,41 @@ impl Store {
             Some(o) => Some(serde_json::to_string(o).map_err(oops)?),
             None => None,
         };
-        self.conn
-            .execute(
-                "UPDATE stages SET state = ?2, attempt = ?3, outputs_json = ?4, summary = ?5, updated_at = ?6
-                 WHERE stage = ?1",
-                params![stage.as_str(), state.as_str(), attempt, outputs_json, summary, now()],
-            )
-            .map_err(oops)?;
 
-        match (state, question) {
-            (StageState::AwaitingConfirmation, Some(q)) => self.put_question(q)?,
-            // 离开挂起状态时，门随之消失——不留「已取消」的残骸。
-            _ => self.clear_question(stage)?,
+        // stages 表的更新、questions 表的增删、reseal() 的完整性摘要，
+        // 必须在同一个事务里原子生效。这三步是分开的 SQL 语句——不包一个
+        // 事务的话，另一个连接（比如确定性阶段的后台 worker 和主线程各自
+        // 开着的连接）就有窗口能读到「阶段已经是 awaiting_confirmation，
+        // 但确认门还没写进 questions 表」这种半写状态，直接触发
+        // state_drift。以前所有写 AwaitingConfirmation 的调用都来自
+        // Agent 的同步 submit_stage，读写在同一个连接、同一个调用栈里，
+        // 这个窗口不会被外部观察到；preview 这种由后台 worker 自己产出
+        // 确认门的阶段，读写发生在两个连接上，窗口就能被撞见。
+        self.conn.execute_batch("BEGIN IMMEDIATE").map_err(oops)?;
+        let result: Result<()> = (|| {
+            self.conn
+                .execute(
+                    "UPDATE stages SET state = ?2, attempt = ?3, outputs_json = ?4, summary = ?5, updated_at = ?6
+                     WHERE stage = ?1",
+                    params![stage.as_str(), state.as_str(), attempt, outputs_json, summary, now()],
+                )
+                .map_err(oops)?;
+
+            match (state, question) {
+                (StageState::AwaitingConfirmation, Some(q)) => self.put_question(q)?,
+                // 离开挂起状态时，门随之消失——不留「已取消」的残骸。
+                _ => self.clear_question(stage)?,
+            }
+            self.reseal()
+        })();
+
+        match result {
+            Ok(()) => self.conn.execute_batch("COMMIT").map_err(oops),
+            Err(e) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(e)
+            }
         }
-        self.reseal()
     }
 
     pub fn stage_summary(&self, stage: StageId) -> Result<Option<String>> {

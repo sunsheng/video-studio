@@ -89,6 +89,9 @@ pub struct Settings {
     pub env: BTreeMap<String, String>,
     /// 找过的位置，用于 `tool_unavailable` 的报错。
     pub searched: Vec<String>,
+    /// 本次进程临时排除的 ComfyUI 节点——来自 `studio.comfy.exclude_node`，
+    /// 不写 `.env`、不落盘，只在当次会话内生效。
+    excluded_comfy_nodes: Vec<String>,
 }
 
 impl Settings {
@@ -136,7 +139,14 @@ impl Settings {
             file,
             env,
             searched,
+            excluded_comfy_nodes: Vec::new(),
         }
+    }
+
+    /// 叠加临时排除的节点。返回自身以便链式调用。
+    pub fn exclude_comfy_nodes(mut self, excluded: impl IntoIterator<Item = String>) -> Self {
+        self.excluded_comfy_nodes = excluded.into_iter().collect();
+        self
     }
 
     /// 解析一个外部程序的位置。返回 None 表示到处都找不到。
@@ -163,16 +173,29 @@ impl Settings {
     }
 
     pub fn comfy_nodes(&self) -> Vec<String> {
-        if let Some(v) = self.env.get("COMFY_NODES") {
+        let all = if let Some(v) = self.env.get("COMFY_NODES") {
             let list: Vec<String> = v
                 .split(',')
                 .map(|s| s.trim().trim_end_matches('/').to_string())
                 .filter(|s| !s.is_empty())
                 .collect();
             if !list.is_empty() {
-                return list;
+                list
+            } else {
+                self.default_comfy_nodes()
             }
+        } else {
+            self.default_comfy_nodes()
+        };
+        if self.excluded_comfy_nodes.is_empty() {
+            return all;
         }
+        all.into_iter()
+            .filter(|n| !self.excluded_comfy_nodes.contains(n))
+            .collect()
+    }
+
+    fn default_comfy_nodes(&self) -> Vec<String> {
         self.file
             .comfy
             .nodes
@@ -292,6 +315,19 @@ mod tests {
         assert_eq!(nodes.len(), 8);
         assert_eq!(nodes[0], "http://127.0.0.1:9001");
         assert_eq!(nodes[7], "http://127.0.0.1:9008");
+    }
+
+    #[test]
+    fn excluded_nodes_are_filtered_out_of_comfy_nodes() {
+        let bundle = tempfile::tempdir().unwrap();
+        std::fs::write(
+            bundle.path().join(".env"),
+            "COMFY_NODES=http://a:9001,http://b:9002,http://c:9003\n",
+        )
+        .unwrap();
+        let s = Settings::load(None, Some(bundle.path()))
+            .exclude_comfy_nodes(["http://b:9002".to_string()]);
+        assert_eq!(s.comfy_nodes(), vec!["http://a:9001", "http://c:9003"]);
     }
 
     #[test]

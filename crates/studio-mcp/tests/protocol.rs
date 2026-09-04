@@ -95,11 +95,11 @@ fn initialize_falls_back_for_an_unknown_version() {
 }
 
 #[test]
-fn tools_list_exposes_exactly_nine_tools_without_run_id() {
+fn tools_list_exposes_exactly_eleven_tools_without_run_id() {
     let mut h = Harness::new();
     let resp = h.rpc("tools/list", json!({}));
     let tools = resp["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 9);
+    assert_eq!(tools.len(), 11);
     for t in tools {
         let name = t["name"].as_str().unwrap();
         assert!(name.starts_with("studio."));
@@ -152,7 +152,7 @@ fn status_tells_the_agent_what_to_do_first() {
     assert_eq!(env["waiting_on"], "agent");
     assert_eq!(env["next_action"]["kind"], "submit_stage");
     assert_eq!(env["next_action"]["schema_ref"], "idea");
-    assert_eq!(env["progress"]["total"], 9);
+    assert_eq!(env["progress"]["total"], 10);
 }
 
 #[test]
@@ -185,10 +185,10 @@ fn the_six_stages_before_comfyui_run_end_to_end_over_mcp() {
 
     let (env, _) = h.call("studio.status", json!({}));
     assert_eq!(env["progress"]["completed"], 6);
-    assert_eq!(env["project"]["stage"], "render");
+    assert_eq!(env["project"]["stage"], "preview");
     assert_eq!(
         env["waiting_on"], "system",
-        "轮到 ComfyUI 了，Agent 只需观察"
+        "轮到 ComfyUI 了（先出便宜的预览），Agent 只需观察"
     );
     assert!(env["blocked_by"].is_null());
 
@@ -289,6 +289,37 @@ fn choosing_the_revise_option_over_mcp_sends_the_stage_back() {
         "选『先修改』不推进阶段"
     );
     assert_eq!(env["waiting_on"], "agent");
+}
+
+#[test]
+fn exclude_node_tool_is_reachable_over_mcp() {
+    let mut h = Harness::new();
+    let (env, err) = h.call(
+        "studio.comfy.exclude_node",
+        json!({ "node": "http://127.0.0.1:9002" }),
+    );
+    assert!(!err, "排除节点不该报错：{env}");
+    assert!(env["project"].is_object(), "应当照常返回决策信封");
+}
+
+#[test]
+fn exclude_node_tool_rejects_an_empty_address() {
+    let mut h = Harness::new();
+    let (env, err) = h.call("studio.comfy.exclude_node", json!({ "node": "   " }));
+    assert!(err, "空地址不该被当成一个有效节点接受");
+    assert_eq!(env["blocked_by"]["code"], "internal");
+}
+
+#[test]
+fn retry_stage_tool_rejects_a_non_deterministic_stage_over_mcp() {
+    let mut h = Harness::new();
+    let (env, err) = h.call("studio.retry_stage", json!({ "stage": "idea" }));
+    assert!(err, "idea 不是确定性阶段，retry_stage 应当拒绝");
+    assert_eq!(env["blocked_by"]["code"], "invalid_transition");
+    assert!(env["blocked_by"]["remedy"]
+        .as_str()
+        .unwrap()
+        .contains("studio.revise"));
 }
 
 /// 留痕要能支撑生产环境的端到端报告：每次调用一条，出错时记下错误码

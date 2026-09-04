@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-/// 九个阶段，顺序固定。
+/// 十个阶段，顺序固定。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StageId {
@@ -13,6 +13,7 @@ pub enum StageId {
     Storyboard,
     VisualAssets,
     PromptPack,
+    Preview,
     Render,
     Post,
     Review,
@@ -57,7 +58,7 @@ pub struct StageSpec {
 }
 
 /// 阶段图。顺序即执行顺序。
-pub const STAGE_GRAPH: [StageSpec; 9] = [
+pub const STAGE_GRAPH: [StageSpec; 10] = [
     StageSpec {
         id: StageId::Idea,
         capability: Capability::Idea,
@@ -101,6 +102,16 @@ pub const STAGE_GRAPH: [StageSpec; 9] = [
         output_key: "prompt_pack",
     },
     StageSpec {
+        id: StageId::Preview,
+        capability: Capability::Comfyui,
+        kind: StageKind::Deterministic,
+        // 花 GPU 时间的两级阶梯：先出便宜的 480p，人工确认构图/内容没问题，
+        // 再花贵的时间出正式尺寸。这是确定性阶段里唯一带确认门的一个——
+        // render 本身没法在执行器内部插一段确认，只能在它前面插一整个阶段。
+        gate: Some("preview.approval"),
+        output_key: "preview",
+    },
+    StageSpec {
         id: StageId::Render,
         capability: Capability::Comfyui,
         kind: StageKind::Deterministic,
@@ -137,9 +148,10 @@ impl StageId {
             StageId::Storyboard => 3,
             StageId::VisualAssets => 4,
             StageId::PromptPack => 5,
-            StageId::Render => 6,
-            StageId::Post => 7,
-            StageId::Review => 8,
+            StageId::Preview => 6,
+            StageId::Render => 7,
+            StageId::Post => 8,
+            StageId::Review => 9,
         }
     }
 
@@ -151,9 +163,21 @@ impl StageId {
             StageId::Storyboard => "storyboard",
             StageId::VisualAssets => "visual_assets",
             StageId::PromptPack => "prompt_pack",
+            StageId::Preview => "preview",
             StageId::Render => "render",
             StageId::Post => "post",
             StageId::Review => "review",
+        }
+    }
+
+    /// 修订时应当退回到哪个阶段。默认是自身；`preview` 是例外——它自己不产出
+    /// 独立内容，问题一定出在 `prompt_pack` 决定的内容上，没有更细粒度的
+    /// 回退点，所以修订 `preview`（不论是直接调 `studio.revise("preview", ..)`
+    /// 还是在它的确认门上选了「有问题」）一律退回 `prompt_pack`。
+    pub fn revise_target(self) -> StageId {
+        match self {
+            StageId::Preview => StageId::PromptPack,
+            other => other,
         }
     }
 
@@ -273,7 +297,7 @@ mod tests {
     }
 
     #[test]
-    fn five_gates_on_the_expected_stages() {
+    fn six_gates_on_the_expected_stages() {
         let gated: Vec<_> = StageId::all().filter(|s| s.gate().is_some()).collect();
         assert_eq!(
             gated,
@@ -282,10 +306,23 @@ mod tests {
                 StageId::Script,
                 StageId::Storyboard,
                 StageId::VisualAssets,
-                StageId::PromptPack
+                StageId::PromptPack,
+                StageId::Preview,
             ],
             "确认门位置变了——这是产品决策，改动需要同步 docs/state-machine.md"
         );
+    }
+
+    /// preview 是唯一「控制面自动执行、但仍带确认门」的阶段——修订它必须
+    /// 落到 prompt_pack，因为它自己不产出独立内容，没有更细的回退点。
+    #[test]
+    fn preview_revises_back_to_prompt_pack() {
+        assert_eq!(StageId::Preview.revise_target(), StageId::PromptPack);
+        for stage in StageId::all() {
+            if stage != StageId::Preview {
+                assert_eq!(stage.revise_target(), stage, "{stage} 不该被重定向");
+            }
+        }
     }
 
     #[test]
@@ -302,7 +339,7 @@ mod tests {
             s = next;
             n += 1;
         }
-        assert_eq!(n, 9);
+        assert_eq!(n, 10);
         assert_eq!(s, StageId::Review);
     }
 }

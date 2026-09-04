@@ -124,8 +124,16 @@ const SKILLS: [SkillDoc; 10] = [
             "这是确定性阶段，由控制面执行，你只需要用 studio.status 观察。",
             "失败时读 studio.timeline 看清是哪一镜、哪个节点、什么原因。",
             "节点不可用或模型契约不满足时会结构化阻塞——不要建议换模型来绕过。",
+            "怀疑是某个节点本身有问题（反复失败、迟迟连不上），\
+             先调 studio.comfy.exclude_node 把它排除，再重试。",
+            "执行失败但内容没问题（节点抖动、连接超时）时调 studio.retry_stage，\
+             不要用 studio.revise——那是给内容要改的场景用的。",
         ],
-        notes: &["运行控制面的机器不需要 GPU，一切经 ComfyUI 的 HTTP API 完成。"],
+        notes: &[
+            "运行控制面的机器不需要 GPU，一切经 ComfyUI 的 HTTP API 完成。",
+            "孤立的一次轮询连接超时不代表渲染失败：控制面会自动容错重试，\
+             只有连续失败或总耗时超过 timeout 才会真正报错。",
+        ],
     },
     SkillDoc {
         name: "post",
@@ -562,7 +570,7 @@ mod tests {
     }
 
     #[test]
-    fn assets_cover_agents_ten_skills_and_nine_schemas() {
+    fn assets_cover_agents_ten_skills_and_ten_schemas() {
         let a = all_assets();
         assert_eq!(
             a.iter().filter(|(p, _)| p.starts_with("skills/")).count(),
@@ -570,7 +578,7 @@ mod tests {
         );
         assert_eq!(
             a.iter().filter(|(p, _)| p.starts_with("schema/")).count(),
-            9
+            10
         );
         assert!(a.iter().any(|(p, _)| p == "AGENTS.md"));
         assert!(a.iter().all(|(_, c)| !c.is_empty()));
