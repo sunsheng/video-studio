@@ -8,6 +8,7 @@
 //! `assets/schema/*.json` 随包分发，Agent 用 `studio.schema(stage)` 直接取回。
 
 use crate::error::{Result, StudioError, Violation};
+use crate::lexicon;
 use crate::stage::StageId;
 use crate::Outputs;
 use serde_json::{json, Value};
@@ -412,6 +413,14 @@ pub fn stage_schema(stage: StageId) -> Schema {
                     "timing_rule",
                     text("时长分配规则。按内容智能分配时在这里说明依据"),
                 ),
+                (
+                    "hook_at_seconds",
+                    num_min(
+                        "钩子在第几秒成立。短视频里这个数越小越好，\
+                         超过 3 秒基本等于没有钩子",
+                        0.0,
+                    ),
+                ),
                 ("language", text("口播语言；无口播填 none")),
                 (
                     "story_arc",
@@ -421,6 +430,16 @@ pub fn stage_schema(stage: StageId) -> Schema {
                             "一拍",
                             vec![
                                 ("beat_id", text("稳定标识，例如 beat_01")),
+                                (
+                                    "beat_type",
+                                    one_of(
+                                        "这一拍在结构里的位置。短视频的骨架是\
+                                         hook（勾住）→ setup（交代）→ develop（推进）→ \
+                                         turn（转折）→ payoff（兑现）→ resolve（收束），\
+                                         不必每种都有，但每一拍都要说清自己是哪一种",
+                                        lexicon::BEAT_TYPES.to_vec(),
+                                    ),
+                                ),
                                 ("start", num_min("起点（秒）", 0.0)),
                                 ("end", num_min("终点（秒）", 0.0)),
                                 ("duration_seconds", num_min("时长（秒）", 0.1)),
@@ -430,6 +449,7 @@ pub fn stage_schema(stage: StageId) -> Schema {
                             ],
                             vec![
                                 "beat_id",
+                                "beat_type",
                                 "start",
                                 "end",
                                 "duration_seconds",
@@ -505,18 +525,93 @@ pub fn stage_schema(stage: StageId) -> Schema {
                                 ("end", num_min("终点（秒）", 0.0)),
                                 ("duration_seconds", num_min("时长（秒）", 0.1)),
                                 ("purpose", text("这个镜头的作用")),
-                                ("shot_size", text("景别")),
-                                ("angle", text("机位角度")),
-                                ("camera_motion", text("镜头运动。每镜只保留一个主运动")),
-                                ("lighting_color", text("灯光与色调")),
+                                (
+                                    "shot_function",
+                                    one_of(
+                                        "这一镜的职能。三者都不占的镜头不该存在，删掉它",
+                                        lexicon::SHOT_FUNCTIONS.to_vec(),
+                                    ),
+                                ),
+                                (
+                                    "three_facts",
+                                    arr(
+                                        "三个物理事实，各一条且必须可拍：\
+                                         环境压力（风、雨、人流、温度、光线变化）、\
+                                         身体微动作（手指、呼吸、重心、视线）、\
+                                         声音锚点（这一镜能听见的具体声源）。\
+                                         写「氛围感」「很美」这类不可拍的词等于没写",
+                                        text("一条可拍的物理事实"),
+                                        3,
+                                    ),
+                                ),
+                                ("shot_size", one_of("景别", lexicon::SHOT_SIZES.to_vec())),
+                                ("angle", one_of("机位角度", lexicon::ANGLES.to_vec())),
+                                (
+                                    "camera_motion",
+                                    one_of(
+                                        "镜头运动。**每镜只能有一个**——两个以上的运动会让生成结果失控。\
+                                         这些取值与视频模型的运镜指令一一对应，提示词阶段直接翻译，\
+                                         所以写在表里的词才有效，自由发挥的描述没有效果",
+                                        lexicon::CAMERA_MOTIONS.to_vec(),
+                                    ),
+                                ),
+                                (
+                                    "lighting_source",
+                                    one_of("光源：光从哪来", lexicon::LIGHTING_SOURCES.to_vec()),
+                                ),
+                                (
+                                    "lighting_key",
+                                    one_of(
+                                        "光型：光怎么打在主体上",
+                                        lexicon::LIGHTING_KEYS.to_vec(),
+                                    ),
+                                ),
+                                (
+                                    "color_tone",
+                                    text(
+                                        "色调。用可复现的说法：冷白、暖金、青橙、低饱和、\
+                                         漂白旁路。「高级感」这类词对模型无效",
+                                    ),
+                                ),
                                 ("subject", text("主体")),
                                 ("foreground", text("前景")),
                                 ("midground", text("中景")),
                                 ("background", text("背景")),
-                                ("action_chain", text("动作链：起 -> 承 -> 收")),
+                                (
+                                    "action_chain",
+                                    text("动作链：起 -> 承 -> 收。写可见的身体动作，不写内心状态"),
+                                ),
                                 ("first_frame", text("首帧")),
                                 ("last_frame", text("尾帧")),
-                                ("sound", text("声音")),
+                                (
+                                    "audio",
+                                    obj(
+                                        "这一镜的声音。核心系列多为音视频联合生成，\
+                                         这里写的内容会进提示词，留空等于放弃原生音频",
+                                        vec![
+                                            ("ambient", text("环境声：这个空间本来就有的声音")),
+                                            ("foley", text("拟音：这一镜的动作发出的声音")),
+                                            (
+                                                "dialogue",
+                                                obj(
+                                                    "对白。没有就整个省略，不要填空串",
+                                                    vec![
+                                                        ("speaker", text("说话人")),
+                                                        ("text", text("台词原文")),
+                                                        (
+                                                            "language",
+                                                            text("语言与口音，例如「普通话」"),
+                                                        ),
+                                                    ],
+                                                    vec!["speaker", "text"],
+                                                ),
+                                            ),
+                                            ("music", text("音乐；本镜无音乐填 none")),
+                                        ],
+                                        vec![],
+                                    ),
+                                ),
+                                ("sound", text("声音的一句话概述（保留字段，细节写在 audio 里）")),
                                 ("transition_to_next", text("转场方式")),
                             ],
                             vec![
@@ -525,6 +620,8 @@ pub fn stage_schema(stage: StageId) -> Schema {
                                 "end",
                                 "duration_seconds",
                                 "purpose",
+                                "shot_function",
+                                "three_facts",
                                 "shot_size",
                                 "camera_motion",
                                 "subject",
@@ -620,16 +717,60 @@ pub fn stage_schema(stage: StageId) -> Schema {
                                 ("shot_id", text("对应分镜的 shot_id")),
                                 (
                                     "workflow",
-                                    text("使用的已验证 workflow 名，例如 minimax_h3/t2v"),
+                                    text(
+                                        "使用的已验证 workflow 名，例如 minimax_h3/t2v。\
+                                         每条基线吃的参数不同，写之前先看这个系列的能力卡",
+                                    ),
                                 ),
-                                ("positive", text("正向提示词")),
-                                ("negative", text("负向提示词")),
+                                (
+                                    "positive",
+                                    text(
+                                        "正向提示词。一条提示词只描述**一个可读镜头**：\
+                                         一个主体、一个可见动作、一个受控环境、一个运镜。\
+                                         句首放最重要的视觉元素。\
+                                         禁止 cinematic / 电影感 / 史诗般 / 大片质感 / 4K / \
+                                         高质量这类对模型无效的词",
+                                    ),
+                                ),
+                                (
+                                    "negative",
+                                    text(
+                                        "负向提示词。**不是每条基线都支持**——不支持的基线上\
+                                         写了会被忽略，该把约束改写成正向的连续性约束\
+                                         （「一镜到底」「主体全程居中」「不切场景」）。\
+                                         先看能力卡",
+                                    ),
+                                ),
+                                (
+                                    "audio",
+                                    text(
+                                        "这一镜要出的声音：环境声、拟音、对白（放引号并注明语言）、\
+                                         音乐。核心系列多为音视频联合生成，留空等于放弃原生音频。\
+                                         内容照抄分镜的 audio，不要在这里另编",
+                                    ),
+                                ),
                                 ("width", int("宽")),
                                 ("height", int("高")),
-                                ("length_frames", int("帧数")),
+                                (
+                                    "length_frames",
+                                    int("帧数。有的基线按秒收时长，用 duration_seconds"),
+                                ),
+                                (
+                                    "duration_seconds",
+                                    num_min("时长（秒）。按帧数收时长的基线用 length_frames", 0.1),
+                                ),
                                 ("fps", int("帧率")),
                                 ("seed", int("随机种子。固定以便复现")),
-                                ("references", arr("引用的视觉资产", text("asset_id"), 0)),
+                                (
+                                    "references",
+                                    arr(
+                                        "引用的视觉资产。**当前所有基线都还没绑图片输入**，\
+                                         写在这里的 asset_id 暂时不会进渲染请求——\
+                                         一致性目前只能靠 positive 里逐字复用同一段外观描述",
+                                        text("asset_id"),
+                                        0,
+                                    ),
+                                ),
                             ],
                             vec![
                                 "shot_id",
@@ -834,15 +975,15 @@ mod tests {
                 "timing_rule": "按动作复杂度和信息量分配，合计 10 秒",
                 "language": "none",
                 "story_arc": [
-                    { "beat_id": "beat_01", "start": 0,   "end": 1.4,  "duration_seconds": 1.4,
+                    { "beat_id": "beat_01", "beat_type": "hook", "start": 0,   "end": 1.4,  "duration_seconds": 1.4,
                       "purpose": "地点钩子", "visual": "船头掠过清透湖面", "audio": "湖水轻拍船身" },
-                    { "beat_id": "beat_02", "start": 1.4, "end": 3.4,  "duration_seconds": 2.0,
+                    { "beat_id": "beat_02", "beat_type": "setup", "start": 1.4, "end": 3.4,  "duration_seconds": 2.0,
                       "purpose": "人物动作", "visual": "沿步道轻快小跑", "audio": "轻快脚步与风声" },
-                    { "beat_id": "beat_03", "start": 3.4, "end": 5.8,  "duration_seconds": 2.4,
+                    { "beat_id": "beat_03", "beat_type": "develop", "start": 3.4, "end": 5.8,  "duration_seconds": 2.4,
                       "purpose": "景色展开", "visual": "观景台举起手机取景", "audio": "快门声" },
-                    { "beat_id": "beat_04", "start": 5.8, "end": 7.8,  "duration_seconds": 2.0,
+                    { "beat_id": "beat_04", "beat_type": "payoff", "start": 5.8, "end": 7.8,  "duration_seconds": 2.0,
                       "purpose": "互动快乐", "visual": "举起冷饮轻碰杯", "audio": "碰杯声" },
-                    { "beat_id": "beat_05", "start": 7.8, "end": 10.0, "duration_seconds": 2.2,
+                    { "beat_id": "beat_05", "beat_type": "resolve", "start": 7.8, "end": 10.0, "duration_seconds": 2.2,
                       "purpose": "情绪收束", "visual": "回头挥手", "audio": "环境声收尾" }
                 ],
                 "segments": [

@@ -18,6 +18,15 @@
             "additionalProperties": true,
             "description": "一个镜头的 prompt",
             "properties": {
+              "audio": {
+                "description": "这一镜要出的声音：环境声、拟音、对白（放引号并注明语言）、音乐。核心系列多为音视频联合生成，留空等于放弃原生音频。内容照抄分镜的 audio，不要在这里另编",
+                "type": "string"
+              },
+              "duration_seconds": {
+                "description": "时长（秒）。按帧数收时长的基线用 length_frames",
+                "minimum": 0.1,
+                "type": "number"
+              },
               "fps": {
                 "description": "帧率",
                 "type": "integer"
@@ -27,19 +36,19 @@
                 "type": "integer"
               },
               "length_frames": {
-                "description": "帧数",
+                "description": "帧数。有的基线按秒收时长，用 duration_seconds",
                 "type": "integer"
               },
               "negative": {
-                "description": "负向提示词",
+                "description": "负向提示词。**不是每条基线都支持**——不支持的基线上写了会被忽略，该把约束改写成正向的连续性约束（「一镜到底」「主体全程居中」「不切场景」）。先看能力卡",
                 "type": "string"
               },
               "positive": {
-                "description": "正向提示词",
+                "description": "正向提示词。一条提示词只描述**一个可读镜头**：一个主体、一个可见动作、一个受控环境、一个运镜。句首放最重要的视觉元素。禁止 cinematic / 电影感 / 史诗般 / 大片质感 / 4K / 高质量这类对模型无效的词",
                 "type": "string"
               },
               "references": {
-                "description": "引用的视觉资产",
+                "description": "引用的视觉资产。**当前所有基线都还没绑图片输入**，写在这里的 asset_id 暂时不会进渲染请求——一致性目前只能靠 positive 里逐字复用同一段外观描述",
                 "items": {
                   "description": "asset_id",
                   "type": "string"
@@ -60,7 +69,7 @@
                 "type": "integer"
               },
               "workflow": {
-                "description": "使用的已验证 workflow 名，例如 minimax_h3/t2v",
+                "description": "使用的已验证 workflow 名，例如 minimax_h3/t2v。每条基线吃的参数不同，写之前先看这个系列的能力卡",
                 "type": "string"
               }
             },

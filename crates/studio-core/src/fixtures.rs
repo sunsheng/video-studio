@@ -98,18 +98,19 @@ pub fn outputs(stage: StageId) -> Outputs {
                 "total_duration_seconds": 10,
                 "shot_count": 5,
                 "timing_rule": "按动作复杂度和信息量分配时长；五段连续片段无重叠，精确合计10秒",
+                "hook_at_seconds": 0.6,
                 "language": "none",
                 "story_arc": [
-                    { "beat_id": "beat_01", "start": 0,   "end": 1.4,  "duration_seconds": 1.4, "purpose": "地点钩子",
-                      "visual": "船头掠过清透湖面，女孩以约30度侧脸快速入画并转头露出明亮笑容", "audio": "湖水轻拍船身，短促上扬音" },
-                    { "beat_id": "beat_02", "start": 1.4, "end": 3.4,  "duration_seconds": 2.0, "purpose": "人物动作",
-                      "visual": "女孩沿湖边安全步道轻快小跑两步，白裙被风吹起", "audio": "轻快脚步、风声、裙摆沙沙声" },
-                    { "beat_id": "beat_03", "start": 3.4, "end": 5.8,  "duration_seconds": 2.4, "purpose": "景色展开",
-                      "visual": "她在观景台举起手机取景，镜头从30度侧脸微移到湖中群岛", "audio": "相机快门声叠入轻亮木琴点" },
-                    { "beat_id": "beat_04", "start": 5.8, "end": 7.8,  "duration_seconds": 2.0, "purpose": "互动快乐",
-                      "visual": "保持30度侧脸笑着举起冷饮，与镜头前的另一只手轻碰杯", "audio": "清脆碰杯声、短笑声、湖风" },
-                    { "beat_id": "beat_05", "start": 7.8, "end": 10.0, "duration_seconds": 2.2, "purpose": "情绪收束",
-                      "visual": "夕阳暖光下女孩回头挥手，白裙和长发被风带动", "audio": "轻快挥手拟音，环境声自然尾收" }
+                    { "beat_id": "beat_01", "beat_type": "hook", "start": 0,   "end": 1.4,  "duration_seconds": 1.4, "purpose": "0.6 秒内让人认出这是千岛湖，并给出一张会笑的脸",
+                      "visual": "船头切开清透湖面，女孩以约30度侧脸快速入画并转头露出笑容", "audio": "湖水拍打船身的持续哗声" },
+                    { "beat_id": "beat_02", "beat_type": "setup", "start": 1.4, "end": 3.4,  "duration_seconds": 2.0, "purpose": "交代人物状态：她在这里是自在的",
+                      "visual": "女孩沿湖边木质步道轻快小跑两步，白裙被风吹起", "audio": "板鞋落在木板上的两声闷响与风声" },
+                    { "beat_id": "beat_03", "beat_type": "develop", "start": 3.4, "end": 5.8,  "duration_seconds": 2.4, "purpose": "把视线从人交给景，这是全片信息量最大的一拍",
+                      "visual": "她在观景台举起手机取景，镜头从30度侧脸摇向湖中群岛", "audio": "快门声，随后远处游船汽笛" },
+                    { "beat_id": "beat_04", "beat_type": "payoff", "start": 5.8, "end": 7.8,  "duration_seconds": 2.0, "purpose": "把风景兑现成可分享的快乐：有人在跟她一起",
+                      "visual": "保持30度侧脸笑着举起冷饮，与画外另一只手轻碰杯", "audio": "两只玻璃杯轻碰的脆响与短促笑声" },
+                    { "beat_id": "beat_05", "beat_type": "resolve", "start": 7.8, "end": 10.0, "duration_seconds": 2.2, "purpose": "收在一个可以停住的画面上，留出天空的空白",
+                      "visual": "夕阳暖光下女孩回头挥手，白裙和长发被风带动", "audio": "衣料摩擦声与远处水浪低频，自然尾收" }
                 ],
                 "segments": [
                     { "segment_id": "s01", "start": 0,   "end": 1.4,  "speaker": "ambient", "text": "", "subtitle_text": "", "source": "核心模型原生环境声" },
@@ -140,40 +141,85 @@ pub fn outputs(stage: StageId) -> Outputs {
                     "safety": "不靠近水边危险边缘，不翻越护栏"
                 },
                 "shots": [
-                    { "shot_id": "sh01", "start": 0,   "end": 1.4, "duration_seconds": 1.4, "purpose": "地点钩子",
-                      "shot_size": "广角远景", "angle": "略低机位", "camera_motion": "单一缓慢前推",
-                      "lighting_color": "上午冷白自然光", "subject": "女孩30度侧脸入画",
+                    { "shot_id": "sh01", "start": 0, "end": 1.4, "duration_seconds": 1.4,
+                      "purpose": "地点钩子：0.6 秒内认出千岛湖，同时给出一张会笑的脸",
+                      "shot_function": "advance_action",
+                      "three_facts": [
+                          "船行带起的风把碎发吹到她嘴角",
+                          "她抬手把碎发别到耳后，指尖在耳廓停住",
+                          "船头切开水面的持续哗声"
+                      ],
+                      "shot_size": "wide", "angle": "low", "camera_motion": "push_in",
+                      "lighting_source": "daylight", "lighting_key": "soft", "color_tone": "上午冷白，低对比",
+                      "subject": "女孩以约30度侧脸入画",
                       "foreground": "船头栏杆", "midground": "清透湖面", "background": "层叠群岛与远山",
-                      "action_chain": "船头掠过 -> 女孩转头 -> 露出笑容",
+                      "action_chain": "船头切开水面 -> 她转头 -> 笑容展开",
                       "first_frame": "湖面与船头", "last_frame": "侧脸笑容定格",
-                      "sound": "湖水轻拍船身", "transition_to_next": "以水声作 J-cut" },
-                    { "shot_id": "sh02", "start": 1.4, "end": 3.4, "duration_seconds": 2.0, "purpose": "人物动作",
-                      "shot_size": "中景", "angle": "平视侧前方30度", "camera_motion": "单一横向跟移",
-                      "lighting_color": "顺光明亮", "subject": "女孩沿步道小跑",
+                      "audio": { "ambient": "湖水拍打船身的持续哗声，低频风声", "foley": "碎发拂过脸颊、衣料轻响", "music": "none" },
+                      "sound": "湖水拍打船身", "transition_to_next": "以水声作 J-cut" },
+                    { "shot_id": "sh02", "start": 1.4, "end": 3.4, "duration_seconds": 2.0,
+                      "purpose": "交代人物状态：她在这里是自在的",
+                      "shot_function": "advance_action",
+                      "three_facts": [
+                          "湖风从左侧推来，裙摆和发梢一起向右扬",
+                          "落地时脚踝先内扣再蹬直，重心前倾半步",
+                          "板鞋鞋底拍在木板上的两声闷响"
+                      ],
+                      "shot_size": "medium", "angle": "eye_level", "camera_motion": "tracking",
+                      "lighting_source": "daylight", "lighting_key": "soft", "color_tone": "顺光明亮，低对比",
+                      "subject": "女孩沿木质步道小跑",
                       "foreground": "步道栏杆虚化", "midground": "女孩全身", "background": "湖面与远岛",
-                      "action_chain": "起步 -> 小跑两步 -> 裙摆扬起",
+                      "action_chain": "起步 -> 小跑两步 -> 裙摆扬到最高点",
                       "first_frame": "脚步落下", "last_frame": "裙摆最高点",
-                      "sound": "轻快脚步与风声", "transition_to_next": "顺动作切" },
-                    { "shot_id": "sh03", "start": 3.4, "end": 5.8, "duration_seconds": 2.4, "purpose": "景色展开",
-                      "shot_size": "中近景转远景", "angle": "侧前方30度", "camera_motion": "单一缓慢摇移",
-                      "lighting_color": "正午偏暖", "subject": "女孩举起手机取景",
+                      "audio": { "ambient": "开阔湖面的风声", "foley": "板鞋踩木板的两声闷响、裙摆抖动", "music": "none" },
+                      "sound": "脚步与风声", "transition_to_next": "顺动作切" },
+                    { "shot_id": "sh03", "start": 3.4, "end": 5.8, "duration_seconds": 2.4,
+                      "purpose": "把视线从人交给景，全片信息量最大的一镜",
+                      "shot_function": "change_emotion",
+                      "three_facts": [
+                          "正午的光很硬，手机屏幕反着湖面的白",
+                          "她眯了一下眼，拇指在快门键上停了半秒",
+                          "快门声，随后是远处游船的汽笛"
+                      ],
+                      "shot_size": "medium_close", "angle": "eye_level", "camera_motion": "pan_right",
+                      "lighting_source": "daylight", "lighting_key": "hard", "color_tone": "正午偏暖，高对比",
+                      "subject": "女孩举起手机取景",
                       "foreground": "手机边框", "midground": "女孩侧脸", "background": "湖中群岛",
                       "action_chain": "举起手机 -> 镜头随视线摇向群岛 -> 按下快门",
                       "first_frame": "抬手", "last_frame": "群岛全景",
-                      "sound": "快门声与木琴点", "transition_to_next": "快门声作硬切" },
-                    { "shot_id": "sh04", "start": 5.8, "end": 7.8, "duration_seconds": 2.0, "purpose": "互动快乐",
-                      "shot_size": "近景", "angle": "侧前方30度", "camera_motion": "固定机位",
-                      "lighting_color": "下午暖光", "subject": "女孩举起冷饮碰杯",
-                      "foreground": "另一只手的杯子", "midground": "女孩胸像", "background": "湖岛虚化",
+                      "audio": { "ambient": "观景台上的风与零星人声", "foley": "手机快门声", "music": "none" },
+                      "sound": "快门声", "transition_to_next": "快门声作硬切" },
+                    { "shot_id": "sh04", "start": 5.8, "end": 7.8, "duration_seconds": 2.0,
+                      "purpose": "把风景兑现成可分享的快乐：有人跟她在一起",
+                      "shot_function": "change_emotion",
+                      "three_facts": [
+                          "杯壁的冷凝水滑到虎口",
+                          "指节收紧握住杯身，笑的时候肩膀轻轻一耸",
+                          "两只玻璃杯轻碰的一声脆响"
+                      ],
+                      "shot_size": "close", "angle": "eye_level", "camera_motion": "static",
+                      "lighting_source": "daylight", "lighting_key": "side", "color_tone": "下午暖金",
+                      "subject": "女孩举起冷饮与画外的手碰杯",
+                      "foreground": "画外伸入的另一只杯子", "midground": "女孩胸像", "background": "湖岛虚化",
                       "action_chain": "举杯 -> 轻碰 -> 笑出声",
                       "first_frame": "两杯靠近", "last_frame": "笑容与杯壁水珠",
-                      "sound": "清脆碰杯声与短笑声", "transition_to_next": "笑声延续到下一镜" },
-                    { "shot_id": "sh05", "start": 7.8, "end": 10.0, "duration_seconds": 2.2, "purpose": "情绪收束",
-                      "shot_size": "中远景", "angle": "平视背面转侧面", "camera_motion": "单一缓慢升高",
-                      "lighting_color": "夕阳暖金", "subject": "女孩回头挥手",
+                      "audio": { "ambient": "湖风与远处水声", "foley": "玻璃杯轻碰的脆响、短促笑声", "music": "none" },
+                      "sound": "碰杯声与笑声", "transition_to_next": "笑声延续到下一镜" },
+                    { "shot_id": "sh05", "start": 7.8, "end": 10.0, "duration_seconds": 2.2,
+                      "purpose": "收在一个能停住的画面上，给天空留白",
+                      "shot_function": "change_emotion",
+                      "three_facts": [
+                          "逆光把发丝勾出暖金边，风把裙摆吹成一道弧",
+                          "她转身时先动眼神再动脖子，抬手挥到肩高",
+                          "衣料摩擦声与远处水浪的低频"
+                      ],
+                      "shot_size": "medium_wide", "angle": "eye_level", "camera_motion": "pedestal_up",
+                      "lighting_source": "daylight", "lighting_key": "back", "color_tone": "夕阳暖金，逆光",
+                      "subject": "女孩回头挥手",
                       "foreground": "草叶", "midground": "女孩全身", "background": "湖面与远山",
                       "action_chain": "转身 -> 回头 -> 挥手",
-                      "first_frame": "背影", "last_frame": "挥手定格与天空留白",
+                      "first_frame": "背影", "last_frame": "挥手定格，天空留白",
+                      "audio": { "ambient": "傍晚的风与远处水浪低频", "foley": "衣料摩擦、手臂划过空气", "music": "none" },
                       "sound": "挥手拟音与环境尾音", "transition_to_next": "淡出黑场" }
                 ]
             }),
@@ -219,24 +265,24 @@ pub fn outputs(stage: StageId) -> Outputs {
                 "shots": [
                     { "shot_id": "sh01", "workflow": "minimax_h3/t2v", "width": 1080, "height": 1920,
                       "length_frames": 42, "fps": 30, "seed": 101001, "references": ["C01", "SC01"],
-                      "positive": "船头掠过清透湖面，20岁长黑发女孩白裙板鞋以约30度侧脸快速入画并转头露出明亮笑容，层叠群岛与远山，上午冷白自然光，竖屏9:16，电影质感",
-                      "negative": "文字, 水印, logo, 多人, 畸形手部, 过曝, 低分辨率" },
-                    { "shot_id": "sh02", "workflow": "minimax_h3/i2v", "width": 1080, "height": 1920,
+                      "positive": "船头切开清透湖面，一位20岁东亚女性，长黑发及胸，白色无袖连衣裙，低帮白色板鞋，奶油色小斜挎包，以约30度侧脸快速入画并转头露出笑容。船行的风把碎发吹到她嘴角，她抬手把碎发别到耳后。层叠群岛与远山在后景。上午冷白自然光，柔光顺照，低对比。镜头缓慢前推。一镜到底，不切场景，人物保持在画面中央，画面中不出现任何文字、标志或水印。",
+                      "audio": "环境声：湖水拍打船身的持续哗声，低频风声。拟音：碎发拂过脸颊、衣料轻响。无对白，无音乐。" },
+                    { "shot_id": "sh02", "workflow": "minimax_h3/t2v", "width": 1080, "height": 1920,
                       "length_frames": 60, "fps": 30, "seed": 101002, "references": ["C01", "SC02"],
-                      "positive": "同一位长黑发白裙板鞋女孩沿湖边木质步道轻快小跑两步，白裙与长发被风吹起，约30度侧脸，顺光明亮，横向跟移，竖屏9:16",
-                      "negative": "文字, 水印, logo, 危险动作, 翻越护栏, 畸形肢体" },
-                    { "shot_id": "sh03", "workflow": "minimax_h3/i2v", "width": 1080, "height": 1920,
+                      "positive": "一位20岁东亚女性，长黑发及胸，白色无袖连衣裙，低帮白色板鞋，奶油色小斜挎包，沿湖边木质步道轻快小跑两步。湖风从左侧推来，裙摆和发梢一起向右扬；落地时脚踝先内扣再蹬直，重心前倾半步。顺光明亮，低对比，背景是湖面与远岛。镜头横向跟移，与她同速。一镜到底，不切场景，人物保持在画面中央，画面中不出现任何文字、标志或水印。",
+                      "audio": "环境声：开阔湖面的风声。拟音：板鞋踩在木板上的两声闷响、裙摆抖动。无对白，无音乐。" },
+                    { "shot_id": "sh03", "workflow": "minimax_h3/t2v", "width": 1080, "height": 1920,
                       "length_frames": 72, "fps": 30, "seed": 101003, "references": ["C01", "SC03", "P01"],
-                      "positive": "女孩在观景台举起无品牌手机取景，镜头从30度侧脸缓慢摇移到湖中群岛，按下快门，下午暖光，竖屏9:16",
-                      "negative": "文字, 水印, 品牌标识, 多人, 畸形手部" },
-                    { "shot_id": "sh04", "workflow": "minimax_h3/i2v", "width": 1080, "height": 1920,
+                      "positive": "一位20岁东亚女性，长黑发及胸，白色无袖连衣裙，低帮白色板鞋，奶油色小斜挎包，在观景台举起一部无品牌手机取景，眯了一下眼，拇指在快门键上停半秒后按下。正午硬光，手机屏幕反着湖面的白，高对比。镜头向右缓慢横摇，从她的侧脸摇到湖中群岛。一镜到底，不切场景，画面中不出现任何文字、标志或水印。",
+                      "audio": "环境声：观景台上的风与零星人声。拟音：手机快门声，随后远处游船汽笛。无对白，无音乐。" },
+                    { "shot_id": "sh04", "workflow": "minimax_h3/t2v", "width": 1080, "height": 1920,
                       "length_frames": 60, "fps": 30, "seed": 101004, "references": ["C01", "P01"],
-                      "positive": "近景，女孩保持约30度侧脸笑着举起无品牌冷饮杯与画外另一只手轻碰杯，湖岛虚化背景，下午暖光，固定机位，竖屏9:16",
-                      "negative": "文字, 水印, 品牌标识, 畸形手部, 液体飞溅过度" },
-                    { "shot_id": "sh05", "workflow": "minimax_h3/i2v", "width": 1080, "height": 1920,
+                      "positive": "近景：一位20岁东亚女性，长黑发及胸，白色无袖连衣裙，低帮白色板鞋，奶油色小斜挎包，举起一只无品牌透明冷饮杯，与画外伸入的另一只杯子轻碰。杯壁的冷凝水滑到虎口，指节收紧握住杯身，笑的时候肩膀轻轻一耸。下午暖金侧光，背景的湖岛虚化。固定机位，镜头不移动。一镜到底，不切场景，画面中不出现任何文字、标志或水印。",
+                      "audio": "环境声：湖风与远处水声。拟音：两只玻璃杯轻碰的一声脆响、短促笑声。无对白，无音乐。" },
+                    { "shot_id": "sh05", "workflow": "minimax_h3/t2v", "width": 1080, "height": 1920,
                       "length_frames": 66, "fps": 30, "seed": 101005, "references": ["C01", "SC03"],
-                      "positive": "夕阳暖金光下女孩回头挥手，白裙与长发被风带动，湖面与远山在身后，镜头缓慢升高，竖屏9:16",
-                      "negative": "文字, 水印, logo, 多人, 过曝" }
+                      "positive": "夕阳逆光下，一位20岁东亚女性，长黑发及胸，白色无袖连衣裙，低帮白色板鞋，奶油色小斜挎包，转身回头向镜头挥手，先动眼神再动脖子，抬手挥到肩高。逆光把发丝勾出暖金边，风把裙摆吹成一道弧，湖面与远山在身后。镜头缓慢升高。一镜到底，不切场景，画面中不出现任何文字、标志或水印。",
+                      "audio": "环境声：傍晚的风与远处水浪低频。拟音：衣料摩擦、手臂划过空气。无对白，无音乐。" }
                 ]
             }),
         ),
@@ -331,6 +377,13 @@ pub fn confirmation(stage: StageId) -> Option<Confirmation> {
     })
 }
 
+/// 身份锁：跨镜头逐字复用的那段外观描述。
+///
+/// 一致性不靠「每次都描述得很详细」，靠同一个字符串被逐字复制。
+/// 提示词里出现的是它本身，不是它的近义改写。
+pub const IDENTITY_LOCK: &str =
+    "20岁东亚女性，长黑发及胸，白色无袖连衣裙，低帮白色板鞋，奶油色小斜挎包";
+
 /// 阶段提交时的一句话摘要。
 pub fn summary(stage: StageId) -> &'static str {
     match stage {
@@ -344,5 +397,129 @@ pub fn summary(stage: StageId) -> &'static str {
         StageId::Render => "五个镜头渲染完成",
         StageId::Post => "拼接、字幕与封面完成",
         StageId::Review => "验收通过",
+    }
+}
+
+/// 这些样例同时是随包分发的黄金样例——Agent 会照着它们写。
+///
+/// 所以它们得自己先达标：禁用词一个不许有，身份锁逐字一致，
+/// 每镜三个物理事实。样例松一寸，产出松一尺。
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lexicon;
+
+    /// 收集样例里所有会被 Agent 当范文抄的自由文本。
+    fn prose(stage: StageId) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        let walk = |v: &serde_json::Value, path: String, out: &mut Vec<(String, String)>| {
+            let mut stack = vec![(v.clone(), path)];
+            while let Some((node, p)) = stack.pop() {
+                match node {
+                    serde_json::Value::String(s) => out.push((p, s)),
+                    serde_json::Value::Array(a) => {
+                        for (i, item) in a.into_iter().enumerate() {
+                            stack.push((item, format!("{p}[{i}]")));
+                        }
+                    }
+                    serde_json::Value::Object(m) => {
+                        for (k, item) in m {
+                            stack.push((item, format!("{p}.{k}")));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        };
+        for (k, v) in outputs(stage) {
+            walk(&v, k, &mut out);
+        }
+        out
+    }
+
+    #[test]
+    fn no_stage_fixture_contains_a_banned_word() {
+        for stage in StageId::all() {
+            for (path, s) in prose(stage) {
+                let hits = lexicon::banned_tier1_hits(&s);
+                assert!(
+                    hits.is_empty(),
+                    "{stage} 的样例 {path} 里有禁用词 {hits:?}：{s}"
+                );
+            }
+        }
+    }
+
+    /// 每一镜的正向提示词都必须原样带上身份锁——差一个字都算漂移。
+    #[test]
+    fn every_prompt_repeats_the_identity_lock_verbatim() {
+        let pack = outputs(StageId::PromptPack);
+        let shots = pack["prompt_pack"]["shots"].as_array().unwrap();
+        assert_eq!(shots.len(), 5);
+        for shot in shots {
+            let positive = shot["positive"].as_str().unwrap();
+            assert!(
+                positive.contains(IDENTITY_LOCK),
+                "{} 的提示词没有逐字带上身份锁",
+                shot["shot_id"]
+            );
+        }
+    }
+
+    /// minimax_h3 的基线没有 negative 绑定，写了会被静默丢弃——
+    /// 样例必须示范正确写法：把约束写进正向提示词。
+    #[test]
+    fn prompts_for_minimax_carry_constraints_positively() {
+        let pack = outputs(StageId::PromptPack);
+        for shot in pack["prompt_pack"]["shots"].as_array().unwrap() {
+            let workflow = shot["workflow"].as_str().unwrap();
+            if !workflow.starts_with("minimax_h3/") {
+                continue;
+            }
+            assert!(
+                shot.get("negative").is_none(),
+                "{} 用的是 {workflow}，这条基线不吃 negative",
+                shot["shot_id"]
+            );
+            let positive = shot["positive"].as_str().unwrap();
+            assert!(
+                positive.contains("一镜到底") && positive.contains("不出现任何文字"),
+                "{} 缺少正向写法的连续性与排版约束",
+                shot["shot_id"]
+            );
+            assert!(
+                shot["audio"].as_str().is_some_and(|a| !a.is_empty()),
+                "{} 没写声音——核心系列是音视频联合生成，留空等于放弃原生音频",
+                shot["shot_id"]
+            );
+        }
+    }
+
+    /// 三个物理事实是分镜不干巴的最低线。
+    #[test]
+    fn every_shot_states_three_physical_facts() {
+        let sb = outputs(StageId::Storyboard);
+        for shot in sb["storyboard"]["shots"].as_array().unwrap() {
+            let facts = shot["three_facts"].as_array().unwrap();
+            assert!(
+                facts.len() >= 3,
+                "{} 只有 {} 条物理事实",
+                shot["shot_id"],
+                facts.len()
+            );
+            for f in facts {
+                let s = f.as_str().unwrap();
+                assert!(
+                    s.chars().count() >= 6,
+                    "{} 里的物理事实太短：{s}",
+                    shot["shot_id"]
+                );
+            }
+            assert!(
+                lexicon::CAMERA_MOTIONS.contains(&shot["camera_motion"].as_str().unwrap()),
+                "{} 的运镜不在受控词表里",
+                shot["shot_id"]
+            );
+        }
     }
 }

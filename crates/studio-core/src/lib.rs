@@ -10,6 +10,7 @@ pub mod contract;
 pub mod error;
 #[cfg(any(test, feature = "fixtures"))]
 pub mod fixtures;
+pub mod lexicon;
 pub mod schema;
 pub mod stage;
 pub mod state;
