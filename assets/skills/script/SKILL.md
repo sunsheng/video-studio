@@ -27,7 +27,7 @@ description: 创建短视频的故事结构、节奏与声音时间线。
 - `.agents/doctrine/audio/design.md`
 - `.agents/doctrine/exemplars/script.md`
 
-这些文件就在这部作品的目录里，用你的文件读取工具直接读。（`.studio/` 是控制面私有的，那个不要碰。）
+这些文件就在这部作品的目录里，用你的文件读取工具直接读——路径照抄，不要凭印象猜。（`.studio/` 是控制面私有的，那个不要碰。）
 
 ## 输入输出
 

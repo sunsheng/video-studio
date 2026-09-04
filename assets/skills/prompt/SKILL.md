@@ -22,12 +22,14 @@ description: 把已确认分镜与视觉资产编译成逐镜头 prompt 和 work
 
 职责说的是**交什么**，下面这几份说的是**怎么想**——什么算好、怎么避开已知的坑、写好的长什么样。动手之前读，别凭感觉写。
 
-- `.agents/models/`
+- `.agents/models/minimax_h3.md`
+- `.agents/models/wan2_2.md`
+- `.agents/models/ltx2_5.md`
+- `.agents/doctrine/exemplars/prompt_pack.md`
 - `.agents/doctrine/consistency/bible.md`
 - `.agents/doctrine/quality/banned.md`
-- `.agents/doctrine/exemplars/prompt_pack.md`
 
-这些文件就在这部作品的目录里，用你的文件读取工具直接读。（`.studio/` 是控制面私有的，那个不要碰。）
+这些文件就在这部作品的目录里，用你的文件读取工具直接读——路径照抄，不要凭印象猜。（`.studio/` 是控制面私有的，那个不要碰。）
 
 ## 输入输出
 

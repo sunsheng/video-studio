@@ -83,6 +83,13 @@ pub fn build(bundle: &Path) -> Report {
 }
 
 pub fn build_with(bundle: &Path, rollout: Option<Rollout>) -> Report {
+    // Agent 会先照着自己的猜测去 cat 一个不存在的路径，再去列目录纠正。
+    // 猜错的那几次不算「读过」，留着会让报告以为方法层比实际更被用上。
+    let rollout = rollout.map(|mut r| {
+        r.doctrine_read
+            .retain(|p| bundle.join(".agents").join(p).is_file());
+        r
+    });
     let records = Trace::read(bundle);
     let mut calls_by_tool: BTreeMap<String, usize> = BTreeMap::new();
     let mut calls_by_stage: BTreeMap<String, usize> = BTreeMap::new();
@@ -320,6 +327,15 @@ pub fn render(r: &Report) -> String {
                 "（会话里没有读取记录）".to_string()
             } else {
                 ro.skills_read.join("、")
+            }
+        ));
+        // 方法层是按需加载的：一份都没读，产出干巴就不能赖到文档头上。
+        s.push_str(&format!(
+            "  读过方法 {}\n",
+            if ro.doctrine_read.is_empty() {
+                "（一份都没读——方法层没被用上）".to_string()
+            } else {
+                ro.doctrine_read.join("、")
             }
         ));
     }

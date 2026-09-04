@@ -25,7 +25,7 @@ description: 把用户创意整理成可执行 brief，明确受众、平台、�
 - `.agents/doctrine/story/hook.md`
 - `.agents/doctrine/story/structure.md`
 
-这些文件就在这部作品的目录里，用你的文件读取工具直接读。（`.studio/` 是控制面私有的，那个不要碰。）
+这些文件就在这部作品的目录里，用你的文件读取工具直接读——路径照抄，不要凭印象猜。（`.studio/` 是控制面私有的，那个不要碰。）
 
 ## 输入输出
 

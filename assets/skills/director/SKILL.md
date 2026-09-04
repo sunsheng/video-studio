@@ -29,7 +29,7 @@ description: 把已确认剧本转成逐镜头分镜，定义景别、构图、�
 - `.agents/doctrine/audio/design.md`
 - `.agents/doctrine/exemplars/storyboard.md`
 
-这些文件就在这部作品的目录里，用你的文件读取工具直接读。（`.studio/` 是控制面私有的，那个不要碰。）
+这些文件就在这部作品的目录里，用你的文件读取工具直接读——路径照抄，不要凭印象猜。（`.studio/` 是控制面私有的，那个不要碰。）
 
 ## 输入输出
 

@@ -218,11 +218,13 @@ fn doctrine_for(skill: &str) -> &'static [&'static str] {
             ".agents/doctrine/exemplars/storyboard.md",
         ],
         "visual" => &[".agents/doctrine/consistency/bible.md"],
+        // 能力卡是这个阶段最要紧的一份：写了基线没绑定的参数会被静默丢弃。
+        // 目录会在生成时展开成逐个文件，只读要用的那个系列即可。
         "prompt" => &[
             ".agents/models/",
+            ".agents/doctrine/exemplars/prompt_pack.md",
             ".agents/doctrine/consistency/bible.md",
             ".agents/doctrine/quality/banned.md",
-            ".agents/doctrine/exemplars/prompt_pack.md",
         ],
         "comfyui" => &[".agents/doctrine/failure/modes.md"],
         "review" => &[".agents/doctrine/quality/checklist.md"],
@@ -794,12 +796,24 @@ fn skill_md(doc: &SkillDoc) -> String {
             "职责说的是**交什么**，下面这几份说的是**怎么想**——什么算好、\
              怎么避开已知的坑、写好的长什么样。动手之前读，别凭感觉写。\n\n",
         );
+        // 目录要展开成具体文件：给一个目录名，Agent 会照自己的猜测去 cat
+        // 一个不存在的路径，然后才想起来列目录。能力卡就是这么被跳过的。
         for path in doctrine {
-            s.push_str(&format!("- `{path}`\n"));
+            match path.strip_suffix('/') {
+                Some(dir) => {
+                    for (rel, _) in doctrine_files() {
+                        let full = format!(".agents/{rel}");
+                        if full.starts_with(dir) {
+                            s.push_str(&format!("- `{full}`\n"));
+                        }
+                    }
+                }
+                None => s.push_str(&format!("- `{path}`\n")),
+            }
         }
         s.push_str(
-            "\n这些文件就在这部作品的目录里，用你的文件读取工具直接读。\
-             （`.studio/` 是控制面私有的，那个不要碰。）\n\n",
+            "\n这些文件就在这部作品的目录里，用你的文件读取工具直接读——\
+             路径照抄，不要凭印象猜。（`.studio/` 是控制面私有的，那个不要碰。）\n\n",
         );
     }
 
