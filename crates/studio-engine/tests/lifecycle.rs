@@ -402,7 +402,10 @@ fn a_second_session_on_the_same_bundle_is_refused() {
     let _first = Project::open(&root, None).unwrap();
     let e = Project::open(&root, None).unwrap_err();
     assert_eq!(e.code(), "project_busy");
-    assert!(e.remedy().contains("studiod init"));
+    // 补救路径要说清「关掉那个会话」，并把「另开一部作品」推给用户去做——
+    // 不给 Agent 一个它自己就能跑的命令。见 docs/decisions/ADR-0002。
+    assert!(e.remedy().contains("关掉那个会话"), "{}", e.remedy());
+    assert!(!e.remedy().contains("studiod"), "{}", e.remedy());
 }
 
 #[test]

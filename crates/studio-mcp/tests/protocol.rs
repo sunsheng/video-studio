@@ -393,5 +393,9 @@ fn a_directory_that_is_not_a_project_explains_itself() {
     assert!(v["result"]["isError"].as_bool().unwrap());
     let blocked = &v["result"]["structuredContent"]["blocked_by"];
     assert_eq!(blocked["code"], "not_a_project");
-    assert!(blocked["remedy"].as_str().unwrap().contains("studiod init"));
+    // 这条 remedy 会原样进 Agent 的上下文，所以不提二进制名，
+    // 而是把「新建作品」这个动作推给用户。见 docs/decisions/ADR-0002。
+    let remedy = blocked["remedy"].as_str().unwrap();
+    assert!(remedy.contains("用户"), "{remedy}");
+    assert!(!remedy.contains("studiod"), "{remedy}");
 }

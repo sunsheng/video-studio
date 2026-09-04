@@ -124,7 +124,7 @@ fn check_codex_config(root: &std::path::Path) -> Check {
             name: "作品的 Codex 配置缺失".into(),
             level: Level::Fail,
             detail: format!("{} 不存在", path.display()),
-            remedy: Some("跑 `studiod doctor --fix` 重新生成。".into()),
+            remedy: Some("跑 `studio-cli doctor --fix` 重新生成。".into()),
         };
     };
     // 路径可能是双引号串也可能是单引号字面量串（Windows 路径用后者）。
@@ -147,7 +147,7 @@ fn check_codex_config(root: &std::path::Path) -> Check {
             level: Level::Fail,
             detail: format!("配置里写的是 {p}"),
             remedy: Some(
-                "这部作品是在别的机器或别的安装位置建的。跑 `studiod doctor --fix` \
+                "这部作品是在别的机器或别的安装位置建的。跑 `studio-cli doctor --fix` \
                  把它改成当前程序的路径——bundle 的其它内容都是相对路径，可以照常用。"
                     .into(),
             ),
@@ -156,7 +156,7 @@ fn check_codex_config(root: &std::path::Path) -> Check {
             name: "作品的 Codex 配置不完整".into(),
             level: Level::Fail,
             detail: "找不到 command 行".into(),
-            remedy: Some("跑 `studiod doctor --fix` 重新生成。".into()),
+            remedy: Some("跑 `studio-cli doctor --fix` 重新生成。".into()),
         },
     }
 }
