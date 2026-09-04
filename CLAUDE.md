@@ -14,7 +14,8 @@ studio-engine   阶段循环、确认门、恢复、产物登记。依赖 core +
 studio-comfy    ComfyUI HTTP 客户端。★ 本机不需要 GPU，一切经 HTTP。
 studio-media    ffmpeg / ffprobe 外部进程编排。
 studio-mcp      MCP 协议层：工具注册表、schema、决策信封。依赖 engine。
-studiod         唯一二进制：init / serve / doctor / emit-assets / pack / unpack。
+studiod         唯一二进制：init / serve / doctor / emit-assets / pack / unpack /
+                list / e2e report / exec report / workflows check。
 ```
 
 反向依赖一律禁止。`studio-core` 新增依赖需要在 PR 描述里说明理由。
@@ -22,7 +23,8 @@ studiod         唯一二进制：init / serve / doctor / emit-assets / pack / u
 ## 硬规则
 
 1. **二进制不提供任何变更型子命令。** 只有 `init`、`serve`、`doctor`、`emit-assets`、
-   `pack`、`unpack`。绝不允许出现 `studiod submit-stage` 这类东西——
+   `pack`、`unpack`，以及只读的 `list`、`e2e report`、`exec report`、
+   `workflows check`。绝不允许出现 `studiod submit-stage` 这类东西——
    状态变更只有 MCP 一个入口，绕过就不存在实现。
 2. **Markdown 不手写。** `assets/AGENTS.md` 与各 `SKILL.md` 中涉及工具名、阶段名、
    确认门、错误码的段落由 `studiod emit-assets` 生成。CI 跑 `emit-assets --check`。

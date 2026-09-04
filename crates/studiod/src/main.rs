@@ -1,8 +1,9 @@
 //! video-studio 的唯一二进制。
 //!
 //! **没有任何能改变作品状态的子命令。** 只有 `init`（新建）、`serve`（MCP）、
-//! `doctor`（体检）、`emit-assets`（生成随包文档）、`pack` / `unpack`（打包）
-//! 和 `e2e report`（汇总端到端留痕）。
+//! `doctor`（体检）、`emit-assets`（生成随包文档）、`pack` / `unpack`（打包），
+//! 以及只读的 `list`（列出作品）、`e2e report`（汇总端到端留痕）、
+//! `exec report`（汇总执行侧留痕）、`workflows check`（校验 workflow 基线）。
 //!
 //! 这条约束是硬的：状态变更只有 MCP 一个入口，绕过就不存在实现。
 //! 前身项目提供了 `cli.py conversation start`，于是 Agent 在卡住的时候

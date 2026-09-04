@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "video-studio 的唯一二进制：init / serve / doctor / emit-assets / pack / unpack / e2e。"
+description = "video-studio 的唯一二进制：init / serve / doctor / emit-assets / pack / unpack / list / e2e / exec / workflows。"
 
 [lib]
 name = "studiod"
