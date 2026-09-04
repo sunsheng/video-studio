@@ -48,6 +48,11 @@ Agent 打了 41 次工具调用，其中 **10 分钟、18 次调用**花在一�
 | D7 | Markdown 由 Rust 生成 | 文档引用不存在的工具名；文档指向源码 |
 | D8 | 状态变更只能从 MCP 进 | 直接跑 CLI 建 run 这条绕过路径 |
 
+D3 后来在 [ADR-0002](decisions/ADR-0002-studiod-cli-split.md) 中演变为**两个**
+二进制——`studiod`（只做 serve）与 `studio-cli`（其余全部）——但精神不变：
+两者都是无解释器、无 import 面的 Rust 单体，Agent 能接触到的仍然只有前者，
+且前者物理上没有变更型子命令。
+
 ## 3. 三个平面
 
 | 平面 | 是谁 | 对外协议 |
@@ -118,7 +123,7 @@ typestate 把状态编码进类型参数，转换消耗自身。`Stage<AwaitingC
 
 ## 8. 错误契约
 
-16 个错误码，见 [tool-surface.md](tool-surface.md) 与生成的 `assets/AGENTS.md`。
+17 个错误码，见 [tool-surface.md](tool-surface.md) 与生成的 `assets/AGENTS.md`。
 
 新模型让 5 个旧错误码不再可能：`run_not_found`（当前目录就是项目）、
 `task_claim_conflict` 与 `stale_lock`（单进程单项目，flock 随进程释放）、
@@ -126,7 +131,7 @@ typestate 把状态编码进类型参数，转换消耗自身。`Stage<AwaitingC
 
 ## 9. 文档生成
 
-`AGENTS.md`、10 份 `SKILL.md`、9 份 JSON Schema 全部由 `studio-cli emit-assets`
+`AGENTS.md`、10 份 `SKILL.md`、10 份 JSON Schema 全部由 `studio-cli emit-assets`
 从阶段图、工具注册表和错误码枚举生成，CI 跑 `--check` 守着。
 
 一个测试专门守着「AGENTS.md 不得出现源码路径」——写这条时当场抓出生成模板里
@@ -136,8 +141,12 @@ typestate 把状态编码进类型参数，转换消耗自身。`Stage<AwaitingC
 
 三条硬规则：
 
-1. **二进制不提供任何变更型子命令。** 只有 `init` / `serve` / `doctor` /
-   `emit-assets` / `pack` / `unpack` / `e2e report`。
+1. **`studiod` 不提供任何子命令，唯一行为是 serve。** 状态变更只有 MCP
+   一个入口，子命令列表怎么裁都消不掉「Agent 拿到二进制直接绕过 MCP」这
+   条路径，只有物理上不存在子命令才行。`init` / `doctor` / `pack` /
+   `unpack` / `list` / `emit-assets` / `e2e report` / `exec report` /
+   `workflows check` 都在另一个二进制 `studio-cli` 里，且 `studio-cli`
+   不出现在 Codex/Agent 的执行环境里。见 [ADR-0002](decisions/ADR-0002-studiod-cli-split.md)。
 2. **`workspace_roots` 只含当前 bundle。** 兄弟作品物理不可达。
 3. **`.studio/` 三层保护。** dotdir 约定 + AGENTS.md 明确禁止 + 沙箱写限制，
    外加完整性摘要兜底：外部改动会以 `state_drift` 暴露。
