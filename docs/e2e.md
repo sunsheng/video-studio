@@ -14,19 +14,30 @@
 
 # 端到端验收
 
-**端到端测试不在开发环境跑。** 它需要一个真实的 Codex 会话驱动真实的 MCP
-server——开发环境没有 Codex，也没有 GPU、ComfyUI 和 ffmpeg。
+**含 render 的完整端到端不在开发环境跑。** render 需要真实 ComfyUI + GPU，
+开发环境没有，只能在生产环境跑。
+
+**render 之前的六个阶段（idea → prompt_pack）不一定要等生产环境。** 如果
+开发环境（Claude Code 容器）已经装好 Codex CLI 并配置了可用的 model
+provider（`codex doctor` 通过、`codex exec` 能正常应答），就可以在这里用
+真实 Codex 会话驱动 `studiod serve` 走完前六个阶段，停在 `render`
+（`waiting_on: system`）。这比 `scripts/replay-protocol.py` 的脚本重放更
+真实：验证的是 Codex 读了 AGENTS.md / SKILL.md 之后会不会正确使用工具面，
+这是脚本模拟不了的。步骤同下面「在生产环境怎么跑」一节，只是走到第 7 步
+就停，不必往下走。
 
 分工是这样的：
 
 | 在哪 | 跑什么 | 产出 |
 |---|---|---|
 | 开发环境（Claude Code） | `cargo test --workspace` | 单元、引擎、MCP 协议一致性 |
-| 生产环境（有 Codex 的机器） | 真人 + Codex 走一遍 | `.studio/trace.jsonl` |
-| 生产环境 | `studiod e2e report` | `report.json` |
+| 开发环境（已配置 Codex） | 真实 Codex 会话走 render 前六阶段 | `.studio/trace.jsonl`，停在 `render` |
+| 生产环境（有 Codex 的机器） | 真人 + Codex 走完 render / 后期 | 完整 `.studio/trace.jsonl` |
+| 任一侧 | `studiod e2e report` | `report.json` |
 | 开发环境 | 读 `report.json` 分析、改代码 | 下一轮 |
 
-CI 里**不**跑端到端。
+CI 里**仍然不**跑端到端——这是改动碰了 MCP 工具面 / 阶段图时才做的验收，
+不是每次 PR 必跑的检查（见 CLAUDE.md「标准工作流程」）。
 
 ## 在生产环境怎么跑
 
