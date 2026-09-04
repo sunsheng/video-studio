@@ -49,6 +49,9 @@ pub const EXEC_TRACE_FILE: &str = ".studio/exec.jsonl";
 pub struct ExecRecorder {
     path: std::path::PathBuf,
     stage: Mutex<String>,
+    /// 并发渲染时多个 worker 线程会同时 `append`——串行化整个「开文件+写一行」
+    /// 过程，避免两行 JSON 交错拼在一起，写坏 `exec.jsonl`。
+    write_lock: Mutex<()>,
 }
 
 impl ExecRecorder {
@@ -56,6 +59,7 @@ impl ExecRecorder {
         ExecRecorder {
             path: bundle_root.join(EXEC_TRACE_FILE),
             stage: Mutex::new(String::new()),
+            write_lock: Mutex::new(()),
         }
     }
 
@@ -69,14 +73,17 @@ impl ExecRecorder {
         if let Some(parent) = self.path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        if let Ok(line) = serde_json::to_string(rec) {
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&self.path)
-            {
-                let _ = writeln!(f, "{line}");
-            }
+        let Ok(line) = serde_json::to_string(rec) else {
+            return;
+        };
+        let bytes = format!("{line}\n");
+        let _guard = self.write_lock.lock();
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)
+        {
+            let _ = f.write_all(bytes.as_bytes());
         }
     }
 
