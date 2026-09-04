@@ -113,8 +113,10 @@ fn the_control_plane_runs_render_post_review_on_its_own() {
     // 不去赌具体停在哪一步。
     let env = p.status().unwrap();
     assert!(
-        matches!(env.project.stage, StageId::Render | StageId::Post | StageId::Review)
-            || env.project.status == ProjectStatus::Completed,
+        matches!(
+            env.project.stage,
+            StageId::Render | StageId::Post | StageId::Review
+        ) || env.project.status == ProjectStatus::Completed,
         "实际停在 {:?}",
         env.project.stage
     );
@@ -141,7 +143,12 @@ fn the_control_plane_runs_render_post_review_on_its_own() {
     );
 
     // 产物落盘且可读
-    for s in [StageId::Preview, StageId::Render, StageId::Post, StageId::Review] {
+    for s in [
+        StageId::Preview,
+        StageId::Render,
+        StageId::Post,
+        StageId::Review,
+    ] {
         let out = p.stage_output(s).unwrap();
         assert!(out.get(s.output_key()).is_some(), "{s} 应当有产物");
         assert!(p.bundle().root().join(format!("stages/{s}.json")).is_file());
@@ -304,12 +311,7 @@ impl StageExecutor for SlowExecutor {
     }
 }
 
-fn project_stuck_mid_render() -> (
-    tempfile::TempDir,
-    Project,
-    Arc<AtomicBool>,
-    Arc<AtomicBool>,
-) {
+fn project_stuck_mid_render() -> (tempfile::TempDir, Project, Arc<AtomicBool>, Arc<AtomicBool>) {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("千岛湖.studio");
     init_project(&root, fixtures::TITLE, "0.1.0-test", &[]).unwrap();
@@ -341,8 +343,7 @@ fn project_stuck_mid_render() -> (
 fn revise_stops_an_in_flight_worker_before_touching_state() {
     let (_d, p, _started, saw_cancel) = project_stuck_mid_render();
 
-    p.revise(StageId::Render, "换一个更省显存的尺寸")
-        .unwrap();
+    p.revise(StageId::Render, "换一个更省显存的尺寸").unwrap();
 
     assert!(
         saw_cancel.load(Ordering::SeqCst),

@@ -642,7 +642,10 @@ mod tests {
         let e = c.wait(&sub).unwrap_err();
         assert_eq!(e.code(), "comfy_failed");
         assert!(e.message().contains("KSampler"));
-        assert!(started.elapsed() < Duration::from_secs(3), "结构化错误不该等待重试");
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "结构化错误不该等待重试"
+        );
     }
 
     #[test]

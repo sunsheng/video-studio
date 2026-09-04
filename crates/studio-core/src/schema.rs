@@ -661,7 +661,10 @@ pub fn stage_schema(stage: StageId) -> Schema {
                             ("shot_id", text("镜头标识")),
                             ("node", text("承载的 ComfyUI 节点")),
                             ("prompt_id", text("ComfyUI 的 prompt_id，用于追溯")),
-                            ("path", text("预览文件的 bundle 内相对路径，media/preview/ 下")),
+                            (
+                                "path",
+                                text("预览文件的 bundle 内相对路径，media/preview/ 下"),
+                            ),
                             ("width", int("预览宽度（480 短边缩放后）")),
                             ("height", int("预览高度（480 短边缩放后）")),
                             ("duration_seconds", num("实际时长")),

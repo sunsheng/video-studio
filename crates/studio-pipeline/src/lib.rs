@@ -389,7 +389,10 @@ impl Pipeline {
             .done(comfy.download(node, first, &dest))?;
         let _ = bytes;
 
-        let duration_seconds = shot.get("length_frames").and_then(|f| f.as_f64()).unwrap_or(0.0)
+        let duration_seconds = shot
+            .get("length_frames")
+            .and_then(|f| f.as_f64())
+            .unwrap_or(0.0)
             / shot.get("fps").and_then(|f| f.as_f64()).unwrap_or(30.0);
 
         Ok(match mode {
@@ -700,7 +703,11 @@ mod render_tests {
                 GenerateMode::Render,
             )
             .unwrap();
-        assert_eq!(result["node"], json!(good.url), "重试应当落到唯一健康的节点上");
+        assert_eq!(
+            result["node"],
+            json!(good.url),
+            "重试应当落到唯一健康的节点上"
+        );
         assert_eq!(result["shot_id"], json!("sh01"));
     }
 

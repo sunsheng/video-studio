@@ -316,7 +316,10 @@ fn retry_stage_tool_rejects_a_non_deterministic_stage_over_mcp() {
     let (env, err) = h.call("studio.retry_stage", json!({ "stage": "idea" }));
     assert!(err, "idea 不是确定性阶段，retry_stage 应当拒绝");
     assert_eq!(env["blocked_by"]["code"], "invalid_transition");
-    assert!(env["blocked_by"]["remedy"].as_str().unwrap().contains("studio.revise"));
+    assert!(env["blocked_by"]["remedy"]
+        .as_str()
+        .unwrap()
+        .contains("studio.revise"));
 }
 
 /// 留痕要能支撑生产环境的端到端报告：每次调用一条，出错时记下错误码
