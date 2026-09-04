@@ -370,13 +370,13 @@ fn the_six_stages_before_comfyui_run_end_to_end() {
     assert_eq!(env.progress.completed, 6);
     assert_eq!(
         env.project.stage,
-        StageId::Render,
-        "六个阶段跑完，下一步才轮到 ComfyUI"
+        StageId::Preview,
+        "六个阶段跑完，下一步先轮到便宜的 480p 预览，而不是直接正式渲染"
     );
     assert_eq!(
         env.waiting_on,
         WaitingOn::System,
-        "render 是确定性阶段，由控制面执行"
+        "preview 是确定性阶段，由控制面执行"
     );
     assert_eq!(env.project.status, ProjectStatus::Active);
 

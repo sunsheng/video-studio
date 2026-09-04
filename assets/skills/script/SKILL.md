@@ -59,3 +59,5 @@ description: 创建短视频的故事结构、节奏与声音时间线。
 - `studio.stage_output`
 - `studio.timeline`
 - `studio.export`
+- `studio.comfy.exclude_node`
+- `studio.retry_stage`

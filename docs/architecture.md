@@ -32,11 +32,24 @@ Agent 面永远不直接接触控制面的状态存储，也不直接接触推�
 
 ## 确定性阶段的执行
 
-`render` / `post` / `review` 由控制面在后台线程里执行，用自己的 SQLite 连接
-写状态（WAL + busy_timeout）。门一通过就开始，Agent 只需要 `studio.status`。
+`preview` / `render` / `post` / `review` 由控制面在后台线程里执行，用自己的
+SQLite 连接写状态（WAL + busy_timeout）。门一通过就开始，Agent 只需要
+`studio.status`。`preview` 执行完不会直接放行——480p 预览生成后走跟
+Agent 提交带门阶段一样的 `AwaitingConfirmation` 挂起，等确认才轮到
+花钱的正式 `render`；它自己不产出独立内容，门上选「有问题」统一
+重定向退回 `prompt_pack`。
 
-`render` 逐镜头走：选队列最短的健康节点 → 加载已验证基线并注入逐镜头参数 →
-提交 `/prompt` → 轮询 `/history/{prompt_id}` → 下载到 `media/`。
+`preview` 和 `render` 共享同一套生成逻辑，仅目标分辨率不同——`preview`
+按短边 480 等比缩放，帧数/时长照抄提示词包不变。两者都按当下健康的
+节点数并发：每个健康节点固定绑一个 worker 线程认领队列里的镜头，
+提交 `/prompt` → 轮询 `/history/{prompt_id}` → 下载到 `media/`（`preview`
+落在 `media/preview/`）。轮询容忍孤立的连接层抖动——只在连续失败超过
+阈值或总耗时超过 `timeout` 才真正判失败，ComfyUI 自己报的结构化错误
+不受此宽限。单镜提交-等待-下载失败后最多重试三次，每次重试重新选节点。
+怀疑某个节点本身有问题，可以用 `studio.comfy.exclude_node` 把它从这次
+会话的候选里临时摘掉；执行失败但内容没问题，用 `studio.retry_stage`
+干净重试——它会先停掉可能还在跑的 worker 再重来，不会像 `studio.revise`
+那样让旧线程跑完之后拿旧状态覆盖新决定。
 基线格式见 [assets/workflows/README.md](../assets/workflows/README.md)。
 
 `review` 的每一条检查都基于 `ffprobe` 的实测值，不靠推断。

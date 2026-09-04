@@ -43,7 +43,7 @@ Agent 打了 41 次工具调用，其中 **10 分钟、18 次调用**花在一�
 | D2 | 全新项目，不在旧项目上修补 | 7250 行 Python 的历史包袱 |
 | D3 | Rust 单二进制，无解释器、无 import 面 | `from studio import state_store` 这条绕过路径 |
 | D4 | stdio MCP，一个项目一个进程 | 跨会话任务锁、锁过期、残留 lock 文件 |
-| D5 | 9 个工具，全部无 `run_id` | 调用方需要知道 run 内部标识 |
+| D5 | 11 个工具，全部无 `run_id` | 调用方需要知道 run 内部标识 |
 | D6 | typestate 状态机 | 「revise 了但没释放锁」在编译期不可表达 |
 | D7 | Markdown 由 Rust 生成 | 文档引用不存在的工具名；文档指向源码 |
 | D8 | 状态变更只能从 MCP 进 | 直接跑 CLI 建 run 这条绕过路径 |
@@ -69,7 +69,7 @@ Agent 打了 41 次工具调用，其中 **10 分钟、18 次调用**花在一�
 
 ## 5. MCP 工具面
 
-九个工具，没有一个带 `run_id`。见 [tool-surface.md](tool-surface.md)。
+十一个工具，没有一个带 `run_id`。见 [tool-surface.md](tool-surface.md)。
 
 `blocked_by.remedy` 是硬要求：任何阻塞都必须给出下一步能调的工具。
 `StudioError::remedy()` 是穷尽 match，测试强制每条 remedy 非空且指向一个
@@ -78,8 +78,10 @@ Agent 打了 41 次工具调用，其中 **10 分钟、18 次调用**花在一�
 
 ## 6. 阶段图与确认门
 
-见 [state-machine.md](state-machine.md)。九个阶段、五道门，
-门在阶段**产出之后**暂停，`prompt_pack` 那道是花 GPU 时间前的最后一关。
+见 [state-machine.md](state-machine.md)。十个阶段、六道门，
+门在阶段**产出之后**暂停，`prompt_pack` 那道是花 GPU 时间前的最后一关，
+`preview` 那道是花 GPU 时间**之后**（480p 便宜预览）、正式渲染之前的确认关卡——
+唯一一个由控制面自动执行、但自己也带确认门的阶段。
 
 ### 收敛点：确认门选项自带 outcome
 
@@ -152,12 +154,18 @@ typestate 把状态编码进类型参数，转换消耗自身。`Stage<AwaitingC
 
 ### 收敛点：确定性阶段怎么推进
 
-工具面上没有 `advance`。门一通过，控制面在后台线程里把 render → post → review
-一路跑完，Agent 用 `studio.status` 观察——信封里的 `note` 显示此刻在做什么
-（例如「3/5 sh03 提交到 http://127.0.0.1:9002」）。
+工具面上没有 `advance`。门一通过，控制面在后台线程里把 preview → render →
+post → review 一路跑完，Agent 用 `studio.status` 观察——信封里的 `note`
+显示此刻在做什么（例如「3/5 sh03 提交到 http://127.0.0.1:9002」）。
+`preview` 执行完不会直接放行：480p 预览生成后挂起等确认，通过才轮到
+花钱的正式 `render`——这是**唯一**一个自动执行、但自己也带门的阶段。
 
 执行失败不会默默卡住：错误记进作品状态，`status` 把它变成带 remedy 的
-`blocked_by`，并且**不会闷头重试**——等 Agent 修订之后再来。
+`blocked_by`，并且**不会闷头重试**——等 Agent 用 `studio.retry_stage`
+（执行失败，内容没问题）或 `studio.revise`（内容要改）处理之后再来。
+孤立的一次轮询连接超时也不会立即判死——只有连续失败或总耗时超过
+timeout 才真正报错；每个节点固定绑一个 worker 线程并发生成，谁先跑完
+自己那镜就去认领下一镜。
 
 ## 12. 路线与验收
 
@@ -168,6 +176,7 @@ typestate 把状态编码进类型参数，转换消耗自身。`Stage<AwaitingC
 | M2 | render（ComfyUI 接入、节点池、基线参数注入） | 完成 |
 | M3 | post → review → export | 完成 |
 | M4 | pack / unpack、doctor | 完成 |
+| M5 | 渲染管线改进：轮询容错、节点并发、exclude_node/retry_stage、preview 阶段 | 完成 |
 
 ### 验收：重放那次会话
 

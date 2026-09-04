@@ -49,6 +49,9 @@ pub const EXEC_TRACE_FILE: &str = ".studio/exec.jsonl";
 pub struct ExecRecorder {
     path: std::path::PathBuf,
     stage: Mutex<String>,
+    /// 并发渲染时多个 worker 线程会同时 `append`——串行化整个「开文件+写一行」
+    /// 过程，避免两行 JSON 交错拼在一起，写坏 `exec.jsonl`。
+    write_lock: Mutex<()>,
 }
 
 impl ExecRecorder {
@@ -56,6 +59,7 @@ impl ExecRecorder {
         ExecRecorder {
             path: bundle_root.join(EXEC_TRACE_FILE),
             stage: Mutex::new(String::new()),
+            write_lock: Mutex::new(()),
         }
     }
 
@@ -69,14 +73,17 @@ impl ExecRecorder {
         if let Some(parent) = self.path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        if let Ok(line) = serde_json::to_string(rec) {
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&self.path)
-            {
-                let _ = writeln!(f, "{line}");
-            }
+        let Ok(line) = serde_json::to_string(rec) else {
+            return;
+        };
+        let bytes = format!("{line}\n");
+        let _guard = self.write_lock.lock();
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)
+        {
+            let _ = f.write_all(bytes.as_bytes());
         }
     }
 
@@ -251,6 +258,14 @@ pub trait StageExecutor: Send + Sync {
     /// 「这个构建没接实现」不该表现成「这部作品出问题了」。
     fn is_wired(&self) -> bool {
         true
+    }
+
+    /// 确定性阶段执行成功、且该阶段声明了确认门时，用这份文案把它挂起等待
+    /// 确认，而不是直接判过。多数确定性阶段没有门（`stage.gate()` 是
+    /// `None`），这个方法根本不会被调用。返回 `None` 时引擎会退回一份
+    /// 通用文案——覆盖它只是为了给出更贴合场景的措辞（比如 preview）。
+    fn gate_confirmation(&self, _stage: StageId) -> Option<studio_core::Confirmation> {
+        None
     }
 }
 
