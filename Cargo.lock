@@ -911,6 +911,7 @@ dependencies = [
  "studio-mcp",
  "studio-media",
  "studio-pipeline",
+ "studio-skill-eval",
  "studio-store",
  "tempfile",
  "toml",
@@ -985,6 +986,18 @@ dependencies = [
  "studio-core",
  "studio-engine",
  "studio-media",
+ "tempfile",
+]
+
+[[package]]
+name = "studio-skill-eval"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "studio-core",
+ "studio-engine",
+ "studio-mcp",
  "tempfile",
 ]
 

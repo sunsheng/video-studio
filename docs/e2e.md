@@ -22,9 +22,10 @@
 provider（`codex doctor` 通过、`codex exec` 能正常应答），就可以在这里用
 真实 Codex 会话驱动 `studiod`（它没有子命令，被拉起就是 serve）走完
 前六个阶段，停在 `render`
-（`waiting_on: system`）。这比 `scripts/replay-protocol.py` 的脚本重放更
-真实：验证的是 Codex 读了 AGENTS.md / SKILL.md 之后会不会正确使用工具面，
-这是脚本模拟不了的。步骤同下面「在生产环境怎么跑」一节，只是走到第 7 步
+（`waiting_on: system`）。这比 `studio-skill-eval` 的脚本场景更真实：验证的是
+Codex 读了 AGENTS.md / SKILL.md 之后会不会正确使用工具面，这是脚本模拟不了
+的（见 [ADR-0003](decisions/ADR-0003-skill-evaluation.md) 里"脚本场景"与
+"Agent 场景"的边界）。步骤同下面「在生产环境怎么跑」一节，只是走到第 7 步
 就停，不必往下走。
 
 分工是这样的：
@@ -164,18 +165,20 @@ MCP server 每次工具调用往 `.studio/trace.jsonl` 追加一行，只记调�
 
 ## 换机器之后先跑协议层冒烟
 
-`scripts/replay-protocol.py` 不用 Codex，直接跟 `studiod` 说 JSON-RPC 走完
-六个阶段（中间重放一次「不要固定 2 秒」的修订）。它**不能替代**端到端——
-真正的端到端要验证的是 Codex 读了 AGENTS.md 和 SKILL.md 之后会不会正确使用
-工具面，那是脚本模拟不了的。但它能在换了机器、换了构建之后快速确认协议层没坏：
+`studio-skill-eval` 的脚本场景（见 [ADR-0003](decisions/ADR-0003-skill-evaluation.md)）
+不用 Codex，直接跟真实编译出的 `studiod` 二进制说 JSON-RPC 走完六个阶段
+（中间重放一次「不要固定 2 秒」的修订）。它**不能替代**端到端——真正的
+端到端要验证的是 Codex 读了 AGENTS.md 和 SKILL.md 之后会不会正确使用工具面，
+那是脚本模拟不了的。但它能在换了机器、换了构建之后快速确认协议层没坏，而且
+是确定性的、不需要任何外部依赖，直接进 `cargo test --workspace`：
 
 ```bash
-cargo build --release -p studiod -p studio-cli
-cargo run -q -p studio-core --features fixtures --example export_fixtures > /tmp/fixtures.json
-./target/release/studio-cli init /tmp/replay.studio
-python3 scripts/replay-protocol.py /tmp/replay.studio /tmp/fixtures.json
-cd /tmp/replay.studio && studio-cli e2e report
+cargo test -p studio-skill-eval
 ```
+
+这是原来 `scripts/replay-protocol.py`（一个独立的 Python 脚本，现已删除）
+的等价物——同样的调用序列，换成跑真实二进制的 Rust 集成测试，不用额外装
+Python，也不用手动导出 fixtures、手动 init 一个作品目录。
 
 ## 报告说未过之后
 

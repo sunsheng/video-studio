@@ -9,6 +9,7 @@ use clap::{Parser, Subcommand};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use studio_cli::{assets, doctor, e2e, exec_report, html, list, pack, rollout};
+use studio_skill_eval::{all_scenarios, run_scenario, ScenarioResult};
 
 #[derive(Parser)]
 #[command(
@@ -83,6 +84,9 @@ enum Command {
     /// 已验证 workflow 基线相关
     #[command(subcommand)]
     Workflows(WorkflowCommand),
+    /// Skill 评估：像测代码一样测 AGENTS.md / SKILL.md，见 ADR-0003
+    #[command(subcommand)]
+    SkillEval(SkillEvalCommand),
 }
 
 #[derive(Subcommand)]
@@ -100,6 +104,22 @@ enum ExecCommand {
         #[arg(long)]
         html: Option<PathBuf>,
     },
+}
+
+#[derive(Subcommand)]
+enum SkillEvalCommand {
+    /// 列出内置场景
+    List,
+    /// 跑一个场景，出 JSON + 人读摘要
+    Run {
+        /// 场景 id，见 `skill-eval list`
+        scenario: String,
+        /// 写 JSON 结果到文件；不给就只打印摘要
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+    },
+    /// 对比两次场景结果，标出退步项。结果 JSON 不进版本库——本机产物
+    Diff { old: PathBuf, new: PathBuf },
 }
 
 #[derive(Subcommand)]
@@ -187,6 +207,11 @@ fn run(cli: Cli) -> Result<(), String> {
         }) => cmd_e2e(bundle, out, html, rollout),
         Command::Exec(ExecCommand::Report { bundle, out, html }) => cmd_exec(bundle, out, html),
         Command::Workflows(WorkflowCommand::Check { dir }) => cmd_workflows_check(dir),
+        Command::SkillEval(SkillEvalCommand::List) => cmd_skill_eval_list(),
+        Command::SkillEval(SkillEvalCommand::Run { scenario, out }) => {
+            cmd_skill_eval_run(&scenario, out)
+        }
+        Command::SkillEval(SkillEvalCommand::Diff { old, new }) => cmd_skill_eval_diff(&old, &new),
     }
 }
 
@@ -439,6 +464,117 @@ fn cmd_unpack(archive: &Path, into: &Path) -> Result<(), String> {
     println!("已解出 {} 个文件到 {}", n, into.display());
     println!("提示：换了机器就跑一次 `studio-cli doctor --fix`，把程序路径对上。");
     Ok(())
+}
+
+fn cmd_skill_eval_list() -> Result<(), String> {
+    for (id, _) in all_scenarios() {
+        let r = run_scenario(id).expect("刚从 all_scenarios() 里拿到的 id 一定存在");
+        println!("  {id:<40} {}", r.description);
+    }
+    Ok(())
+}
+
+fn render_scenario_result(r: &ScenarioResult) -> String {
+    let mut s = format!("skill-eval · {}\n\n", r.scenario_id);
+    s.push_str(&format!("  {}\n\n", r.description));
+    for v in &r.verdicts {
+        s.push_str(&format!(
+            "  [{}] {}\n         {}\n",
+            if v.passed { "通过" } else { "未过" },
+            v.name,
+            v.detail
+        ));
+    }
+    s.push('\n');
+    s.push_str(if r.passed {
+        "结论：通过。\n"
+    } else {
+        "结论：未通过，见上面「未过」项。\n"
+    });
+    s
+}
+
+fn cmd_skill_eval_run(scenario: &str, out: Option<PathBuf>) -> Result<(), String> {
+    let r = run_scenario(scenario).ok_or_else(|| {
+        let known: Vec<&str> = all_scenarios().into_iter().map(|(id, _)| id).collect();
+        format!(
+            "没有叫 {scenario} 的场景。已注册的场景：{}",
+            known.join("、")
+        )
+    })?;
+
+    if let Some(path) = &out {
+        let json = serde_json::to_string_pretty(&r).map_err(|e| e.to_string())?;
+        std::fs::write(path, json).map_err(|e| format!("写结果失败：{e}"))?;
+        println!("结果已写入 {}", path.display());
+    }
+    print!("{}", render_scenario_result(&r));
+    if r.passed {
+        Ok(())
+    } else {
+        Err(String::new())
+    }
+}
+
+fn cmd_skill_eval_diff(old: &Path, new: &Path) -> Result<(), String> {
+    let read = |p: &Path| -> Result<ScenarioResult, String> {
+        let text =
+            std::fs::read_to_string(p).map_err(|e| format!("读 {} 失败：{e}", p.display()))?;
+        serde_json::from_str(&text)
+            .map_err(|e| format!("{} 不是合法的场景结果 JSON：{e}", p.display()))
+    };
+    let old = read(old)?;
+    let new = read(new)?;
+
+    if old.scenario_id != new.scenario_id {
+        println!(
+            "注意：两份结果不是同一个场景（{} vs {}），对比仅供参考。",
+            old.scenario_id, new.scenario_id
+        );
+    }
+
+    let mut regressions = Vec::new();
+    let mut fixes = Vec::new();
+    for nv in &new.verdicts {
+        let Some(ov) = old.verdicts.iter().find(|v| v.name == nv.name) else {
+            continue;
+        };
+        if ov.passed && !nv.passed {
+            regressions.push(format!("{}：{} → {}", nv.name, ov.detail, nv.detail));
+        } else if !ov.passed && nv.passed {
+            fixes.push(nv.name.clone());
+        }
+    }
+
+    println!("skill-eval diff · {}", new.scenario_id);
+    println!(
+        "  旧：{}（{}）",
+        if old.passed { "通过" } else { "未过" },
+        old.scenario_id
+    );
+    println!(
+        "  新：{}（{}）",
+        if new.passed { "通过" } else { "未过" },
+        new.scenario_id
+    );
+    println!();
+    if regressions.is_empty() {
+        println!("  没有退步项。");
+    } else {
+        println!("  退步：");
+        for r in &regressions {
+            println!("    - {r}");
+        }
+    }
+    if !fixes.is_empty() {
+        println!("  修好了：{}", fixes.join("、"));
+    }
+
+    if regressions.is_empty() {
+        Ok(())
+    } else {
+        Err(String::new())
+    }
 }
 
 fn cmd_e2e(

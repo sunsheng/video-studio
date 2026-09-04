@@ -21,9 +21,12 @@ studio-pipeline 三个确定性阶段（渲染、后期、验收）的实现：�
                 + media。被 studiod 与 studio-cli 依赖。
 studiod         MCP server 二进制。唯一职能 serve，没有子命令、不接受参数。
                 由 Codex 自动拉起，Agent 不可见其命令行。依赖 mcp + pipeline。
+studio-skill-eval Skill 评估：像测代码一样测 AGENTS.md / SKILL.md。依赖
+                core + engine + mcp。只被 studio-cli 依赖，见 ADR-0003。
 studio-cli      人类操作 + 开发者工具二进制：init / doctor / pack / unpack /
                 list / emit-assets / e2e report / exec report /
-                workflows check。不出现在 Codex/Agent 的执行环境里。
+                workflows check / skill-eval。不出现在 Codex/Agent 的执行
+                环境里。
 ```
 
 反向依赖一律禁止。`studio-core` 新增依赖需要在 PR 描述里说明理由。
@@ -34,8 +37,8 @@ studio-cli      人类操作 + 开发者工具二进制：init / doctor / pack /
    `studiod submit-stage` 这类东西——状态变更只有 MCP 一个入口，子命令列表
    怎么裁都消不掉「Agent 拿到二进制直接绕过 MCP」这条路径，只有物理上不
    存在子命令才行。项目管理（`init`/`doctor`/`pack`/`unpack`/`list`）和
-   开发者工具（`emit-assets`/`e2e report`/`exec report`/`workflows check`）
-   都在 `studio-cli` 里，且 `studio-cli` **不出现在 Codex/Agent 的执行环境
+   开发者工具（`emit-assets`/`e2e report`/`exec report`/`workflows check`/
+   `skill-eval`）都在 `studio-cli` 里，且 `studio-cli` **不出现在 Codex/Agent 的执行环境
    里**——AGENTS.md / SKILL.md 不提这两个二进制的名字或命令行语法，见
    `docs/decisions/ADR-0002`。
 2. **Markdown 不手写。** `assets/AGENTS.md` 与各 `SKILL.md` 中涉及工具名、阶段名、

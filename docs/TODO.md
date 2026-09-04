@@ -26,7 +26,7 @@
 ### 端到端跑一次真实 Codex 会话
 
 `docs/e2e.md` 写好了步骤，但还没在生产环境真跑过。
-开发环境只能验证协议层（`scripts/replay-protocol.py`），
+开发环境只能验证协议层（`cargo test -p studio-skill-eval` 的脚本场景），
 验证不了「Codex 读完 AGENTS.md 和 SKILL.md 之后会不会正确使用工具面」——
 那才是端到端真正要看的东西。
 

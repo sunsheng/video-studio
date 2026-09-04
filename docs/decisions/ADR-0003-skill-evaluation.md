@@ -112,25 +112,36 @@ studio-cli skill-eval diff <old.json> <new.json>         对比两次结果，�
 
 ### 内置场景库（起步集合，后续按需再加）
 
-脚本场景（进 CI/`cargo test`）：
+脚本场景（进 CI/`cargo test`，已实现，见 `crates/studio-skill-eval`）：
 
 1. `golden_six_stage_with_revise` —— 原 `replay-protocol.py` 的等价物。
-2. `preview_gate_redirects_to_prompt_pack` —— 在 preview 门上选"有问题"，
-   断言退回的是 `prompt_pack` 不是 `preview` 自己（`revise_target()` 已有
-   单元测试守着类型层面，这里从"完整走一遍协议"的角度再守一遍）。
-3. `concurrent_open_reports_busy_with_pid` —— 两个进程打开同一 bundle，
-   断言第二个拿到的 `project_busy` remedy 里**不含任何二进制名**（这一条
-   直接对应下面"测试补齐"里发现的真实缺陷）。
+2. `concurrent_open_reports_busy_with_pid` —— 两个真实子进程打开同一
+   bundle，断言第二个拿到的 `project_busy` 附带第一个进程真实的 PID，
+   且 remedy 里**不含任何二进制名**（这一条直接对应下面"测试补齐"里
+   发现的真实缺陷）。
 
-Agent 场景（本机/按需跑，不进 CI）：
+#### 收敛点：`preview_gate_redirects_to_prompt_pack` 没有进脚本场景库
+
+设计时以为这也能是个脚本场景，实现时发现不行：这条 harness 跑的是
+**真实编译出的 `studiod` 二进制**，它内部接的是真实 `studio_pipeline::
+Pipeline`，`preview` 是控制面自动执行的确定性阶段——没有真实 ComfyUI，
+它根本走不到自己的确认门，只会卡在 `comfy_unavailable`。要在这条 harness
+里让它跑到确认门，唯一办法是给 `studiod` 加一个"注入假执行器"的旁路，
+而那正是 ADR-0002 要消灭的东西：`studiod` 物理上不能有除 serve 之外的
+任何行为分支。所以这条行为该测的地方一直就是对的地方：
+`crates/studio-core/src/stage.rs` 的 `preview_revises_back_to_prompt_pack`
+（类型层面）和 `crates/studio-engine/tests/deterministic.rs`（配假执行器
+的集成测试），不需要也不应该挪进 `studio-skill-eval`。
+
+Agent 场景（本机/按需跑，不进 CI，设计已定、留给 Phase C 实现）：
 
 1. `incident_replay_2026_09_03` —— 就是 `docs/e2e.md` 现在手工跑的那个
    剧本：交一版每镜头 2 秒的剧本 → 用户说"不要固定 2 秒" → 应当一次
    `revise` 加一次 `submit_stage`。这是把人工验收自动化，不是新场景。
-4. `ambiguous_user_input_handling` —— 故意给一句有笔误的创意（"20色女性"
+2. `ambiguous_user_input_handling` —— 故意给一句有笔误的创意（"20色女性"
    这类），检查 Agent 是否按 `idea` skill 的指示"按最合理理解处理并写进
    assumptions"，而不是卡住反复追问。
-5. `retry_vs_revise_confusion_probe` —— 在一个确定性阶段人为制造一次
+3. `retry_vs_revise_confusion_probe` —— 在一个确定性阶段人为制造一次
    `comfy_unavailable`，看 Agent 会不会正确选 `studio.retry_stage` 而不是
    误用 `studio.revise`（`comfyui` skill 明确写了这条区分，这个场景专门
    验证措辞有没有起作用）。

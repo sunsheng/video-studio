@@ -10,6 +10,7 @@ members = [
     "crates/studio-pipeline",
     "crates/studiod",
     "crates/studio-cli",
+    "crates/studio-skill-eval",
 ]
 
 [workspace.package]
