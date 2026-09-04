@@ -542,6 +542,16 @@ impl Project {
                 allowed: vec!["studio.revise"],
             });
         }
+        // 传的阶段必须真的是当前卡住/待执行的那个——`ensure_worker` 之后
+        // 重新跑的是 `current_stage()`，不是调用方传的值，两者对不上时
+        // 实际重跑的会是另一个阶段，还留一条写着错误阶段名的时间线记录。
+        let current = self.current_stage()?;
+        if current != Some(stage) {
+            return Err(StudioError::RetryStageMismatch {
+                requested: stage,
+                current,
+            });
+        }
         self.stop_worker();
         self.clear_recorded_error()?;
         self.store

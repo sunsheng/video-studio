@@ -87,6 +87,11 @@ pub enum StudioError {
     },
     /// 阶段重试到顶。
     RetryLimitExceeded { stage: StageId, limit: u32 },
+    /// 请求重试的阶段不是当前真正卡住/待执行的那个确定性阶段。
+    RetryStageMismatch {
+        requested: StageId,
+        current: Option<StageId>,
+    },
     /// 内部错误：I/O、序列化等。
     Internal { detail: String },
 }
@@ -110,6 +115,7 @@ impl StudioError {
             StudioError::ArtifactMissing { .. } => "artifact_missing",
             StudioError::ToolUnavailable { .. } => "tool_unavailable",
             StudioError::RetryLimitExceeded { .. } => "retry_limit_exceeded",
+            StudioError::RetryStageMismatch { .. } => "retry_stage_mismatch",
             StudioError::Internal { .. } => "internal",
         }
     }
@@ -193,6 +199,16 @@ impl StudioError {
                 "阶段 {stage} 已重试 {limit} 次。先用 studio.timeline() 看清失败原因，\
                  改掉输入后再 studio.revise(\"{stage}\", <说明>)；不要继续盲目重试。"
             ),
+            StudioError::RetryStageMismatch { requested: _, current } => match current {
+                Some(c) => format!(
+                    "调 studio.status() 确认当前卡在哪个阶段，再对准确的阶段调 \
+                     studio.retry_stage(\"{c}\")——传的阶段必须是当前正卡着的那个，\
+                     不能是别的阶段，否则实际重跑的是当前阶段，跟传的名字对不上。"
+                ),
+                None => "作品所有阶段都已通过，没有正在等待或失败的确定性阶段可以重试。\
+                         调 studio.status() 确认。"
+                    .to_string(),
+            },
             StudioError::Internal { detail } => format!(
                 "内部错误（{detail}）。调 studio.status() 确认状态是否完好；\
                  若状态可用则重试该操作，否则把 .studio/logs/studiod.log 提给维护者。"
@@ -244,6 +260,10 @@ impl StudioError {
             StudioError::RetryLimitExceeded { stage, limit } => {
                 format!("阶段 {stage} 超过重试上限 {limit}")
             }
+            StudioError::RetryStageMismatch { requested, current } => match current {
+                Some(c) => format!("请求重试 {requested}，但当前阶段是 {c}"),
+                None => format!("请求重试 {requested}，但作品已经全部完成"),
+            },
             StudioError::Internal { detail } => format!("内部错误：{detail}"),
         }
     }
@@ -264,7 +284,7 @@ impl fmt::Display for StudioError {
 impl std::error::Error for StudioError {}
 
 /// 全部错误码 —— `emit-assets` 用它生成文档里的错误表。
-pub const ERROR_CODES: [(&str, &str); 16] = [
+pub const ERROR_CODES: [(&str, &str); 17] = [
     ("schema_violation", "产物不符合阶段 schema，附字段路径"),
     ("invalid_transition", "状态机不允许，附当前状态与合法动作"),
     ("confirmation_required", "有门的阶段提交时没带确认问题"),
@@ -283,6 +303,10 @@ pub const ERROR_CODES: [(&str, &str); 16] = [
     ("artifact_missing", "登记的产物在磁盘上不存在"),
     ("tool_unavailable", "找不到 ffmpeg / ffprobe 等外部程序"),
     ("retry_limit_exceeded", "阶段重试到顶"),
+    (
+        "retry_stage_mismatch",
+        "请求重试的阶段不是当前真正卡住的那个确定性阶段",
+    ),
     ("internal", "I/O、序列化等内部错误"),
 ];
 
@@ -358,6 +382,14 @@ mod tests {
             StudioError::RetryLimitExceeded {
                 stage: StageId::Render,
                 limit: 3,
+            },
+            StudioError::RetryStageMismatch {
+                requested: StageId::Render,
+                current: Some(StageId::Preview),
+            },
+            StudioError::RetryStageMismatch {
+                requested: StageId::Render,
+                current: None,
             },
             StudioError::Internal {
                 detail: "boom".into(),

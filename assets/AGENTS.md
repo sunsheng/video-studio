@@ -94,6 +94,7 @@
 | `artifact_missing` | 登记的产物在磁盘上不存在 |
 | `tool_unavailable` | 找不到 ffmpeg / ffprobe 等外部程序 |
 | `retry_limit_exceeded` | 阶段重试到顶 |
+| `retry_stage_mismatch` | 请求重试的阶段不是当前真正卡住的那个确定性阶段 |
 | `internal` | I/O、序列化等内部错误 |
 
 

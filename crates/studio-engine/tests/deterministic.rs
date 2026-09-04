@@ -361,6 +361,29 @@ fn retry_stage_requires_a_deterministic_stage() {
     assert!(e.remedy().contains("studio.revise") || e.remedy().contains("studio.status"));
 }
 
+/// `retry_stage` 必须拒绝「传的阶段不是当前真正卡住的那个」——否则会悄悄
+/// 重跑当前阶段却留一条写着别的阶段名的时间线记录，跟实际执行对不上。
+#[test]
+fn retry_stage_rejects_a_stage_that_is_not_the_current_one() {
+    let (_d, p, _started, _saw_cancel) = project_stuck_mid_render();
+
+    // 此刻真正卡住的是 render；请求重试一个不同的确定性阶段应当被拒绝，
+    // 而不是悄悄把 render 重跑一遍却记成「重试了 post」。
+    let e = p.retry_stage(StageId::Post).unwrap_err();
+    assert_eq!(e.code(), "retry_stage_mismatch");
+    assert!(e.message().contains("post"));
+    assert!(e.message().contains("render"));
+    assert!(e.remedy().contains("studio.retry_stage(\"render\")"));
+
+    let before = p
+        .timeline(200)
+        .unwrap()
+        .iter()
+        .filter(|e| e.kind == "retried")
+        .count();
+    assert_eq!(before, 0, "被拒绝的请求不该留下 retried 记录");
+}
+
 /// `retry_stage` 同样必须先停掉可能还在跑的 worker，才清错误重新触发。
 #[test]
 fn retry_stage_stops_an_in_flight_worker_before_retrying() {
