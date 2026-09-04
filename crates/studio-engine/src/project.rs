@@ -27,6 +27,11 @@ pub struct Project {
     bundle: Bundle,
     store: Store,
     settings: Settings,
+    /// 只用来在每次重试确定性阶段前重新读一遍 `.env`——不落盘、不进数据库。
+    /// bundle 本身要能被随意 `mv` / `cp -r` 到别的机器，机器相关的配置
+    /// （比如这台机器上的 ComfyUI 集群地址）永远只能来自当次进程能看到的
+    /// 文件系统，不能变成作品状态的一部分。
+    program_dir: Option<std::path::PathBuf>,
     executor: SharedExecutor,
     worker: Mutex<Option<Worker>>,
     // 持有期间独占本 bundle；drop 即释放。
@@ -100,6 +105,7 @@ impl Project {
             bundle,
             store,
             settings,
+            program_dir: program_dir.map(|p| p.to_path_buf()),
             executor,
             worker: Mutex::new(None),
             _lock: lock,
@@ -519,7 +525,11 @@ impl Project {
         let cancelled = Arc::new(AtomicBool::new(false));
         let root = self.bundle.root().to_path_buf();
         let db = self.bundle.db_path();
-        let settings = self.settings.clone();
+        // 每次真正要跑（或重试）确定性阶段，都当场重新读一遍 `.env`——
+        // 不用打开会话时缓存的那份。这样改完 COMFY_NODES 之后只需要让
+        // 控制面再跑一次这个阶段（比如 `studio.revise` 清掉上一次的失败），
+        // 不需要重启整个 `studiod serve` 进程。
+        let settings = Settings::load(self.program_dir.as_deref(), Some(self.bundle.root()));
         let executor = Arc::clone(&self.executor);
         let p2 = Arc::clone(&progress);
         let c2 = Arc::clone(&cancelled);

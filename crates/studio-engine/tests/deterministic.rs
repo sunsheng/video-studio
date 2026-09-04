@@ -3,7 +3,7 @@
 //! 这里用一个假执行器，所以不需要 GPU、ComfyUI 或 ffmpeg。
 
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use studio_core::contract::{ProjectStatus, WaitingOn};
 use studio_core::{fixtures, Outputs, Result, StageId, StudioError};
 use studio_engine::executor::{ExecContext, StageExecutor};
@@ -166,6 +166,87 @@ fn a_failed_stage_becomes_a_blocked_envelope() {
         .unwrap();
     assert!(env.blocked_by.is_none());
     assert_eq!(env.project.stage, StageId::PromptPack);
+}
+
+/// 编辑 `.env` 之后不该要求重启整个进程：同一个 `Project` 实例重试
+/// 确定性阶段时，应当当场重新读取 `.env`，而不是沿用打开会话那一刻
+/// 缓存的配置。这是 `comfy_unavailable` remedy 现在明确要求的行为——
+/// 配好 `COMFY_NODES` 后调 `studio.revise` 重试，不需要重开会话。
+#[test]
+fn retrying_after_editing_env_picks_up_the_new_nodes_without_reopening() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("千岛湖.studio");
+    init_project(&root, fixtures::TITLE, "0.1.0-test", &[]).unwrap();
+    std::fs::write(root.join(".env"), "COMFY_NODES=http://before:9001\n").unwrap();
+
+    let attempts = Arc::new(Mutex::new(Vec::<Vec<String>>::new()));
+    struct RecordingExecutor {
+        attempts: Arc<Mutex<Vec<Vec<String>>>>,
+    }
+    impl StageExecutor for RecordingExecutor {
+        fn execute(&self, stage: StageId, ctx: &ExecContext<'_>) -> Result<Outputs> {
+            let nodes = ctx.settings.comfy_nodes();
+            let is_first = {
+                let mut a = self.attempts.lock().unwrap();
+                a.push(nodes.clone());
+                a.len() == 1
+            };
+            if stage == StageId::Render && is_first {
+                return Err(StudioError::ComfyUnavailable { tried: nodes });
+            }
+            Ok(fixtures::outputs(stage))
+        }
+    }
+    let exec = Arc::new(RecordingExecutor {
+        attempts: Arc::clone(&attempts),
+    });
+
+    // Project::open_with 在这一刻缓存的 settings 之后不会再被用来跑 render——
+    // 这正是本测试要证明的事。
+    let p = Project::open_with(&root, None, exec).unwrap();
+    for s in [
+        StageId::Idea,
+        StageId::Selection,
+        StageId::Script,
+        StageId::Storyboard,
+        StageId::VisualAssets,
+        StageId::PromptPack,
+    ] {
+        let env = p
+            .submit_stage(
+                fixtures::outputs(s),
+                Some(fixtures::summary(s)),
+                fixtures::confirmation(s),
+            )
+            .unwrap();
+        if let Some(q) = env.pending_question {
+            p.answer(&q.question_id, "approve").unwrap();
+        }
+    }
+
+    let env = poll_until(&p, 10, |e| e.blocked_by.is_some());
+    assert_eq!(env.blocked_by.unwrap().code, "comfy_unavailable");
+    assert_eq!(
+        attempts.lock().unwrap().last().unwrap(),
+        &vec!["http://before:9001".to_string()],
+        "第一次尝试应当看到打开会话时 .env 里的节点"
+    );
+
+    // 相当于 Agent 照 remedy 做：编辑 .env，然后调 studio.revise 重试——
+    // 全程没有重开 Project，也没有碰 studiod 的任何子命令。
+    std::fs::write(root.join(".env"), "COMFY_NODES=http://after:9002\n").unwrap();
+    let env = p
+        .revise(StageId::Render, "已经把 COMFY_NODES 换成新节点，重试")
+        .unwrap();
+    assert!(env.blocked_by.is_none(), "revise 之后阻塞应当解除");
+
+    let env = poll_until(&p, 10, |e| e.project.status == ProjectStatus::Completed);
+    assert_eq!(env.project.status, ProjectStatus::Completed);
+    assert_eq!(
+        attempts.lock().unwrap().last().unwrap(),
+        &vec!["http://after:9002".to_string()],
+        "重试时应当当场重新读取 .env，而不是沿用打开会话时缓存的节点"
+    );
 }
 
 #[test]
