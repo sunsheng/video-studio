@@ -33,10 +33,14 @@ studiod         唯一二进制：init / serve / doctor / emit-assets / pack / u
 
 ## 工具链
 
-`rust-toolchain.toml` 指定具体版本（不是 `stable`）。升级时改该文件，然后运行：
+`rust-toolchain.toml` 指定具体版本（不是 `stable`）。升级时改该文件，然后验证：
 ```bash
+cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 ```
+
+**推代码前必须在本地跑一遍这两条**——CI 两条都查，只跑 clippy 不跑 fmt
+会漏掉格式问题，等 CI 红了才发现。
 
 ## 测试边界
 
