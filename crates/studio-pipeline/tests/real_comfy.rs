@@ -24,6 +24,15 @@ use studio_engine::bundle::Bundle;
 use studio_engine::Settings;
 use studio_pipeline::workflow::Workflow;
 
+/// **这一组测试共用一台 ComfyUI，必须串行。**
+///
+/// 十条测试同时往一台机器上压任务时，`/history` 有时报 `completed: true`
+/// 但 `outputs` 还没落全，拿到的产物列表是空的——下载那一步就炸。
+/// 这不是「偶发抖动」，是共享外部资源本来就该串行使用；GPU 也没法真并行。
+///
+/// 串行之后每条测试打印的耗时才有意义（并行时那个数是排队时间）。
+static COMFY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// 一镜的规格：小而快，只为验接线，不为出好看的画面。
 const W: i64 = 640;
 const H: i64 = 384;
@@ -31,6 +40,8 @@ const FRAMES: i64 = 22; // 17k+5 网格上的第二档
 const FPS: f64 = 24.0;
 
 struct Env {
+    /// 拿着就独占那台 ComfyUI，`Env` 一 drop 就还回去。
+    _gpu: std::sync::MutexGuard<'static, ()>,
     _dir: tempfile::TempDir,
     bundle: Bundle,
     comfy: Comfy,
@@ -43,6 +54,9 @@ struct Env {
 
 /// 备齐前置条件；缺什么就返回 None 并说明。
 fn setup() -> Option<Env> {
+    // 前一条测试 panic 时锁会中毒，这里不在乎——中毒只说明上一条失败了，
+    // 不代表这台 ComfyUI 坏了。
+    let gpu = COMFY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let node = std::env::var("COMFY_NODE")
         .ok()
         .map(|v| v.trim().trim_end_matches('/').to_string())
@@ -77,6 +91,7 @@ fn setup() -> Option<Env> {
     }
     let set = fragments()?;
     Some(Env {
+        _gpu: gpu,
         _dir: dir,
         bundle,
         comfy,
@@ -483,24 +498,23 @@ fn upload_tone(env: &Env, name: &str, hz: u32, seconds: f64) -> String {
         .unwrap_or_else(|e| panic!("纯音（{} 字节）传不上去：{}", bytes.len(), e.message()))
 }
 
-/// audio 通道：**锚点能用，参考不能用**——这条守着这个区别。
+/// audio 通道：锚点和参考是**两件不同的事**，各验各的。
 ///
-/// 2026-09-05 真机实测（1kHz 纯音，Goertzel 量 1kHz 与邻频的能量比）：
+/// - `guide.audio` 锚点 = 把这段声音放进输出。2026-09-05 实测 1kHz 纯音在
+///   输出里 4000 倍于邻频，素材进去了而且主导了输出。
+/// - `references: kind=audio` = **音色/说话人参考**，不是把声音原样放进去。
+///   同一提示词同一 seed，不挂参考输出基频 242Hz，挂 99Hz 的低音参考出
+///   121Hz、挂 258Hz 的高音参考出 262Hz。
 ///
-/// | 走法 | 输出里 1kHz / 邻频 | 结论 |
-/// |---|---|---|
-/// | `guide.audio` 锚点 | ~4000 倍 | 素材进去了，而且主导了输出 |
-/// | `references: kind=audio` | 0.5–1.9 倍 | 一点痕迹都没有 |
+/// 中间还有一段弯路值得记着：这个槽位一度被判为「模型不理它」，依据是拿
+/// 1kHz 纯音验出来的 0.5–1.9 倍。**那个结论是错的**——当时 AUTOGROW 槽位
+/// 写成嵌套对象，整条参考通道都是死节点，跟音频没关系。接线改成点号形态
+/// 之后音色参考立刻生效。选纯音做判据也不合适：音色参考本来就不该把纯音
+/// 复现出来。
 ///
-/// 参考那条**接线是对的**（`ref_audios: {"ref_audio_1": [...]}`，`audio_vae`
-/// 也接了，图能跑、有音轨出来），就是模型不理它。所以 `input.audio` 通道
-/// 标为已核验，而 `ref_audios` 槽位单独标 `verified: false`——两者不分开的话
-/// 只能二选一：要么挡掉已经验通的锚点，要么把没生效的参考说成可用。
-///
-/// **这条测试验不了「声音好不好听」**，那要人听。它验的是「素材有没有真的
-/// 进到输出里」，那个用频率能量比是可判的。
+/// **这条测试验不了「声音好不好听」**，那要人听。它验的是通道通不通。
 #[test]
-fn audio_anchors_work_but_audio_references_are_still_refused() {
+fn audio_anchors_and_audio_references_both_run() {
     let Some(env) = setup() else { return };
     const LONG_SHOT: i64 = 39;
 
@@ -544,7 +558,7 @@ fn audio_anchors_work_but_audio_references_are_still_refused() {
     assert!(!files.is_empty(), "audio 锚点跑完却没有产出");
     eprintln!("✅ audio 锚点（{}）：{} 个产物", sub.prompt_id, files.len());
 
-    // 二、参考：槽位没核验，**必须在组装时就被挡下**，不许拼出来去烧 GPU。
+    // 二、参考：音色参考，槽位已核验，应当拼得出、跑得完。
     let mut with_audio_ref = base("A02", "reference");
     with_audio_ref.length_frames = LONG_SHOT;
     with_audio_ref.references = vec![Reference {
@@ -552,24 +566,29 @@ fn audio_anchors_work_but_audio_references_are_still_refused() {
         asset_id: tone,
         with_audio: false,
     }];
-    let err = assemble_as(
+    let out = assemble_as(
         &env.set,
         &with_audio_ref,
         "real-acceptance/A02",
         Combination::Standard,
     )
-    .expect_err("ref_audios 没核验，不该拼得出图");
-    assert_eq!(err.code(), "model_contract_violation");
-    assert!(
-        err.message().contains("尚未核验"),
-        "要说清是没核验：{}",
-        err.message()
+    .unwrap_or_else(|e| panic!("audio 参考组装失败：{}", e.message()));
+    // 点号形态，不是嵌套对象——嵌套那个写法图照样合法，参考却进不去。
+    assert_eq!(
+        out.graph["h3_ref"]["inputs"]["ref_audios.ref_audio_1"],
+        json!(["ref1_load", 0]),
+        "audio 参考的 AUTOGROW 键不是点号形态"
     );
-    assert!(
-        err.message().contains("没生效"),
-        "要说清是「进去了但模型不理」，不是「进不去」：{}",
-        err.message()
-    );
+    let sub = env
+        .comfy
+        .submit(&out.graph, "real-acceptance")
+        .unwrap_or_else(|e| panic!("audio 参考被判非法：{}", e.message()));
+    let files = env
+        .comfy
+        .wait(&sub)
+        .unwrap_or_else(|e| panic!("audio 参考执行失败：{}", e.message()));
+    assert!(!files.is_empty(), "audio 参考跑完却没有产出");
+    eprintln!("✅ audio 参考（{}）：{} 个产物", sub.prompt_id, files.len());
 }
 
 /// 同一份声明组装两次逐字节相同——`studio.retry_stage`（内容没问题，
@@ -769,4 +788,160 @@ fn upscaling_a_shot_lands_on_the_delivery_spec() {
         keep.join("upscale-after.mp4").display(),
         keep.join("upscale-before.mp4").display()
     );
+}
+
+/// **参考到底有没有进模型。**
+///
+/// 这是整套真机验收里一直缺的那条断言。之前所有测试只验到「图合法、跑完了、
+/// 有产出」——而 `COMFY_AUTOGROW_V3` 槽位写成嵌套对象时，这三样**全都成立**，
+/// 加载节点却是个死节点，参考一个都没进模型。2026-09-05 对拍才发现：不挂参考图 /
+/// 挂纯绿 / 挂纯红，三份输出逐字节相同。
+///
+/// 所以这条测试的判据是**画面必须不同**：同一个 seed、同一个提示词，只换参考图，
+/// 出来的两段视频不能一样。一样就说明参考又被吞了。
+#[test]
+fn a_different_reference_produces_a_different_picture() {
+    let Some(env) = setup() else { return };
+
+    let green = upload_swatch(&env, "slot_green", "0x1e8a3c");
+    let red = upload_swatch(&env, "slot_red", "0xc21807");
+
+    let mut prints = Vec::new();
+    for (name, swatch) in [("绿", green), ("红", red)] {
+        let mut shot = base("R01", "reference");
+        shot.seed = 555001; // 两次完全一样，只有参考图不同
+        shot.references = vec![img(&swatch)];
+        let out = assemble_as(
+            &env.set,
+            &shot,
+            &format!("real-acceptance/ref-{name}"),
+            Combination::Standard,
+        )
+        .unwrap_or_else(|e| panic!("{name}组装失败：{}", e.message()));
+
+        // 挂上去的必须是平铺的点号键。嵌套对象那个形状图照样合法，
+        // 所以这条断言得在提交之前先挡一道。
+        assert_eq!(
+            out.graph["h3_ref"]["inputs"]["ref_images.ref_image_1"],
+            json!(["ref1_load", 0]),
+            "{name}：AUTOGROW 槽位不是点号形态"
+        );
+
+        let sub = env
+            .comfy
+            .submit(&out.graph, "real-acceptance")
+            .unwrap_or_else(|e| panic!("{name}被判非法：{}", e.message()));
+        let files = env
+            .comfy
+            .wait(&sub)
+            .unwrap_or_else(|e| panic!("{name}执行失败：{}", e.message()));
+        assert!(
+            !files.is_empty(),
+            "{name}跑完却没有产出——history 里一个 type=output 的文件都没有"
+        );
+        let dest = env
+            .bundle
+            .resolve(&format!("media/ref_{name}.mp4"))
+            .unwrap();
+        env.comfy.download(&files[0], &dest).unwrap();
+        let fp = video_fingerprint(&dest);
+        eprintln!("✅ 参考图={name}（{}）画面指纹 {fp}", sub.prompt_id);
+        prints.push((name, fp));
+    }
+
+    assert_ne!(
+        prints[0].1, prints[1].1,
+        "换了参考图画面却一模一样——参考没进模型。\n\
+         这正是 AUTOGROW 槽位写成嵌套对象时的症状：图合法、能跑、有产出，\n\
+         加载节点却是死的。检查 push_autogrow 出来的键是不是 `<槽位>.<prefix><n>`。"
+    );
+}
+
+/// 音频参考同理：换一段音色不同的参考，输出的**声音**必须不同。
+///
+/// 跟上面那条是一对。图像那条守画面，这条守音轨——AUTOGROW 一旦退回嵌套
+/// 对象形态，两条会一起红。
+#[test]
+fn a_different_audio_reference_produces_different_sound() {
+    let Some(env) = setup() else { return };
+
+    // 两段音高差一个八度以上的纯音。音色参考不会把纯音原样复现，
+    // 但**换了参考输出就该不一样**——这条测试只判这个，不判像不像。
+    let low = upload_tone(&env, "voice_low_tone", 110, 1.0);
+    let high = upload_tone(&env, "voice_high_tone", 440, 1.0);
+
+    let mut prints = Vec::new();
+    for (name, tone) in [("低", low), ("高", high)] {
+        let mut shot = base("R02", "reference");
+        shot.seed = 555002;
+        shot.references = vec![
+            img(&upload_swatch(&env, "ra_ref", "0x35506e")),
+            Reference {
+                kind: Medium::Audio,
+                asset_id: tone,
+                with_audio: false,
+            },
+        ];
+        let out = assemble_as(
+            &env.set,
+            &shot,
+            &format!("real-acceptance/aud-{name}"),
+            Combination::Standard,
+        )
+        .unwrap_or_else(|e| panic!("{name}组装失败：{}", e.message()));
+        let sub = env
+            .comfy
+            .submit(&out.graph, "real-acceptance")
+            .unwrap_or_else(|e| panic!("{name}被判非法：{}", e.message()));
+        let files = env
+            .comfy
+            .wait(&sub)
+            .unwrap_or_else(|e| panic!("{name}执行失败：{}", e.message()));
+        assert!(
+            !files.is_empty(),
+            "{name}跑完却没有产出——history 里一个 type=output 的文件都没有"
+        );
+        let dest = env
+            .bundle
+            .resolve(&format!("media/aud_{name}.mp4"))
+            .unwrap();
+        env.comfy.download(&files[0], &dest).unwrap();
+        let fp = audio_fingerprint(&dest);
+        eprintln!("✅ 音频参考={name}（{}）音轨指纹 {fp}", sub.prompt_id);
+        prints.push(fp);
+    }
+
+    assert_ne!(
+        prints[0], prints[1],
+        "换了音频参考声音却一模一样——ref_audios 没进模型"
+    );
+}
+
+/// 解码整段音轨取指纹。
+fn audio_fingerprint(path: &std::path::Path) -> String {
+    md5_of(&format!(
+        "ffmpeg -hide_banner -v error -i {} -vn -f s16le - | md5sum",
+        path.display()
+    ))
+}
+
+/// 解码整段视频流取指纹。比 ffprobe 的元数据强：元数据一样不代表画面一样。
+fn video_fingerprint(path: &std::path::Path) -> String {
+    md5_of(&format!(
+        "ffmpeg -hide_banner -v error -i {} -an -f rawvideo -pix_fmt rgb24 - | md5sum",
+        path.display()
+    ))
+}
+
+fn md5_of(shell: &str) -> String {
+    let out = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(shell)
+        .output()
+        .expect("ffmpeg 起不来");
+    String::from_utf8_lossy(&out.stdout)
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_string()
 }

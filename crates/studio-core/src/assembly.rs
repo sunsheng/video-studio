@@ -885,6 +885,25 @@ fn bump(counters: &mut BTreeMap<String, usize>, key: &str) -> usize {
     *e
 }
 
+/// 往 `COMFY_AUTOGROW_V3` 槽位挂第 `n` 个元素。
+///
+/// **API 格式是平铺的点号兄弟键，不是嵌套对象**：
+///
+/// ```jsonc
+/// "ref_images.ref_image_1": ["ref1_load", 0],
+/// "ref_images.ref_image_2": ["ref2_load", 0]
+/// ```
+///
+/// 跟动态组合框（`COMFY_DYNAMICCOMBO_V3`）是同一套编码，见 [`split_target`]。
+///
+/// 这里原来写的是嵌套对象 `{"ref_images": {"ref_image_1": [...]}}`。
+/// **那个形状图校验能过、图能跑、有产出，但执行器根本不把它当连线**——
+/// 加载节点成了死节点，参考一个都没进模型。2026-09-05 真机对拍才发现：
+/// 不挂参考图 / 挂纯绿 / 挂纯红，三份输出逐字节相同；换成点号形态之后
+/// 绿红两份画面立刻不同。
+///
+/// 判据是「把加载节点指向一个不存在的文件」：连线被认出来，节点就是活的，
+/// 图校验会拒；认不出来就是死节点，校验照过。
 fn push_autogrow(
     graph: &mut Map<String, Value>,
     slot: &AutogrowSlot,
@@ -908,14 +927,7 @@ fn push_autogrow(
         .ok_or_else(|| StudioError::ModelContractViolation {
             detail: format!("图里没有节点 {node} 或它没有 inputs"),
         })?;
-    let slot_obj = obj
-        .entry(field)
-        .or_insert_with(|| Value::Object(Map::new()))
-        .as_object_mut()
-        .ok_or_else(|| StudioError::ModelContractViolation {
-            detail: format!("{} 不是对象，AUTOGROW 槽位必须是对象", slot.target),
-        })?;
-    slot_obj.insert(format!("{}{n}", slot.prefix), wire);
+    obj.insert(format!("{field}.{}{n}", slot.prefix), wire);
     Ok(())
 }
 
@@ -1283,10 +1295,19 @@ pub(crate) mod tests_support {
         assert_eq!(g["sampler"]["inputs"]["latent_image"], json!(["h3_ref", 1]));
         // 负数帧号原样传下去，由模型按「从末尾倒数」解释
         assert_eq!(g["guide2_add_guide"]["inputs"]["frame_idx"], json!(-1));
-        // AUTOGROW 序号从 1 起
+        // AUTOGROW 序号从 1 起，键是平铺的点号形态——嵌套对象那个写法
+        // 图能过、能跑，但执行器不认，参考一个都进不去（真机对拍过）
         assert_eq!(
-            g["h3_ref"]["inputs"]["ref_images"],
-            json!({ "ref_image_1": ["ref1_load", 0], "ref_image_2": ["ref2_load", 0] })
+            g["h3_ref"]["inputs"]["ref_images.ref_image_1"],
+            json!(["ref1_load", 0])
+        );
+        assert_eq!(
+            g["h3_ref"]["inputs"]["ref_images.ref_image_2"],
+            json!(["ref2_load", 0])
+        );
+        assert!(
+            g["h3_ref"]["inputs"].get("ref_images").is_none(),
+            "不能再出现嵌套对象形态"
         );
         assert_eq!(g["scheduler"]["inputs"]["scheduler"], json!("beta"));
     }
@@ -1384,16 +1405,21 @@ pub(crate) mod tests_support {
         let mut s = shot("reference");
         s.references = (0..5).map(|i| img_ref(&format!("A{i}"))).collect();
         let out = assemble(&fragments(), &s, "media/S07").unwrap();
-        let slots = out.graph["h3_ref"]["inputs"]["ref_images"]
-            .as_object()
-            .unwrap();
-        assert_eq!(slots.len(), 5);
+        let inputs = out.graph["h3_ref"]["inputs"].as_object().unwrap();
         for n in 1..=5 {
             assert!(
-                slots.contains_key(&format!("ref_image_{n}")),
-                "缺 ref_image_{n}"
+                inputs.contains_key(&format!("ref_images.ref_image_{n}")),
+                "缺 ref_images.ref_image_{n}"
             );
         }
+        assert_eq!(
+            inputs
+                .keys()
+                .filter(|k| k.starts_with("ref_images."))
+                .count(),
+            5,
+            "序号要连续不重号"
+        );
     }
 
     /// 同一份声明组装两次必须逐字节相同。否则 retry_stage 的
@@ -1430,12 +1456,12 @@ pub(crate) mod tests_support {
         // 片段内 split 引用 load，改名后仍要指对
         assert_eq!(g["ref1_split"]["inputs"]["video"], json!(["ref1_load", 0]));
         assert_eq!(
-            g["h3_ref"]["inputs"]["ref_videos"],
-            json!({ "ref_video_1": ["ref1_split", 0] })
+            g["h3_ref"]["inputs"]["ref_videos.ref_video_1"],
+            json!(["ref1_split", 0])
         );
         assert_eq!(
-            g["h3_ref"]["inputs"]["ref_video_audios"],
-            json!({ "ref_video_audio_1": ["ref1_split", 1] })
+            g["h3_ref"]["inputs"]["ref_video_audios.ref_video_audio_1"],
+            json!(["ref1_split", 1])
         );
     }
 

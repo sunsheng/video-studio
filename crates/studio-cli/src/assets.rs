@@ -133,8 +133,10 @@ struct HeadSpec {
     /// `(介质, 上限, 这条介质能不能用)`。空表示这个 head 不接参考。
     ///
     /// 「能不能用」= 输入通道验过 **且** 这个 AUTOGROW 槽位真的起作用。
-    /// 两件事：`ref_audios` 的通道验过（audio 锚点跑通了），但挂上去模型
-    /// 不理它——输出里量不到任何影响。所以它是 false 而 `input.audio` 是 true。
+    /// 两件事分开记，是因为它们**真的分开过**：`ref_audios` 一度被判为
+    /// 「素材进得去但模型不理」，后来发现是 AUTOGROW 接线错了——整条参考
+    /// 通道都是死的。修好后四个槽位都生效，但这个两层结构留着，下次再遇到
+    /// 「通道通、槽位不通」还是要分得开。
     references: &'static [(&'static str, usize, bool)],
     /// 具名的首尾帧槽位，如 `first` / `last`。
     frames: &'static [&'static str],
@@ -160,7 +162,7 @@ const MODEL_CARDS: [ModelCard; 3] = [
                     id: "reference",
                     verified: true,
                     what_for: "挂参考锁身份与风格，起幅由模型定。绝大多数镜头用它。",
-                    references: &[("image", 9, true), ("video", 3, true), ("audio", 3, false)],
+                    references: &[("image", 9, true), ("video", 3, true), ("audio", 3, true)],
                     frames: &[],
                     turbo_steps: Some(4),
                 },
@@ -1592,9 +1594,12 @@ mod tests {
             "要列出 head"
         );
         assert!(md.contains("image × 9"), "要给出参考槽位的上限");
-        // video 通道 2026-09-05 真机核验后不再划掉；audio 还没有，规则由它守着。
+        // 三条介质 2026-09-05 都已真机核验，谁都不该还划着——划掉的规则本身留着。
         assert!(md.contains("video × 3"), "已核验的介质不该还划着");
-        assert!(md.contains("~~audio × 3~~"), "未核验的介质要划掉");
+        assert!(
+            !md.contains("~~audio × 3~~"),
+            "audio 参考已核验，不该再被划掉"
+        );
     }
 
     /// 帧数网格必须写在卡上，而且数值要跟 studio-core 的常量对得上。
