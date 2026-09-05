@@ -41,7 +41,7 @@
           {
             "asset_id": "sh01.tail",
             "at_frame": 0,
-            "kind": "clip"
+            "kind": "image"
           }
         ],
         "head": "reference",

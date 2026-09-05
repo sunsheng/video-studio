@@ -3,6 +3,7 @@
 //! 这一层把控制面的决策变成实际动作：向 ComfyUI 提交、用 ffmpeg 拼接、
 //! 用 ffprobe 核对。**运行本程序的机器不需要 GPU**——推理全在 ComfyUI 那侧。
 
+pub mod assets;
 pub mod subtitles;
 pub mod workflow;
 
@@ -206,6 +207,47 @@ fn load_fragment_set(dir: &std::path::Path) -> Option<FragmentSet> {
     Some(set)
 }
 
+/// 把镜头按接续依赖分波：同一波之间没有依赖，可以随便并发；
+/// 下一波要等上一波全部出片，因为它得从那些产物里裁尾段。
+///
+/// 依赖只可能指向更靠前的镜头（`studio-core` 的 V9 在提交时就挡住了环），
+/// 所以一遍扫过去按「引用到的最大波次 + 1」定波，不需要拓扑排序。
+/// 没有接续引用时全部落在第 0 波，跟以前的行为一模一样。
+fn dependency_waves(shots: &[Value]) -> Vec<Vec<usize>> {
+    let mut wave_of: BTreeMap<String, usize> = BTreeMap::new();
+    let mut assigned: Vec<usize> = Vec::with_capacity(shots.len());
+
+    for shot in shots {
+        let mut wave = 0usize;
+        let refs = shot["references"].as_array().into_iter().flatten();
+        let guides = shot["guides"].as_array().into_iter().flatten();
+        for item in refs.chain(guides) {
+            let Some(asset_id) = item["asset_id"].as_str() else {
+                continue;
+            };
+            let Some(seg) = assets::parse_shot_segment(asset_id) else {
+                continue;
+            };
+            // 指向不存在或更靠后的镜头在提交时就被 V9 挡了；真走到这里
+            // 只当它没有依赖，让后面的解析报一条说得清的错。
+            if let Some(w) = wave_of.get(seg.shot_id) {
+                wave = wave.max(w + 1);
+            }
+        }
+        if let Some(id) = shot["shot_id"].as_str() {
+            wave_of.insert(id.to_string(), wave);
+        }
+        assigned.push(wave);
+    }
+
+    let count = assigned.iter().max().map(|m| m + 1).unwrap_or(0);
+    let mut waves = vec![Vec::new(); count];
+    for (idx, w) in assigned.iter().enumerate() {
+        waves[*w].push(idx);
+    }
+    waves
+}
+
 fn wrap(stage: StageId, v: Value) -> Outputs {
     let mut m = Outputs::new();
     m.insert(stage.output_key().to_string(), v);
@@ -243,6 +285,10 @@ impl Pipeline {
     /// 实测单镜十来分钟，串行渲染 8 镜可能超过一个半小时；8 路并发理论上
     /// 十几分钟就能全部跑完。产出仍按镜头在提示词包里的原始顺序落回
     /// `shots` 数组——`post` 阶段拼接靠的是这个顺序，不是谁先完工。
+    ///
+    /// **接续镜要排队**：引用了 `sh01.tail` 的镜头得等 sh01 渲完才有东西可裁，
+    /// 所以先按依赖分波（[`dependency_waves`]），波内并发、波与波串行。
+    /// 没有接续引用时只有一波，跟以前完全一样。
     fn generate(
         &self,
         ctx: &ExecContext<'_>,
@@ -258,41 +304,88 @@ impl Pipeline {
         comfy.ensure_reachable()?;
 
         let total = shots.len();
-        let queue: Mutex<VecDeque<usize>> = Mutex::new((0..total).collect());
+        let waves = dependency_waves(shots);
+        let plan = ctx
+            .inputs
+            .get(StageId::VisualAssets.output_key())
+            .cloned()
+            .unwrap_or_else(|| json!({}));
         let results: Mutex<Vec<Option<Value>>> = Mutex::new(vec![None; total]);
-        let failure: Mutex<Option<StudioError>> = Mutex::new(None);
-        let worker_count = ctx.settings.comfy_concurrency().min(total.max(1));
+        let mut rendered: BTreeMap<String, assets::RenderedShot> = BTreeMap::new();
 
-        std::thread::scope(|scope| {
-            for _ in 0..worker_count {
-                let queue = &queue;
-                let results = &results;
-                let failure = &failure;
-                let comfy = &comfy;
-                scope.spawn(move || loop {
-                    if ctx.is_cancelled() || failure.lock().unwrap().is_some() {
-                        return;
-                    }
-                    let idx = queue.lock().unwrap().pop_front();
-                    let Some(idx) = idx else { return };
-                    let shot = &shots[idx];
-                    match self.generate_shot(ctx, comfy, idx, total, shot, mode) {
-                        Ok(v) => results.lock().unwrap()[idx] = Some(v),
-                        Err(e) => {
-                            let mut f = failure.lock().unwrap();
-                            if f.is_none() {
-                                *f = Some(e);
-                            }
+        if waves.len() > 1 {
+            ctx.say(format!(
+                "{total} 个镜头分 {} 波跑：接续镜要等它引用的那一镜先出片",
+                waves.len()
+            ));
+        }
+
+        for wave in waves {
+            if ctx.is_cancelled() {
+                return Err(StudioError::internal("渲染被中断"));
+            }
+            // 每一波都拿上一波的产物重建解析器——接续镜要从那里裁尾段。
+            let resolver = assets::AssetResolver::new(
+                ctx.bundle,
+                ctx.settings,
+                plan.clone(),
+                rendered.clone(),
+            );
+            let queue: Mutex<VecDeque<usize>> = Mutex::new(wave.iter().copied().collect());
+            let failure: Mutex<Option<StudioError>> = Mutex::new(None);
+            let worker_count = ctx.settings.comfy_concurrency().min(wave.len().max(1));
+
+            std::thread::scope(|scope| {
+                for _ in 0..worker_count {
+                    let queue = &queue;
+                    let results = &results;
+                    let failure = &failure;
+                    let comfy = &comfy;
+                    let resolver = &resolver;
+                    scope.spawn(move || loop {
+                        if ctx.is_cancelled() || failure.lock().unwrap().is_some() {
                             return;
                         }
-                    }
-                });
-            }
-        });
+                        let idx = queue.lock().unwrap().pop_front();
+                        let Some(idx) = idx else { return };
+                        let shot = &shots[idx];
+                        match self.generate_shot(ctx, comfy, resolver, idx, total, shot, mode) {
+                            Ok(v) => results.lock().unwrap()[idx] = Some(v),
+                            Err(e) => {
+                                let mut f = failure.lock().unwrap();
+                                if f.is_none() {
+                                    *f = Some(e);
+                                }
+                                return;
+                            }
+                        }
+                    });
+                }
+            });
 
-        if let Some(e) = failure.into_inner().unwrap() {
-            return Err(e);
+            if let Some(e) = failure.into_inner().unwrap() {
+                return Err(e);
+            }
+            // 这一波的产物进登记表，供下一波的接续镜裁尾段。
+            let done = results.lock().unwrap();
+            for idx in wave {
+                let Some(v) = done[idx].as_ref() else {
+                    continue;
+                };
+                let (Some(id), Some(path)) = (v["shot_id"].as_str(), v["path"].as_str()) else {
+                    continue;
+                };
+                rendered.insert(
+                    id.to_string(),
+                    assets::RenderedShot {
+                        path: path.to_string(),
+                        duration_seconds: v["duration_seconds"].as_f64().unwrap_or(0.0),
+                        fps: shots[idx]["fps"].as_f64().unwrap_or(24.0),
+                    },
+                );
+            }
         }
+
         if ctx.is_cancelled() {
             return Err(StudioError::internal("渲染被中断"));
         }
@@ -300,7 +393,7 @@ impl Pipeline {
             .into_inner()
             .unwrap()
             .into_iter()
-            .map(|v| v.expect("队列排空后每个下标都该有结果或已提前返回错误"))
+            .map(|v| v.expect("每一波排空后该波的下标都有结果，否则已提前返回错误"))
             .collect())
     }
 
@@ -311,33 +404,14 @@ impl Pipeline {
         &self,
         ctx: &ExecContext<'_>,
         comfy: &Comfy,
+        resolver: &assets::AssetResolver<'_>,
         idx: usize,
         total: usize,
         shot: &Value,
         mode: GenerateMode,
     ) -> Result<Value> {
         let shot_id = shot["shot_id"].as_str().unwrap_or("shot").to_string();
-        let wf_name =
-            shot["workflow"]
-                .as_str()
-                .ok_or_else(|| StudioError::ModelContractViolation {
-                    detail: format!("{shot_id} 没有指定 workflow"),
-                })?;
 
-        let wf = ctx
-            .step("load_baseline")
-            .shot(&shot_id)
-            .with("workflow", json!(wf_name))
-            .done(Workflow::load(&self.baselines, wf_name).and_then(|w| {
-                w.require_verified()?;
-                Ok(w)
-            }))?;
-        let mut params = Map::new();
-        if let Some(o) = shot.as_object() {
-            for (k, v) in o {
-                params.insert(k.clone(), v.clone());
-            }
-        }
         // 只有 preview 才覆盖尺寸；render 用提示词包原样的宽高，
         // dims 留 None 表示「结果里不需要单独报宽高」。
         let dims = if mode == GenerateMode::Preview {
@@ -349,14 +423,42 @@ impl Pipeline {
                 .get("height")
                 .and_then(|v| v.as_i64())
                 .unwrap_or(PREVIEW_SHORT_EDGE);
-            let (pw, ph) = scale_to_short_edge(width, height, PREVIEW_SHORT_EDGE);
-            params.insert("width".to_string(), json!(pw));
-            params.insert("height".to_string(), json!(ph));
-            Some((pw, ph))
+            Some(scale_to_short_edge(width, height, PREVIEW_SHORT_EDGE))
         } else {
             None
         };
-        let graph = wf.apply(&params)?;
+
+        // 两种形状：片段化的系列写 head，现场组装；其余系列写 workflow，
+        // 加载整图基线再填参数。哪一种由提示词包自己说了算。
+        let graph = if shot.get("head").is_some() {
+            self.assemble_shot(ctx, comfy, resolver, &shot_id, shot, dims)?
+        } else {
+            let wf_name =
+                shot["workflow"]
+                    .as_str()
+                    .ok_or_else(|| StudioError::ModelContractViolation {
+                        detail: format!("{shot_id} 既没写 head 也没写 workflow，不知道该怎么出图"),
+                    })?;
+            let wf = ctx
+                .step("load_baseline")
+                .shot(&shot_id)
+                .with("workflow", json!(wf_name))
+                .done(Workflow::load(&self.baselines, wf_name).and_then(|w| {
+                    w.require_verified()?;
+                    Ok(w)
+                }))?;
+            let mut params = Map::new();
+            if let Some(o) = shot.as_object() {
+                for (k, v) in o {
+                    params.insert(k.clone(), v.clone());
+                }
+            }
+            if let Some((pw, ph)) = dims {
+                params.insert("width".to_string(), json!(pw));
+                params.insert("height".to_string(), json!(ph));
+            }
+            wf.apply(&params)?
+        };
 
         // 落一份可以直接 curl 复现的请求体：节点故障时不用整套跑起来就能单独调试
         // 这一镜——`curl -X POST <node>/prompt -H "Content-Type: application/json"
@@ -391,6 +493,94 @@ impl Pipeline {
             }
         }
         Err(last_err.unwrap_or_else(|| StudioError::internal(format!("{shot_id} 渲染重试耗尽"))))
+    }
+
+    /// 片段化的系列：把声明翻译成节点图。
+    ///
+    /// 素材要先落到 ComfyUI 那侧才能在图里引用，所以顺序是
+    /// **解析 → 上传 → 把声明里的 asset_id 换成上传后的文件名 → 组装**。
+    /// 组装器只认名字，不关心素材从哪来。
+    fn assemble_shot(
+        &self,
+        ctx: &ExecContext<'_>,
+        comfy: &Comfy,
+        resolver: &assets::AssetResolver<'_>,
+        shot_id: &str,
+        shot: &Value,
+        dims: Option<(i64, i64)>,
+    ) -> Result<Value> {
+        let mut decl: studio_core::ShotDeclaration =
+            serde_json::from_value(shot.clone()).map_err(|e| {
+                StudioError::ModelContractViolation {
+                    detail: format!("{shot_id} 的声明读不出来：{e}"),
+                }
+            })?;
+        if let Some((pw, ph)) = dims {
+            decl.width = pw;
+            decl.height = ph;
+        }
+
+        let family = ctx.inputs[StageId::VisualAssets.output_key()]["core_model_family"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        let set =
+            self.fragment_set(&family)
+                .ok_or_else(|| StudioError::ModelContractViolation {
+                    detail: format!(
+                        "{shot_id} 用的是声明式形状，但这台机器上没有 {family} 的片段库。\
+                     片段库在 assets/workflows/{family}/fragments/ 下，\
+                     缺骨架或没有已核验的 head 都会让它整个不可用"
+                    ),
+                })?;
+
+        // 参考、锚点、首尾帧全都要上传。同一份素材多镜共用时只传一次。
+        let mut ids: Vec<String> = decl.references.iter().map(|r| r.asset_id.clone()).collect();
+        ids.extend(decl.guides.iter().map(|g| g.asset_id.clone()));
+        ids.extend(decl.first_frame.clone());
+        ids.extend(decl.last_frame.clone());
+        let mut remote: BTreeMap<String, String> = BTreeMap::new();
+        for id in ids {
+            if remote.contains_key(&id) {
+                continue;
+            }
+            let name = ctx
+                .step("upload_asset")
+                .shot(shot_id)
+                .with("asset_id", json!(id))
+                .done(resolver.upload(comfy, &id))?;
+            remote.insert(id, name);
+        }
+        let rename = |id: &String| remote.get(id).cloned().unwrap_or_else(|| id.clone());
+        for r in &mut decl.references {
+            r.asset_id = rename(&r.asset_id);
+        }
+        for g in &mut decl.guides {
+            g.asset_id = rename(&g.asset_id);
+        }
+        decl.first_frame = decl.first_frame.as_ref().map(rename);
+        decl.last_frame = decl.last_frame.as_ref().map(rename);
+
+        let out = ctx
+            .step("assemble")
+            .shot(shot_id)
+            .with("head", json!(decl.head))
+            .done(studio_core::assembly::assemble(
+                &set,
+                &decl,
+                &format!("studio/{shot_id}"),
+            ))?;
+        ctx.step("assembled")
+            .shot(shot_id)
+            .with("fragments", json!(out.used))
+            .done(Ok::<(), StudioError>(()))?;
+        Ok(out.graph)
+    }
+
+    /// 这个系列的片段库，没有就说明它走整图基线。
+    fn fragment_set(&self, family: &str) -> Option<FragmentSet> {
+        let set = load_fragment_set(&self.baselines.join(family).join("fragments"))?;
+        set.is_usable().then_some(set)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -768,8 +958,9 @@ mod render_tests {
         };
 
         let shot = shot("sh01");
+        let resolver = assets::AssetResolver::new(&bundle, &settings, json!({}), BTreeMap::new());
         let result = pipeline
-            .generate_shot(&ctx, &comfy, 0, 1, &shot, GenerateMode::Render)
+            .generate_shot(&ctx, &comfy, &resolver, 0, 1, &shot, GenerateMode::Render)
             .unwrap();
         assert_eq!(result["node"], json!(good.url), "重试应当打回同一个入口");
         assert_eq!(result["shot_id"], json!("sh01"));
@@ -840,6 +1031,94 @@ mod render_tests {
         assert_eq!(got["width"], json!(480));
         assert_eq!(got["height"], json!(854));
         assert_eq!(got["duration_seconds"], json!(42.0 / 30.0));
+    }
+
+    /// 声明式的镜头走组装那条路：**用仓库里真实的片段库**拼出图，
+    /// 提交给假节点，把产物下回来。这一条守的是 S5 那段接线本身——
+    /// 组装器单测归单测，它有没有真的接到渲染链路上是另一回事。
+    #[test]
+    fn a_declarative_shot_is_assembled_and_rendered_end_to_end() {
+        let bundle_dir = tempfile::tempdir().unwrap();
+        let node = healthy_node();
+        let (bundle, settings) = scaffold(bundle_dir.path(), &node.url);
+
+        // 基线目录直接指向仓库的 assets/workflows，这样片段库是真的那一份。
+        let pipeline = Pipeline::new(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/workflows"),
+        );
+        let recorder = ExecRecorder::at(bundle.root());
+        // 无参考、无锚点的一镜：不需要任何素材上传，链路本身能单独验。
+        let shot = json!({
+            "shot_id": "sh01", "head": "reference", "positive": "船头切开湖面",
+            "width": 768, "height": 1344, "length_frames": 56, "fps": 24, "seed": 1
+        });
+        let ctx = ExecContext {
+            bundle: &bundle,
+            settings: &settings,
+            inputs: json!({
+                "asset_plan": { "core_model_family": "minimax_h3", "assets": [] },
+                "prompt_pack": { "shots": [shot] }
+            }),
+            progress: &ProgressNote::default(),
+            recorder: &recorder,
+            cancelled: &AtomicBool::new(false),
+        };
+
+        let outputs = pipeline.render(&ctx).unwrap();
+        let got = &outputs["render"]["shots"][0];
+        assert_eq!(got["shot_id"], json!("sh01"));
+        assert_eq!(got["path"], json!("media/sh01.mp4"));
+
+        // 落盘的 debug 请求体就是提交出去的那张图——组装的结果可复现。
+        let body = std::fs::read_to_string(bundle.resolve("debug/sh01.request.json").unwrap())
+            .expect("应当落一份可以直接 curl 复现的请求体");
+        let sent: Value = serde_json::from_str(&body).unwrap();
+        let graph = &sent["prompt"];
+        assert_eq!(graph["h3_ref"]["inputs"]["prompt"], json!("船头切开湖面"));
+        assert_eq!(graph["h3_ref"]["inputs"]["length"], json!(56));
+        assert_eq!(
+            graph["save_video"]["inputs"]["filename_prefix"],
+            json!("studio/sh01")
+        );
+        // head 的配套约束覆盖到了骨架上：reference head 配 ref2va 权重 + beta。
+        assert_eq!(graph["scheduler"]["inputs"]["scheduler"], json!("beta"));
+        assert!(graph["load_unet"]["inputs"]["unet_name"]
+            .as_str()
+            .unwrap()
+            .contains("ref2va"));
+    }
+
+    /// 没有接续引用时只有一波——分波逻辑不该给普通的包平白加上串行。
+    #[test]
+    fn shots_without_continuation_all_run_in_one_wave() {
+        let shots = vec![shot("sh01"), shot("sh02"), shot("sh03")];
+        assert_eq!(dependency_waves(&shots), vec![vec![0, 1, 2]]);
+    }
+
+    /// 接续镜要等它引用的那一镜出片，所以落到下一波。
+    #[test]
+    fn a_continuation_shot_lands_in_the_next_wave() {
+        let mut sh02 = shot("sh02");
+        sh02["guides"] = json!([{ "kind": "image", "at_frame": 0, "asset_id": "sh01.tail" }]);
+        let mut sh03 = shot("sh03");
+        sh03["guides"] = json!([{ "kind": "image", "at_frame": 0, "asset_id": "sh02.tail" }]);
+        // sh04 谁也不接，跟 sh01 同一波。
+        let shots = vec![shot("sh01"), sh02, sh03, shot("sh04")];
+        assert_eq!(
+            dependency_waves(&shots),
+            vec![vec![0, 3], vec![1], vec![2]],
+            "一条接续链排成三波，无关的镜头留在第一波一起跑"
+        );
+    }
+
+    /// 引用的是登记过的资产（`C01`、`C01.front`），不是镜间片段——
+    /// 认错了会平白把整包串行化。
+    #[test]
+    fn registered_asset_references_do_not_create_waves() {
+        let mut s = shot("sh02");
+        s["references"] = json!([{ "kind": "image", "asset_id": "C01" },
+                                 { "kind": "image", "asset_id": "SC02.key_angle" }]);
+        assert_eq!(dependency_waves(&[shot("sh01"), s]), vec![vec![0, 1]]);
     }
 
     #[test]

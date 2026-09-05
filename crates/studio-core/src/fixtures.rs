@@ -436,7 +436,7 @@ pub fn outputs(stage: StageId) -> Outputs {
                       "length_frames": 39, "fps": 24, "seed": 101002,
                       "references": [{ "kind": "image", "asset_id": "C01" },
                                      { "kind": "image", "asset_id": "SC02" }],
-                      "guides": [{ "kind": "clip", "at_frame": 0, "asset_id": "sh01.tail" }],
+                      "guides": [{ "kind": "image", "at_frame": 0, "asset_id": "sh01.tail" }],
                       "positive": "一位20岁东亚女性，长黑发及胸，白色无袖连衣裙，低帮白色板鞋，奶油色小斜挎包，沿湖边木质步道轻快小跑两步。湖风从左侧推来，裙摆和发梢一起向右扬；落地时脚踝先内扣再蹬直，重心前倾半步。顺光明亮，低对比，背景是湖面与远岛。[Tracking shot] 镜头横向跟移，与她同速。一镜到底，不切场景，人物保持在画面中央，画面中不出现任何文字、标志或水印。",
                       "audio": "环境声：开阔湖面的风声。拟音：板鞋踩在木板上的两声闷响、裙摆抖动。无对白，无音乐。" },
                     { "shot_id": "sh03", "head": "reference", "width": 768, "height": 1344,

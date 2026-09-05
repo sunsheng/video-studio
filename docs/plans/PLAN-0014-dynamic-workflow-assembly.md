@@ -102,8 +102,28 @@ schema 按 `core_model_family` 动态收窄（沿用现有能力面校验的做�
 参考图/视频/音频的上传：调 `comfy.upload_image`（已存在），把 `asset_id`
 解析成 bundle 内的实际文件再传。
 
+**做的时候多出来的两件**（原计划漏了，都是接续镜逼出来的）：
+
+1. **依赖分波**。引用 `sh01.tail` 的镜头得等 sh01 出片才有东西可裁，
+   而现在的调度是一个扁平队列全部并发。改成按依赖分波：波内并发、波与波
+   串行。没有接续引用时只有一波，跟以前完全一样。
+2. **镜间片段现裁**。`<shot_id>.tail` 不在 `visual_assets` 里（V9 那条），
+   要从上一波的产物用 ffmpeg 裁：不带帧数取一帧静图，带帧数（`.tail22`）
+   裁成那么长的一段。`studio-media` 加一个 `cut()`。
+
+**顺带修掉一个静默错接**：组装器里 `GuideKind::Clip` 映射到了 `input.image`
+（`LoadImage`），而 clip 锚的是**帧序列**，得走 `LoadVideo` +
+`GetVideoComponents`。两条路的输出都是 IMAGE，图都能过 ComfyUI 的校验，
+但前者只喂进去一张静帧——正是 SPEC §2.4 那类错。改成映射到 `input.video`
+之后，clip 锚点会被 `input.video` 的 `bindings_verified: false` 挡住，
+要等真机跑通一镜才放开；黄金样例的接续镜相应改成 `kind: image` 锚尾帧，
+那条路是已核验的。
+
 **验证**：
-- 用现有的本机 TCP 假节点跑通组装 → 提交 → 下载全链路
+- 用现有的本机 TCP 假节点跑通组装 → 提交 → 下载全链路，
+  并核对落盘的 debug 请求体就是组装出来的那张图
+- 分波：无接续引用只有一波；一条接续链排成三波；`C01.front` 这种
+  登记资产不能被误认成镜间引用而平白串行化
 - `cargo test`
 
 **提交**：`feat(pipeline): 渲染改走片段组装`

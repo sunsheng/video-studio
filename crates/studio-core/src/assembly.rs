@@ -560,8 +560,12 @@ pub fn assemble(
 
         let media_kind = match g.kind {
             GuideKind::Audio => Medium::Audio,
-            // `clip` 走的也是图片输入：ref_videos 的元素类型就是 IMAGE（帧序列）。
-            GuideKind::Image | GuideKind::Clip => Medium::Image,
+            GuideKind::Image => Medium::Image,
+            // `clip` 要的是**帧序列**，得走 LoadVideo + GetVideoComponents
+            // 才能得到多帧的 IMAGE。用图片输入（LoadImage）只会喂进去一张，
+            // 类型都是 IMAGE，图能过校验，但锚定的东西完全不是声明的那个
+            // ——正是本项目最怕的那种静默错接。
+            GuideKind::Clip => Medium::Video,
         };
         let input = set.inputs.get(media_kind.as_str()).ok_or_else(|| {
             StudioError::ModelContractViolation {
@@ -1147,6 +1151,35 @@ pub(crate) mod tests_support {
             json!({ "ref_image_1": ["ref1_load", 0], "ref_image_2": ["ref2_load", 0] })
         );
         assert_eq!(g["scheduler"]["inputs"]["scheduler"], json!("beta"));
+    }
+
+    /// `clip` 锚的是**帧序列**，必须走 LoadVideo + GetVideoComponents，
+    /// 不能走 LoadImage。两条路的输出都是 IMAGE，图都能过 ComfyUI 的校验，
+    /// 但后者只喂进去一张静帧——声明的是接续一段，实际接的是一张图。
+    #[test]
+    fn a_clip_guide_loads_a_frame_sequence_not_a_still() {
+        let mut s = shot("reference");
+        s.guides = vec![Guide {
+            kind: GuideKind::Clip,
+            at_frame: 0,
+            asset_id: "S02.tail22".into(),
+        }];
+        let g = assemble(&fragments(), &s, "media/S03").unwrap().graph;
+        assert_eq!(g["guide1_src_load"]["class_type"], json!("LoadVideo"));
+        assert_eq!(
+            g["guide1_add_guide"]["inputs"]["image"],
+            json!(["guide1_src_split", 0]),
+            "帧序列要取 GetVideoComponents 的 IMAGE 输出"
+        );
+        // 对照：image 类 guide 仍然走 LoadImage。
+        let mut s2 = shot("reference");
+        s2.guides = vec![Guide {
+            kind: GuideKind::Image,
+            at_frame: 0,
+            asset_id: "C01.front".into(),
+        }];
+        let g2 = assemble(&fragments(), &s2, "media/S03").unwrap().graph;
+        assert_eq!(g2["guide1_src_load"]["class_type"], json!("LoadImage"));
     }
 
     /// 群戏：5 张参考，序号必须连续且不重号。
