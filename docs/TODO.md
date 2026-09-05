@@ -23,14 +23,75 @@
 
 已核验可用的六份（`minimax_h3` 三份、`wan2_2/t2v`、`ltx2_5` 两份）可以作参考。
 
-### 端到端跑一次真实 Codex 会话
+### 给视频基线补图片输入绑定
 
-`docs/e2e.md` 写好了步骤，但还没在生产环境真跑过。
-开发环境只能验证协议层（`scripts/replay-protocol.py`），
-验证不了「Codex 读完 AGENTS.md 和 SKILL.md 之后会不会正确使用工具面」——
-那才是端到端真正要看的东西。
+`minimax_h3/i2v` 和 `r2v` 的**节点图里已经有图片输入节点**，但 `_studio.bindings`
+没有把它们暴露出来：
 
-跑完把 `report.json` 带回开发环境分析。
+| 基线 | 图里已有的节点 | 要绑成什么 |
+|---|---|---|
+| `minimax_h3/i2v` | `load_first` / `load_last`（都是 `LoadImage`） | 首帧、尾帧两个入口 |
+| `minimax_h3/r2v` | `load_ref`（`LoadImage`） | 参考图入口 |
+
+现在的后果：提示词包里的 `references` 写了也进不了渲染请求——它只被登记下来，
+不会变成图片喂给模型。**角色卡做出来也没有通道进渲染**，这是画面一致性链条上
+断掉的那一环，见 `docs/prompt-architecture.md` §2.4。
+
+做法：在目标 ComfyUI 上确认这几个 `LoadImage` 节点吃的是什么（文件名？
+先经 `/upload/image` 上传？多节点集群要不要按节点分别传？），把
+`references` 加进 `_studio.bindings`，真机跑通一次再提交。
+**这一项是视觉资产生成（下一条）的硬前置**：卡片做出来进不了渲染就还是纸面计划。
+
+### 导出 `z_image` 的两条基线
+
+视觉资产阶段（角色卡 / 场景卡 / 道具卡）要两条基线，目前一条都没有：
+
+| 用途 | 文件 | 做什么 |
+|---|---|---|
+| 文生图 | `assets/workflows/z_image/t2i.json` | 出主视图 |
+| 参考图生图 | `assets/workflows/z_image/edit.json` | 以主视图为参考图出其余视图 |
+
+**导出要求已经写好**，在 `assets/workflows/z_image/README.md`：要绑哪些参数、
+`_studio` 长什么样、`bindings_verified` 什么时候才能置 true，逐条写死了。
+照着做即可，不需要在这里重复。
+
+同时把 `config/models.toml` 的 `[z_image]` 段填上真实文件名（现在是注释掉的
+占位）。开发环境没有 GPU 也没有 ComfyUI，出不了真机导出，所以这两件事都只能
+在生产机上做。
+
+做完之前 `studio-cli doctor` 会一直报「卡片生成基线未就绪」——那是提醒，
+不是故障：资产计划照样能提交，只是 `status` 一直停在 `planned`、生不出图。
+
+### 视觉资产执行器与首帧图控制点（**先别在没有 GPU 的机器上写**）
+
+设计已经定完，见 `docs/prompt-architecture.md` §6.4 与批次 3、4：
+`trait ImageBackend`（文生图 + 参考图生图）与 `ZImageBackend` 实现、
+主视图先行、逐视图参考图锚定、落盘 `media/assets/`、门改为看图确认，
+以及每镜首帧图的控制点。
+
+**代码没写，是有意的。** 这一块的价值全在真机行为上——尺寸对齐、参考图上传、
+逐视图重试、失败阻塞的判据，在开发环境只能拿假节点测状态流转。
+这份清单最后那条「渲染与后期的真实链路」就是这么来的：代码写完了、
+假执行器测过了、第一次真跑仍然大概率暴露参数细节问题。
+再提前写一套，只是把同一笔债翻倍。
+
+等能连上 ComfyUI 时，把这一条和前面两条**一起做**：导出基线 → 补绑定 →
+写执行器 → 真跑一轮。一轮就能收敛，比分三次各猜一半省事。
+
+`asset_plan` 的 schema、视图词表、结构校验（视图齐全、主视图唯一、
+`derived_from` 指向锚点、同卡画幅一致、身份锁逐字包含）已经在 `studio-core`
+里跑起来了，不需要重做——差的只有执行那一半。
+
+### 端到端跑一次真实 Codex 会话（**render 之后那一半**）
+
+render 之前的六个阶段已经用真实 Codex 会话跑过了（开发环境，`gpt-5.6-sol`）：
+22 次调用 0 失败、修订往返 2 次调用、全程没有绕过 MCP，停在 `preview`
+的 `waiting_on: system`。「Codex 读完 AGENTS.md 和 SKILL.md 之后会不会正确
+使用工具面」这个问题，前六个阶段有答案了。
+
+**render 往后没有。** 那一半要真实 ComfyUI + GPU + ffmpeg，开发环境跑不出真
+信号，顶多验证到「提交后结构化阻塞在 `comfy_unavailable`」。步骤见
+`docs/e2e.md`，跑完把 `report.json` 带回开发环境分析。
 
 ### 渲染与后期的真实链路
 
