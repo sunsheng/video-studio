@@ -130,7 +130,11 @@ struct HeadSpec {
     id: &'static str,
     verified: bool,
     what_for: &'static str,
-    /// `(介质, 上限, 这条介质的输入片段是否已核验)`。空表示这个 head 不接参考。
+    /// `(介质, 上限, 这条介质能不能用)`。空表示这个 head 不接参考。
+    ///
+    /// 「能不能用」= 输入通道验过 **且** 这个 AUTOGROW 槽位真的起作用。
+    /// 两件事：`ref_audios` 的通道验过（audio 锚点跑通了），但挂上去模型
+    /// 不理它——输出里量不到任何影响。所以它是 false 而 `input.audio` 是 true。
     references: &'static [(&'static str, usize, bool)],
     /// 具名的首尾帧槽位，如 `first` / `last`。
     frames: &'static [&'static str],
@@ -181,7 +185,12 @@ const MODEL_CARDS: [ModelCard; 3] = [
                     "把一段帧序列锚在某一帧，比单帧接得更稳。写 `<上一镜>.tail5` 这种带帧数的——\
                      **锚点必须短于这一镜**，等长的会把整镜钉死",
                 ),
-                ("audio", false, "把一段音频锚在某一帧"),
+                (
+                    "audio",
+                    true,
+                    "把一段音频锚在某一帧。实测**影响的是整镜的声音**，不只锚定那一刻——\
+                     拿它给这一镜的声音定调，不要指望它精确对齐到某一帧",
+                ),
             ],
         }),
         prose: include_str!("../assets/models/minimax_h3.md"),
@@ -1493,14 +1502,32 @@ mod tests {
                     h.references.iter().map(|(k, _, _)| k.to_string()).collect();
                 card_kinds.sort();
                 assert_eq!(card_kinds, disk_kinds, "head {} 的参考介质对不上", h.id);
-                for (kind, max, input_ok) in h.references {
-                    let disk_max = slots.unwrap()[*kind]["max"].as_u64().unwrap() as usize;
-                    assert_eq!(disk_max, *max, "head {} 的 {kind} 上限对不上", h.id);
+                // 「能不能用」是两个条件的与：素材进得去（输入片段验过），
+                // 而且进去之后模型真的理它（槽位验过）。ref_audios 就卡在后一条。
+                for (kind, max, usable) in h.references {
+                    let slot = &slots.unwrap()[*kind];
                     assert_eq!(
-                        verified(&meta(&format!("input.{kind}"))),
-                        *input_ok,
-                        "input.{kind} 的核验状态对不上"
+                        slot["max"].as_u64().unwrap() as usize,
+                        *max,
+                        "head {} 的 {kind} 上限对不上",
+                        h.id
                     );
+                    let channel_ok = verified(&meta(&format!("input.{kind}")));
+                    let slot_ok = slot["verified"].as_bool().unwrap_or(true);
+                    assert_eq!(
+                        channel_ok && slot_ok,
+                        *usable,
+                        "head {} 的 {kind} 参考可用状态对不上（通道 {channel_ok} / 槽位 {slot_ok}）",
+                        h.id
+                    );
+                    // 未核验的必须写明原因，否则错误消息里只有一句「原因未记录」。
+                    if !slot_ok {
+                        assert!(
+                            slot["unverified_reason"].is_string(),
+                            "head {} 的 {kind} 槽位没核验却没写原因",
+                            h.id
+                        );
+                    }
                 }
 
                 let mut disk_frames: Vec<String> = m["frames"]

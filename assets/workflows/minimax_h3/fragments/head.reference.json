@@ -88,7 +88,9 @@
       "audio": {
         "target": "h3_ref.inputs.ref_audios",
         "prefix": "ref_audio_",
-        "max": 3
+        "max": 3,
+        "verified": false,
+        "unverified_reason": "真机验过但没生效：1kHz 纯音挂到 ref_audios 上，输出音频里 1kHz 的能量跟邻频持平（比值 0.5–1.9 倍），一点痕迹都没有。接线合法、图能跑、有音轨出来，就是参考没起作用。同一段音频走 audio 锚点则是 4000 倍于邻频，所以不是 LoadAudio 通道的问题。要么这个槽位需要别的输入形态（真实声音而非合成纯音，或者必须配 ref_videos 一起给），要么它对输出的影响本来就很弱。查清楚并真机看到效果之前，不放开。"
       }
     }
   }

@@ -43,7 +43,7 @@
 |---|---|---|
 | `guide.image.json` `guide.clip.json` `guide.audio.json` | `/object_info/MiniMaxH3AddGuide` | ✅ 两个 AddGuide 串联 + 2 张 AUTOGROW 参考，真机图校验通过（2026-09-05） |
 | `input.video.json` | `/object_info` 的 `LoadVideo` + `GetVideoComponents` | ✅ 真机出片，clip 锚点与 video 参考各一镜，画面人眼看过（2026-09-05，见下） |
-| `input.audio.json` | `/object_info/LoadAudio` | ⚠️ `bindings_verified: false`——同上 |
+| `input.audio.json` | `/object_info/LoadAudio` | ✅ 通道已验（audio 锚点真机跑通，2026-09-05，见下）；但 `ref_audios` 槽位单独标着未核验 |
 
 `MiniMaxH3AddGuide` 是新节点（[ComfyUI#15439](https://github.com/Comfy-Org/ComfyUI/pull/15439)），
 现有基线里没有它，所以只能从节点签名构造。但**接线方式是真机验过的**：
@@ -63,8 +63,9 @@ AddGuide **只输出 CONDITIONING**，所以链式时只有 `positive` 串成链
 `bindings_verified: false` 的片段带着 `unavailable_reason`，控制面会拒绝用它们
 渲染——跟未核验的整图基线是同一套规矩。真机跑通一整镜后改成 `true`。
 
-`input.video` 已于 2026-09-05 核验（见下），现在还挂着 false 的只剩
-`input.audio`：独立音频参考和 audio 锚点没在真机上跑通过。
+`input.video` 与 `input.audio` 都已于 2026-09-05 核验（见下）。现在唯一还挂着
+未核验的是 `head.reference` 的 **`ref_audios` 槽位**——它不是片段级的标志位，
+是 AUTOGROW 槽位自己的，因为「素材进得去」和「进去之后模型理不理它」是两件事。
 
 ## video 通道：核验经过（2026-09-05）
 
@@ -84,6 +85,38 @@ AddGuide **只输出 CONDITIONING**，所以链式时只有 `positive` 串成链
 
 教训跟 turbo 那次同源：**机器说"跑完了、有产出"，跟"验的是不是你以为的那件事"
 是两回事。** 这一条写成了 V5 的后半句（锚点必须短于镜头）。
+
+## audio 通道：进得去，但参考那一路没生效（2026-09-05）
+
+音频听不了，所以拿**可判的信号**验：1kHz 纯音，用 Goertzel 量输出里 1kHz
+与邻频（700 / 1400Hz）的能量比。
+
+| 走法 | 1kHz / 邻频 | 结论 |
+|---|---|---|
+| `guide.audio` 锚点 | **~4000 倍** | 素材进去了，而且主导了输出 |
+| `references: kind=audio` | 0.5–1.9 倍 | 一点痕迹都没有 |
+
+参考那条**接线是对的**——从 ComfyUI 的 history 里把提交的图拉出来看过：
+`ref_audios: {"ref_audio_1": ["ref1_load", 0]}`，`ref1_load` 是
+`LoadAudio{audio: "anchor_tone.wav"}`，`audio_vae` 也接了。图能跑、有 1.625 秒
+的 aac 音轨出来，就是模型不理这个参考。
+
+**所以标志位分成了两层。** `input.audio` 的 `bindings_verified` 是 true
+（通道验通了），而 `head.reference` 的 `ref_audios` 槽位单独标 `verified: false`。
+不分开的话只能二选一：要么挡掉已经验通的锚点，要么把没生效的参考说成可用——
+两个都不能接受。
+
+`AutogrowSlot` 因此多了 `verified` / `unverified_reason` 两个字段，
+组装器与提交时的校验都认它，错误消息里明说是「进去了但模型不理」而不是
+「进不去」——两种错的下一步完全不同。
+
+顺带实测到一条给 Agent 的信息：**audio 锚点影响的是整镜的声音**，不只锚定的
+那 0.5 秒——整镜 1.625 秒里 1kHz 都在。所以它是给这一镜的声音定调，不要指望
+它精确对齐到某一帧。这条写进了能力卡。
+
+`ref_audios` 为什么不生效没查清：可能它要真实声音而非合成纯音，可能必须配
+`ref_videos` 一起给，也可能它对输出的影响本来就很弱。查清楚并真机看到效果
+之前，不放开。
 
 ## turbo 叠加层：图校验通过 ≠ 画面是对的
 

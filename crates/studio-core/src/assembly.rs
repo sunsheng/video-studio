@@ -120,6 +120,17 @@ pub struct AutogrowSlot {
     /// 键名前缀，序号从 1 起，例如 `ref_image_`。
     pub prefix: String,
     pub max: usize,
+    /// 这个槽位**真的起作用**验过没有。
+    ///
+    /// 跟输入片段的 `bindings_verified` 是两件事：那个说的是「素材进得去」，
+    /// 这个说的是「进去之后模型理不理它」。`ref_audios` 就是活例子——
+    /// LoadAudio 通道验过了（audio 锚点上 1kHz 纯音在输出里 4000 倍于邻频），
+    /// 但同一段音频挂到 `ref_audios` 上，输出里一点痕迹都没有。接线合法、
+    /// 图能跑、有音轨出来，就是参考没生效。两者不分开的话，只能二选一：
+    /// 要么挡掉已经验通的锚点，要么把没生效的参考说成可用。
+    pub verified: bool,
+    /// 未核验时的原因，用在错误消息里。
+    pub unverified_reason: Option<String>,
 }
 
 /// 一份片段。`nodes` 是节点图的一部分，其余是组装用的元数据。
@@ -259,6 +270,15 @@ impl Fragment {
                                 target: v.get("target")?.as_str()?.to_string(),
                                 prefix: v.get("prefix")?.as_str()?.to_string(),
                                 max: v.get("max")?.as_u64()? as usize,
+                                // 没写就是验过的——绝大多数槽位是从已验证基线切来的。
+                                verified: v
+                                    .get("verified")
+                                    .and_then(|x| x.as_bool())
+                                    .unwrap_or(true),
+                                unverified_reason: v
+                                    .get("unverified_reason")
+                                    .and_then(|x| x.as_str())
+                                    .map(String::from),
                             },
                         ))
                     })
@@ -565,6 +585,16 @@ pub fn assemble_as(
                 ),
             }
         })?;
+        if !slot.verified {
+            return Err(StudioError::ModelContractViolation {
+                detail: format!(
+                    "head「{}」的 {} 类参考槽位尚未核验，不能用来渲染：{}",
+                    head.id,
+                    r.kind.as_str(),
+                    slot.unverified_reason.as_deref().unwrap_or("原因未记录")
+                ),
+            });
+        }
         let input =
             set.inputs
                 .get(r.kind.as_str())
@@ -1003,6 +1033,8 @@ pub(crate) mod tests_support {
                 target: "h3_ref.inputs.ref_images".into(),
                 prefix: "ref_image_".into(),
                 max: 9,
+                verified: true,
+                unverified_reason: None,
             },
         );
         head_ref.autogrow.insert(
@@ -1011,6 +1043,8 @@ pub(crate) mod tests_support {
                 target: "h3_ref.inputs.ref_videos".into(),
                 prefix: "ref_video_".into(),
                 max: 3,
+                verified: true,
+                unverified_reason: None,
             },
         );
         head_ref.autogrow.insert(
@@ -1019,6 +1053,8 @@ pub(crate) mod tests_support {
                 target: "h3_ref.inputs.ref_video_audios".into(),
                 prefix: "ref_video_audio_".into(),
                 max: 3,
+                verified: true,
+                unverified_reason: None,
             },
         );
 
@@ -1584,6 +1620,15 @@ pub fn validate_shot(
         let n = used.entry(r.kind.as_str()).or_insert(0);
         *n += 1;
         match head.autogrow.get(r.kind.as_str()) {
+            Some(slot) if !slot.verified => v.push(Violation::new(
+                at(&format!("references[{i}].kind")),
+                format!(
+                    "head「{}」的 {} 类参考槽位尚未核验（{}），现在选不了。",
+                    head.id,
+                    r.kind.as_str(),
+                    slot.unverified_reason.as_deref().unwrap_or("原因未记录")
+                ),
+            )),
             Some(slot) if *n > slot.max => v.push(Violation::new(
                 at(&format!("references[{i}]")),
                 format!(
@@ -1903,6 +1948,49 @@ mod validation_tests {
             "要列出可用的：{}",
             hit.message
         );
+    }
+
+    /// 未核验的 AUTOGROW 槽位要挡下，而且理由要说清是「进去了但模型不理」，
+    /// 不是「进不去」——两种错的下一步完全不同。
+    #[test]
+    fn an_unverified_autogrow_slot_is_refused_with_its_reason() {
+        let mut set = fragments();
+        let slot = set
+            .heads
+            .get_mut("reference")
+            .unwrap()
+            .autogrow
+            .get_mut("image")
+            .unwrap();
+        slot.verified = false;
+        slot.unverified_reason = Some("挂上去输出里量不到影响".into());
+
+        let mut s = shot("reference");
+        s.references = vec![img_ref("C01")];
+
+        // 提交时就要报，别等到烧 GPU。
+        let v = validate_shot(&set, &s, &assets(), &[], 0);
+        let hit = find(&v, "尚未核验").expect("{v:?}");
+        assert!(hit.message.contains("量不到影响"), "{}", hit.message);
+
+        // 真走到组装也拒绝，不许拼出来。
+        let e = assemble(&set, &s, "m/S01").unwrap_err();
+        assert_eq!(e.code(), "model_contract_violation");
+        assert!(e.message().contains("量不到影响"), "{}", e.message());
+    }
+
+    /// 槽位没写 `verified` 就是验过的——绝大多数是从已验证基线切来的。
+    #[test]
+    fn a_slot_without_an_explicit_flag_counts_as_verified() {
+        let (_, frag) = Fragment::parse(
+            r#"{"h": {"class_type":"X","inputs":{}},
+                "_studio": {"kind":"head","id":"h","bindings_verified":true,
+                  "outputs":{"conditioning":["h",0],"latent":["h",1]},
+                  "autogrow":{"image":{"target":"h.inputs.refs","prefix":"r_","max":9}}}}"#,
+            "test",
+        )
+        .unwrap();
+        assert!(frag.autogrow["image"].verified);
     }
 
     /// V5：等长的锚点会把整镜钉死。

@@ -408,6 +408,118 @@ fn the_video_input_channel_renders_on_a_real_comfyui() {
     }
 }
 
+/// 造一段纯音并传上去。
+///
+/// **用正弦而不是随便什么声音，是为了让结果可判。** 音频听不了，但
+/// 「输出里有没有这个频率」看频谱图就看得出来——锚点有没有真的生效，
+/// 是个能验的问题；「生成的声音好不好听」不是，别假装验了。
+fn upload_tone(env: &Env, name: &str, hz: u32, seconds: f64) -> String {
+    let local = env.bundle.resolve(&format!("media/{name}.wav")).unwrap();
+    let ok = std::process::Command::new("ffmpeg")
+        .args(["-hide_banner", "-v", "error", "-y", "-f", "lavfi", "-i"])
+        .arg(format!(
+            "sine=frequency={hz}:duration={seconds}:sample_rate=44100"
+        ))
+        .args(["-c:a", "pcm_s16le"])
+        .arg(&local)
+        .status()
+        .expect("ffmpeg 起不来");
+    assert!(ok.success(), "造纯音失败");
+    let bytes = std::fs::read(&local).unwrap();
+    env.comfy
+        .upload_image(&format!("{name}.wav"), &bytes)
+        .unwrap_or_else(|e| panic!("纯音（{} 字节）传不上去：{}", bytes.len(), e.message()))
+}
+
+/// audio 通道：**锚点能用，参考不能用**——这条守着这个区别。
+///
+/// 2026-09-05 真机实测（1kHz 纯音，Goertzel 量 1kHz 与邻频的能量比）：
+///
+/// | 走法 | 输出里 1kHz / 邻频 | 结论 |
+/// |---|---|---|
+/// | `guide.audio` 锚点 | ~4000 倍 | 素材进去了，而且主导了输出 |
+/// | `references: kind=audio` | 0.5–1.9 倍 | 一点痕迹都没有 |
+///
+/// 参考那条**接线是对的**（`ref_audios: {"ref_audio_1": [...]}`，`audio_vae`
+/// 也接了，图能跑、有音轨出来），就是模型不理它。所以 `input.audio` 通道
+/// 标为已核验，而 `ref_audios` 槽位单独标 `verified: false`——两者不分开的话
+/// 只能二选一：要么挡掉已经验通的锚点，要么把没生效的参考说成可用。
+///
+/// **这条测试验不了「声音好不好听」**，那要人听。它验的是「素材有没有真的
+/// 进到输出里」，那个用频率能量比是可判的。
+#[test]
+fn audio_anchors_work_but_audio_references_are_still_refused() {
+    let Some(env) = setup() else { return };
+    const LONG_SHOT: i64 = 39;
+
+    // 一、锚点：通道验过了，应当拼得出、跑得完。
+    let tone = upload_tone(&env, "anchor_tone", 1000, 0.5);
+    let mut anchored = base("A01", "reference");
+    anchored.length_frames = LONG_SHOT;
+    anchored.guides = vec![Guide {
+        kind: GuideKind::Audio,
+        at_frame: 0,
+        asset_id: tone.clone(),
+    }];
+    let out = assemble_as(
+        &env.set,
+        &anchored,
+        "real-acceptance/A01",
+        Combination::Standard,
+    )
+    .unwrap_or_else(|e| panic!("audio 锚点组装失败：{}", e.message()));
+    let load = out
+        .graph
+        .as_object()
+        .unwrap()
+        .iter()
+        .find(|(k, _)| k.ends_with("_load"))
+        .expect("图里应当有一个素材加载节点");
+    assert_eq!(
+        load.1["class_type"],
+        json!("LoadAudio"),
+        "走的不是 LoadAudio"
+    );
+
+    let sub = env
+        .comfy
+        .submit(&out.graph, "real-acceptance")
+        .unwrap_or_else(|e| panic!("audio 锚点被判非法：{}", e.message()));
+    let files = env
+        .comfy
+        .wait(&sub)
+        .unwrap_or_else(|e| panic!("audio 锚点执行失败：{}", e.message()));
+    assert!(!files.is_empty(), "audio 锚点跑完却没有产出");
+    eprintln!("✅ audio 锚点（{}）：{} 个产物", sub.prompt_id, files.len());
+
+    // 二、参考：槽位没核验，**必须在组装时就被挡下**，不许拼出来去烧 GPU。
+    let mut with_audio_ref = base("A02", "reference");
+    with_audio_ref.length_frames = LONG_SHOT;
+    with_audio_ref.references = vec![Reference {
+        kind: Medium::Audio,
+        asset_id: tone,
+        with_audio: false,
+    }];
+    let err = assemble_as(
+        &env.set,
+        &with_audio_ref,
+        "real-acceptance/A02",
+        Combination::Standard,
+    )
+    .expect_err("ref_audios 没核验，不该拼得出图");
+    assert_eq!(err.code(), "model_contract_violation");
+    assert!(
+        err.message().contains("尚未核验"),
+        "要说清是没核验：{}",
+        err.message()
+    );
+    assert!(
+        err.message().contains("没生效"),
+        "要说清是「进去了但模型不理」，不是「进不去」：{}",
+        err.message()
+    );
+}
+
 /// 同一份声明组装两次逐字节相同——`studio.retry_stage`（内容没问题，
 /// 原样重跑）靠这条成立，落盘的 debug 请求也靠它对得上。
 #[test]
