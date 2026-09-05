@@ -294,6 +294,7 @@ curl -sS "$HTTPS_PROXY/__agentproxy/status"
 | 探什么 | 怎么探 | 探到了能多跑什么 |
 |---|---|---|
 | ComfyUI | `GET $COMFY_NODE/system_stats`（带 `Authorization: Bearer $COMFY_TOKEN`） | `preview` / `render`，以及 `studio-comfy` 的集成测试 |
+| 集群构成 | 同上——**那一侧是多节点代理时返回的是「节点地址 → 该节点原始 stats」的对象**，`studio-cli doctor` 会把它归并成一行报出来 | 几台、什么卡、多少显存。报验收结论必须带上它 |
 | 模型权重 | `GET $COMFY_NODE/models/<类型>` | 哪个系列能真跑——**节点在 `object_info` 里不等于权重下载了** |
 | 节点类型 | `GET $COMFY_NODE/object_info/<节点类名>` | 某个 workflow 能不能编出来 |
 | ffmpeg / ffprobe | `studio-cli doctor` | `post` / `review` |
@@ -440,7 +441,11 @@ cargo clippy --workspace --all-targets -- -D warnings
 - **ffmpeg / ffprobe：** 探到就跑 `studio-media` 的集成测试
 - **ComfyUI：** 探到就通过 HTTP 跑 `studio-comfy` 的集成测试，以及真实的
   `preview` / `render`。**接入方式是单个 URL**（`COMFY_NODE`）——那一侧通常
-  是个代理，多节点的分发由它负责；需要鉴权就配 `COMFY_TOKEN`
+  是个代理，多节点的分发由它负责；需要鉴权就配 `COMFY_TOKEN`。
+  **代理那一侧是多节点时，`503` 常常只是排队，不是故障**：所有节点都到了
+  并发上限时它会一直排队等，直到调用方自己的 HTTP 客户端超时。
+  `error` 字段是 `no healthy node` 才是集群真的挂了，其他（如
+  `context deadline exceeded`）都是「有节点，只是都在忙」。见 SPEC-0017
 - **Codex：** 探到 Codex CLI 且 `codex doctor` 通过，就用真实 Codex 会话走
   MCP 端到端。能走到第几阶段取决于上面两项探到了什么，见「Codex 验收的
   真实覆盖范围」

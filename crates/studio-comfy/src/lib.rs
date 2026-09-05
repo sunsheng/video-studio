@@ -16,14 +16,34 @@ use serde_json::Value;
 use std::time::{Duration, Instant};
 use studio_core::{Result, StudioError};
 
-/// 一个节点的健康状况。
+/// 一个入口的健康状况。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeHealth {
     pub url: String,
     pub reachable: bool,
-    /// 队列里排着的任务数（运行中 + 等待中）。选节点时越小越优先。
+    /// 队列里排着的任务数（运行中 + 等待中）。
+    ///
+    /// 入口那一侧是多节点代理时，这是**所有在线节点合并**的深度。
+    /// `unreachable_nodes` 非空时它只是部分视图。
     pub queue_depth: usize,
     pub detail: Option<String>,
+    /// 代理报的失联节点（`X-Comfy-Unreachable-Nodes`）。空表示视图完整。
+    ///
+    /// **部分节点失联时 `/queue` 仍返回 200**，只是结果里少了那几台。
+    /// 不读这个头，八台里挂了三台时我们报的仍然是干净的「可达，队列深度 N」
+    /// ——机器说成功了，但成功的不是你以为的那件事。
+    #[serde(default)]
+    pub unreachable_nodes: Vec<String>,
+}
+
+/// 集群里的一个节点，取自 `/system_stats`。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClusterNode {
+    /// 节点地址，形如 `host:port`。代理内部的标识，不是我们能直连的地址。
+    pub address: String,
+    pub device: Option<String>,
+    pub vram_total_bytes: u64,
+    pub vram_free_bytes: u64,
 }
 
 /// 一次提交的结果。
@@ -165,28 +185,71 @@ impl Comfy {
 
     /// 探活。不可达不是错误，只是不可用。
     pub fn health(&self) -> NodeHealth {
+        let bad = |detail: String| NodeHealth {
+            url: self.node.clone(),
+            reachable: false,
+            queue_depth: usize::MAX,
+            detail: Some(detail),
+            unreachable_nodes: Vec::new(),
+        };
         match self.get(&format!("{}/queue", self.node)).call() {
-            Ok(resp) => match resp.into_json::<Value>() {
-                Ok(v) => NodeHealth {
-                    url: self.node.clone(),
-                    reachable: true,
-                    queue_depth: queue_depth(&v),
-                    detail: None,
-                },
-                Err(e) => NodeHealth {
-                    url: self.node.clone(),
-                    reachable: false,
-                    queue_depth: usize::MAX,
-                    detail: Some(format!("返回不是 JSON：{e}")),
-                },
-            },
-            Err(e) => NodeHealth {
-                url: self.node.clone(),
-                reachable: false,
-                queue_depth: usize::MAX,
-                detail: Some(short_error(e)),
-            },
+            Ok(resp) => {
+                // 头要在 into_json 之前读——那个调用会把响应吃掉。
+                let unreachable = unreachable_nodes(&resp);
+                match resp.into_json::<Value>() {
+                    Ok(v) => NodeHealth {
+                        url: self.node.clone(),
+                        reachable: true,
+                        queue_depth: queue_depth(&v),
+                        detail: (!unreachable.is_empty()).then(|| {
+                            format!(
+                                "{} 个节点失联（{}），队列深度只是在线节点的部分视图",
+                                unreachable.len(),
+                                unreachable.join("、")
+                            )
+                        }),
+                        unreachable_nodes: unreachable,
+                    },
+                    Err(e) => bad(format!("返回不是 JSON：{e}")),
+                }
+            }
+            Err(e) => bad(short_error(e)),
         }
+    }
+
+    /// 集群构成。**探到什么就报什么**——CLAUDE.md 那条「不得声称集成通过而
+    /// 不说明当时探到了什么」的直接落实。
+    ///
+    /// 多节点代理的 `/system_stats` 返回以节点地址为 key 的对象，每个 value
+    /// 是那台节点原始的 `/system_stats`。拿不到不算错误：它只是描述性信息，
+    /// `/queue` 能通就说明能干活。
+    pub fn cluster(&self) -> Vec<ClusterNode> {
+        let Ok(resp) = self.get(&format!("{}/system_stats", self.node)).call() else {
+            return Vec::new();
+        };
+        let Ok(v) = resp.into_json::<Value>() else {
+            return Vec::new();
+        };
+        let Some(obj) = v.as_object() else {
+            return Vec::new();
+        };
+        // 直连一台 ComfyUI 时返回的是 `{"system":…,"devices":[…]}`，
+        // 没有以地址为 key 的那一层——那种形状这里读不出节点，返回空即可，
+        // 不要硬凑一个假的「1 个节点」。
+        let mut out: Vec<ClusterNode> = obj
+            .iter()
+            .filter_map(|(address, stats)| {
+                let dev = stats.get("devices")?.as_array()?.first()?;
+                Some(ClusterNode {
+                    address: address.clone(),
+                    device: dev.get("name").and_then(|n| n.as_str()).map(String::from),
+                    vram_total_bytes: dev.get("vram_total").and_then(|n| n.as_u64()).unwrap_or(0),
+                    vram_free_bytes: dev.get("vram_free").and_then(|n| n.as_u64()).unwrap_or(0),
+                })
+            })
+            .collect();
+        out.sort_by(|a, b| a.address.cmp(&b.address));
+        out
     }
 
     /// 确认入口活着。不活就结构化阻塞，**不降级**。
@@ -583,6 +646,17 @@ fn classify(e: ureq::Error) -> Failure {
     }
 }
 
+/// 读 `X-Comfy-Unreachable-Nodes`：逗号分隔的节点地址，没有这个头就是空。
+fn unreachable_nodes(resp: &ureq::Response) -> Vec<String> {
+    resp.header("X-Comfy-Unreachable-Nodes")
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .collect()
+}
+
 fn short_error(e: ureq::Error) -> String {
     classify(e).detail().to_string()
 }
@@ -866,6 +940,108 @@ mod tests {
         let s = scripted_stub(vec![(code, body.to_string())]);
         let c = Comfy::new(s.url.clone(), None, 5, 1);
         classify(c.get(&format!("{}/queue", s.url)).call().unwrap_err())
+    }
+
+    /// 一个带自定义响应头的桩。代理靠这些头表达「结果不完整」，
+    /// 而状态码仍然是 200——只看状态码会把部分视图当成完整视图。
+    fn stub_with_headers(headers: Vec<(&'static str, &'static str)>, body: &'static str) -> Stub {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = std::thread::spawn(move || {
+            for stream in listener.incoming().take(16) {
+                let Ok(mut stream) = stream else { continue };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                if reader.read_line(&mut line).is_err() {
+                    continue;
+                }
+                let extra: String = headers
+                    .iter()
+                    .map(|(k, v)| format!("{k}: {v}\r\n"))
+                    .collect();
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n{extra}\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(resp.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+        Stub {
+            url: format!("http://127.0.0.1:{port}"),
+            _handle: handle,
+        }
+    }
+
+    /// **部分节点失联时 `/queue` 仍是 200。** 不读那个头，八台里挂了三台
+    /// 我们报的仍然是干净的「可达，队列深度 N」——机器说成功了，
+    /// 但成功的不是你以为的那件事。
+    #[test]
+    fn a_partial_cluster_view_is_reported_as_partial() {
+        let s = stub_with_headers(
+            vec![("X-Comfy-Unreachable-Nodes", "a:9002, b:9003")],
+            r#"{"queue_running":[],"queue_pending":[]}"#,
+        );
+        let c = Comfy::new(s.url.clone(), None, 5, 1);
+        let h = c.health();
+        assert!(h.reachable, "还有在线节点，仍然能干活");
+        assert_eq!(h.unreachable_nodes, vec!["a:9002", "b:9003"]);
+        assert!(
+            h.detail.as_deref().unwrap_or_default().contains("部分视图"),
+            "队列深度是部分视图这件事要说出来：{:?}",
+            h.detail
+        );
+    }
+
+    /// 全都健康时那个头不出现，不该无中生有。
+    #[test]
+    fn a_complete_cluster_view_reports_no_missing_nodes() {
+        let s = stub(vec![(
+            "/queue",
+            json!({ "queue_running": [], "queue_pending": [] }),
+        )]);
+        let c = Comfy::new(s.url.clone(), None, 5, 1);
+        let h = c.health();
+        assert!(h.reachable);
+        assert!(h.unreachable_nodes.is_empty());
+        assert!(h.detail.is_none(), "没有失联节点就不该有额外说明");
+    }
+
+    /// `/system_stats` 在代理后面是以节点地址为 key 的对象。
+    #[test]
+    fn the_cluster_is_read_from_the_per_node_system_stats() {
+        let s = stub(vec![(
+            "/system_stats",
+            json!({
+                "host:9002": { "devices": [
+                    { "name": "NVIDIA A800 80GB PCIe", "vram_total": 85_899_345_920u64,
+                      "vram_free": 84_000_000_000u64 }] },
+                "host:9001": { "devices": [
+                    { "name": "NVIDIA A800 80GB PCIe", "vram_total": 85_899_345_920u64,
+                      "vram_free": 84_000_000_000u64 }] },
+            }),
+        )]);
+        let c = Comfy::new(s.url.clone(), None, 5, 1);
+        let nodes = c.cluster();
+        assert_eq!(nodes.len(), 2);
+        // 按地址排序，输出稳定。
+        assert_eq!(nodes[0].address, "host:9001");
+        assert_eq!(nodes[0].device.as_deref(), Some("NVIDIA A800 80GB PCIe"));
+        assert_eq!(nodes[0].vram_total_bytes / (1 << 30), 80);
+    }
+
+    /// 直连一台 ComfyUI 时 `/system_stats` 没有以地址为 key 的那一层。
+    /// **读不出来就返回空，不要硬凑一个假的「1 个节点」。**
+    #[test]
+    fn a_direct_comfyui_reports_no_cluster_rather_than_a_fake_one() {
+        let s = stub(vec![(
+            "/system_stats",
+            json!({ "system": { "os": "linux" }, "devices": [{ "name": "cuda:0" }] }),
+        )]);
+        let c = Comfy::new(s.url.clone(), None, 5, 1);
+        assert!(c.cluster().is_empty());
     }
 
     /// **排队不是失败。** 八台节点都在忙时代理回 503，退一会儿再来就成了。

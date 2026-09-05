@@ -38,6 +38,43 @@ pub struct Report {
     pub node: NodeHealth,
 }
 
+/// 把集群按「同型号同显存」归并成一句话。
+///
+/// 八台一模一样的机器逐台铺开是没人读的。归并之后既短又没丢信息——
+/// 异构集群会自然分成几组，而那正是需要被看见的情况。
+fn describe_cluster(nodes: &[studio_comfy::ClusterNode]) -> String {
+    let mut groups: Vec<(String, u64, usize)> = Vec::new();
+    for n in nodes {
+        // 「cuda:0 NVIDIA A800 80GB PCIe : cudaMallocAsync」里，分配器那半截
+        // 跟「这台机器能跑什么」无关，砍掉。
+        let name = n
+            .device
+            .as_deref()
+            .unwrap_or("未知设备")
+            .split(" : ")
+            .next()
+            .unwrap_or("未知设备")
+            .trim()
+            .to_string();
+        let gib = n.vram_total_bytes / (1 << 30);
+        match groups.iter_mut().find(|(d, g, _)| *d == name && *g == gib) {
+            Some((_, _, count)) => *count += 1,
+            None => groups.push((name, gib, 1)),
+        }
+    }
+    groups
+        .iter()
+        .map(|(device, gib, count)| {
+            if *count == 1 {
+                format!("{device}（{gib} GiB）")
+            } else {
+                format!("{device} × {count}（每台 {gib} GiB）")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("；")
+}
+
 pub fn run(program_dir: Option<&std::path::Path>, bundle: Option<&std::path::Path>) -> Report {
     let settings = Settings::load(program_dir, bundle);
     let media = Media::new(&settings);
@@ -80,11 +117,39 @@ pub fn run(program_dir: Option<&std::path::Path>, bundle: Option<&std::path::Pat
     let comfy = Comfy::from_settings(&settings);
     let node = comfy.health();
     if node.reachable {
+        // **探到什么就报什么。** CLAUDE.md 要求「不得声称集成通过而不说明
+        // 当时探到了什么」——只说一句「可达」，下一个人无从判断那次验收
+        // 覆盖了多少。入口那一侧是多节点代理时，构成能一次问出来。
+        let cluster = comfy.cluster();
+        let mut detail = format!("{} 可达，队列深度 {}", node.url, node.queue_depth);
+        if !cluster.is_empty() {
+            detail.push_str(&format!(
+                "\n         {} 个节点：{}",
+                cluster.len(),
+                describe_cluster(&cluster)
+            ));
+        }
+        if !node.unreachable_nodes.is_empty() {
+            detail.push_str(&format!(
+                "\n         {} 个节点失联：{}——上面的队列深度只是在线节点的部分视图",
+                node.unreachable_nodes.len(),
+                node.unreachable_nodes.join("、")
+            ));
+        }
         checks.push(Check {
             name: "ComfyUI".into(),
-            level: Level::Ok,
-            detail: format!("{} 可达，队列深度 {}", node.url, node.queue_depth),
-            remedy: None,
+            // 有节点失联时仍然能干活，但不能让它看起来一切正常。
+            level: if node.unreachable_nodes.is_empty() {
+                Level::Ok
+            } else {
+                Level::Warn
+            },
+            detail,
+            remedy: (!node.unreachable_nodes.is_empty()).then(|| {
+                "还有在线节点，渲染照常，只是吞吐降了。\n  \
+                 失联是代理那一侧的事，本机无需改配置；持续失联请找运维。"
+                    .to_string()
+            }),
         });
     } else {
         checks.push(Check {
@@ -402,6 +467,54 @@ pub fn render(report: &Report) -> String {
 }
 
 #[cfg(test)]
+mod cluster_tests {
+    use super::describe_cluster;
+    use studio_comfy::ClusterNode;
+
+    fn node(addr: &str, device: &str, gib: u64) -> ClusterNode {
+        ClusterNode {
+            address: addr.into(),
+            device: Some(device.into()),
+            vram_total_bytes: gib * (1 << 30),
+            vram_free_bytes: gib * (1 << 30),
+        }
+    }
+
+    /// 八台一模一样的机器归并成一句，并且砍掉分配器那半截——
+    /// 「: cudaMallocAsync」跟「这台机器能跑什么」无关。
+    #[test]
+    fn identical_nodes_collapse_into_one_line() {
+        let nodes: Vec<_> = (1..=8)
+            .map(|i| {
+                node(
+                    &format!("h:900{i}"),
+                    "cuda:0 NVIDIA A800 80GB PCIe : cudaMallocAsync",
+                    79,
+                )
+            })
+            .collect();
+        assert_eq!(
+            describe_cluster(&nodes),
+            "cuda:0 NVIDIA A800 80GB PCIe × 8（每台 79 GiB）"
+        );
+    }
+
+    /// **异构集群才是这个函数真正要覆盖的情况**：归并不能把差异抹掉，
+    /// 否则「有两台只有 24G」这种会决定跑不跑得动的事实就看不见了。
+    #[test]
+    fn a_heterogeneous_cluster_keeps_its_groups_visible() {
+        let nodes = vec![
+            node("h:9001", "NVIDIA A800 80GB PCIe", 79),
+            node("h:9002", "NVIDIA A800 80GB PCIe", 79),
+            node("h:9003", "NVIDIA RTX 4090", 23),
+        ];
+        let s = describe_cluster(&nodes);
+        assert!(s.contains("NVIDIA A800 80GB PCIe × 2"), "{s}");
+        assert!(s.contains("NVIDIA RTX 4090（23 GiB）"), "{s}");
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Write;
@@ -565,6 +678,7 @@ mod tests {
                 reachable: false,
                 queue_depth: usize::MAX,
                 detail: None,
+                unreachable_nodes: Vec::new(),
             },
         };
         let text = render(&report);
@@ -591,6 +705,7 @@ mod tests {
                 reachable: false,
                 queue_depth: usize::MAX,
                 detail: None,
+                unreachable_nodes: Vec::new(),
             },
         };
         assert!(render(&warn_only).contains("现在就可以开始创作"));
@@ -606,6 +721,7 @@ mod tests {
                 reachable: false,
                 queue_depth: usize::MAX,
                 detail: None,
+                unreachable_nodes: Vec::new(),
             },
         };
         assert!(render(&clean).contains("全流程就绪"));
