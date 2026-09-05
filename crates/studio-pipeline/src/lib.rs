@@ -116,31 +116,75 @@ fn delivery_dims(aspect: &str, src_w: i64, src_h: i64) -> (i64, i64) {
     if src_w <= 0 || src_h <= 0 {
         return (DELIVERY_SHORT_EDGE, DELIVERY_SHORT_EDGE);
     }
-    let src_short = src_w.min(src_h);
-    let short = src_short.max(DELIVERY_SHORT_EDGE);
-
+    let short = src_w.min(src_h).max(DELIVERY_SHORT_EDGE);
     // `W:H` 解析得出来才用它，否则按素材自己的比例走。
-    let ratio = aspect
-        .split_once(':')
-        .and_then(|(a, b)| Some((a.trim().parse::<f64>().ok()?, b.trim().parse::<f64>().ok()?)))
-        .filter(|(a, b)| *a > 0.0 && *b > 0.0);
-    let (rw, rh) = match ratio {
-        Some(v) => v,
-        None => return scale_to_short_edge(src_w, src_h, short),
-    };
+    match ratio_dims(aspect, short, 2) {
+        Some(d) => d,
+        None => scale_to_short_edge(src_w, src_h, short),
+    }
+}
 
-    let (mut w, mut h) = if rw <= rh {
-        (short, (short as f64 * rh / rw).round() as i64)
+/// 卡片生成的两条基线，见 `assets/workflows/flux2_dev/README.md`。
+const CARD_T2I: &str = "flux2_dev/t2i";
+const CARD_MULTIREF: &str = "flux2_dev/multiref_edit";
+
+/// 由卡与视图的名字定出的 seed。
+///
+/// **不用随机数**：`retry_stage` 要能原样重跑，随机 seed 会让重跑出来的卡片
+/// 跟前面已定稿的对不上。同一张卡的不同视图 seed 不同——同一个 seed 配不同
+/// 提示词反而容易出同一个姿势。
+/// 在视图的 `provenance` 上记一条「它当不了后面的参考」。
+///
+/// **不用 `view["provenance"][k] = v` 那种下标赋值。** `provenance` 是 Agent
+/// 也能写的字段，它要是提交了个字符串上来，下标赋值会直接 panic 掉这个
+/// worker 线程——控制面不该被一份畸形的提交搞崩。这里遇到非对象就整个换掉。
+fn mark_reference_unusable(view: &mut Value, why: &str) {
+    if !view["provenance"].is_object() {
+        view["provenance"] = json!({});
+    }
+    view["provenance"]["reference_upload_error"] = json!(why);
+}
+
+fn stable_seed(card_id: &str, view: &str) -> i64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in card_id
+        .bytes()
+        .chain(b".".iter().copied())
+        .chain(view.bytes())
+    {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x1000_0000_01b3);
+    }
+    (h % 1_000_000_007) as i64
+}
+
+/// 卡片的短边。卡片是喂给 R2V 的参考素材，跟成片的原生画布同一档就够——
+/// 再大也会被 `ref_image_size: "match"` 缩回去。
+const CARD_SHORT_EDGE: i64 = 768;
+
+/// 一张卡片视图要出多大。`aspect` 解析不出来就退成方图——卡片宁可方，
+/// 也不要按一个猜出来的比例出成横竖不分的东西。
+fn card_dims(aspect: &str) -> (i64, i64) {
+    ratio_dims(aspect, CARD_SHORT_EDGE, 16).unwrap_or((CARD_SHORT_EDGE, CARD_SHORT_EDGE))
+}
+
+/// 按 `W:H` 算短边为 `short` 的宽高，两边向下取到 `grid` 的倍数。
+///
+/// `grid` 是 2（视频编码要偶数）或 16（扩散模型的画布网格）。解析不出
+/// `W:H` 返回 `None`，由调用方决定退到哪里去——**不在这里瞎猜一个比例**。
+fn ratio_dims(aspect: &str, short: i64, grid: i64) -> Option<(i64, i64)> {
+    let (a, b) = aspect.split_once(':')?;
+    let (rw, rh) = (a.trim().parse::<f64>().ok()?, b.trim().parse::<f64>().ok()?);
+    if rw <= 0.0 || rh <= 0.0 {
+        return None;
+    }
+    let long = (short as f64 * rw.max(rh) / rw.min(rh)).round() as i64;
+    let snap = |v: i64| (v / grid).max(1) * grid;
+    Some(if rw <= rh {
+        (snap(short), snap(long))
     } else {
-        ((short as f64 * rw / rh).round() as i64, short)
-    };
-    if w % 2 != 0 {
-        w += 1;
-    }
-    if h % 2 != 0 {
-        h += 1;
-    }
-    (w, h)
+        (snap(long), snap(short))
+    })
 }
 
 pub struct Pipeline {
@@ -165,6 +209,7 @@ impl Pipeline {
 impl StageExecutor for Pipeline {
     fn execute(&self, stage: StageId, ctx: &ExecContext<'_>) -> Result<Outputs> {
         match stage {
+            StageId::VisualAssets => self.visual_assets(ctx),
             StageId::Preview => self.preview(ctx),
             StageId::Render => self.render(ctx),
             StageId::Post => self.post(ctx),
@@ -178,8 +223,41 @@ impl StageExecutor for Pipeline {
     /// preview 执行完不直接判过，用这份文案挂起等确认；确认后才轮到
     /// 花钱的正式渲染。revise 一律退回 prompt_pack——preview 自己不产出
     /// 独立内容，问题只可能出在 prompt_pack 决定的内容上。
+    /// `visual_assets` 的计划里还有没生成的视图，**并且这台机器出得了卡片**，
+    /// 才轮到控制面。
+    ///
+    /// 判据放在这里而不是引擎里：「执行过没有」只有产物自己说得清。
+    /// 已经 `ready` / `failed` 的不再重跑——`retry_stage` 之后接着做剩下的，
+    /// 不会把前面几分钟的 GPU 时间白扔。
+    ///
+    /// **没有卡片基线时退回「只提交计划」**，跟以前一样。这不是静默降级：
+    /// 「计划能提交」和「图能生出来」本来就是两件事，`studio-cli doctor`
+    /// 的「卡片生成基线」那一项专门把它说清楚（它有意不是 Fail 级）。
+    /// 硬要在没有后端的机器上阻塞，前九个阶段就全都走不了了。
+    fn needs_execution(&self, stage: StageId, outputs: &Outputs) -> bool {
+        stage == StageId::VisualAssets
+            && self.card_backend_ready()
+            && outputs[stage.output_key()]["assets"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .flat_map(|c| c["views"].as_array().into_iter().flatten())
+                .any(|v| !matches!(v["status"].as_str(), Some("ready") | Some("failed")))
+    }
+
     fn gate_confirmation(&self, stage: StageId) -> Option<Confirmation> {
         match stage {
+            StageId::VisualAssets => Some(Confirmation {
+                prompt: "卡片已经生成，落在 media/assets/ 下。\
+                         打开看一眼：同一张卡的几个视图是不是同一个人/同一处场景？\
+                         身份漂了就退回重出，别带着漂移往下走——后面每一镜都拿它当参考。"
+                    .to_string(),
+                selection_type: SelectionType::Single,
+                options: vec![
+                    AnswerOption::new("approve", "卡片对，继续"),
+                    AnswerOption::revise("revise", "卡片不对，退回重出"),
+                ],
+            }),
             StageId::Preview => Some(Confirmation {
                 prompt: "480p 预览已生成，构图与内容是否符合预期？确认后开始正式 1080p 渲染。"
                     .to_string(),
@@ -681,6 +759,13 @@ impl Pipeline {
         Ok(out.graph)
     }
 
+    /// 卡片的两条基线在不在、核验过没有。
+    fn card_backend_ready(&self) -> bool {
+        [CARD_T2I, CARD_MULTIREF]
+            .iter()
+            .all(|n| Workflow::load(&self.baselines, n).is_ok_and(|w| w.is_verified()))
+    }
+
     /// 这个系列的片段库，没有就说明它走整图基线。
     fn fragment_set(&self, family: &str) -> Option<FragmentSet> {
         let set = load_fragment_set(&self.baselines.join(family).join("fragments"))?;
@@ -762,6 +847,351 @@ impl Pipeline {
                 })
             }
         })
+    }
+
+    /// 把资产计划里的每个视图真的生成出来。
+    ///
+    /// **卡与卡之间互不依赖 → 可以并发；卡内视图必须串行**——第 N 个视图要拿
+    /// 前面已定稿的当参考图（累积锁定），前面没出来就没得挂。
+    ///
+    /// 一个视图失败只把它自己标 `failed` 并附原因，同卡后面的视图继续跑：
+    /// 一张没出来不该让前面几分钟的 GPU 时间白扔。整份计划一个都没成才让
+    /// 阶段红——那多半是 ComfyUI 或基线出了问题，不是内容问题。
+    fn visual_assets(&self, ctx: &ExecContext<'_>) -> Result<Outputs> {
+        let mut plan = need(
+            &ctx.inputs,
+            StageId::VisualAssets.output_key(),
+            StageId::VisualAssets,
+        )?
+        .clone();
+
+        let t2i = ctx
+            .step("load_card_baseline")
+            .with("workflow", json!(CARD_T2I))
+            .done(Workflow::load(&self.baselines, CARD_T2I).and_then(|w| {
+                w.require_verified()?;
+                Ok(w)
+            }))?;
+        let multiref = ctx
+            .step("load_card_baseline")
+            .with("workflow", json!(CARD_MULTIREF))
+            .done(
+                Workflow::load(&self.baselines, CARD_MULTIREF).and_then(|w| {
+                    w.require_verified()?;
+                    Ok(w)
+                }),
+            )?;
+
+        let comfy = Comfy::from_settings(ctx.settings);
+        comfy.ensure_reachable()?;
+
+        let cards = plan["assets"]
+            .as_array()
+            .ok_or_else(|| StudioError::internal("资产计划里没有 assets"))?
+            .clone();
+        let total: usize = cards
+            .iter()
+            .map(|c| c["views"].as_array().map(|v| v.len()).unwrap_or(0))
+            .sum();
+        ctx.say(format!("生成 {} 张卡、{total} 个视图", cards.len()));
+
+        // 每张卡的结果：视图下标 → 回填好的那个视图
+        let done: Mutex<BTreeMap<usize, Vec<Value>>> = Mutex::new(BTreeMap::new());
+        let queue: Mutex<VecDeque<usize>> = Mutex::new((0..cards.len()).collect());
+        let failure: Mutex<Option<StudioError>> = Mutex::new(None);
+        let workers = ctx.settings.comfy_concurrency().min(cards.len().max(1));
+
+        std::thread::scope(|scope| {
+            for _ in 0..workers {
+                let (queue, done, failure, comfy, cards) =
+                    (&queue, &done, &failure, &comfy, &cards);
+                let (t2i, multiref) = (&t2i, &multiref);
+                scope.spawn(move || loop {
+                    if ctx.is_cancelled() || failure.lock().unwrap().is_some() {
+                        return;
+                    }
+                    let Some(i) = queue.lock().unwrap().pop_front() else {
+                        return;
+                    };
+                    match self.generate_card(ctx, comfy, t2i, multiref, &cards[i]) {
+                        Ok(views) => {
+                            done.lock().unwrap().insert(i, views);
+                        }
+                        Err(e) => {
+                            let mut f = failure.lock().unwrap();
+                            if f.is_none() {
+                                *f = Some(e);
+                            }
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+
+        if let Some(e) = failure.into_inner().unwrap() {
+            return Err(e);
+        }
+        if ctx.is_cancelled() {
+            return Err(StudioError::internal("卡片生成被中断"));
+        }
+
+        let mut done = done.into_inner().unwrap();
+        let mut ready = 0usize;
+        // 没出来的：(卡.视图, 原因)。用来拼阻塞信息，人和 Agent 都得看得懂。
+        let mut broken: Vec<String> = Vec::new();
+        for (i, card) in plan["assets"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .enumerate()
+        {
+            let card_id = card["asset_id"].as_str().unwrap_or("card").to_string();
+            if let Some(views) = done.remove(&i) {
+                for v in &views {
+                    let name = v["view"].as_str().unwrap_or("view");
+                    match v["status"].as_str() {
+                        Some("ready") => {
+                            ready += 1;
+                            // 图出来了但传不回去：它自己交付得了，却当不了后面的锚点。
+                            // 不算 ready 就放过——下一轮 retry 还是会卡在同一处。
+                            if let Some(why) = v["provenance"]["reference_upload_error"].as_str() {
+                                broken.push(format!("{card_id}.{name}：{why}"));
+                            }
+                        }
+                        _ => {
+                            let why = v["provenance"]["error"].as_str().unwrap_or("原因没记下来");
+                            broken.push(format!("{card_id}.{name}：{why}"));
+                        }
+                    }
+                }
+                card["views"] = Value::Array(views);
+            }
+        }
+
+        // **部分 ready、部分 failed 一律不放行。** 缺视图的卡片锁不住身份，
+        // 等于没有；放过去的代价是下游拿着一套不自洽的参考一路绿到交付，
+        // 等渲染烧完 GPU 才发现。retry_stage 会跳过已经 ready 的，只补没成的。
+        if !broken.is_empty() {
+            return Err(StudioError::ComfyFailed {
+                node: comfy.node().to_string(),
+                detail: format!(
+                    "{total} 个视图里 {ready} 个出了图，{} 个不达标\
+                     （没生成出来，或者生成了却当不了后面的参考）：{}",
+                    broken.len(),
+                    broken.join("｜")
+                ),
+            });
+        }
+        ctx.say(format!("卡片生成完成：{ready} 个视图全部就绪"));
+
+        let mut out = Outputs::new();
+        out.insert(StageId::VisualAssets.output_key().to_string(), plan);
+        Ok(out)
+    }
+
+    /// 一张卡：主视图先出，其余按顺序拿前面已定稿的当参考。
+    fn generate_card(
+        &self,
+        ctx: &ExecContext<'_>,
+        comfy: &Comfy,
+        t2i: &Workflow,
+        multiref: &Workflow,
+        card: &Value,
+    ) -> Result<Vec<Value>> {
+        let card_id = card["asset_id"].as_str().unwrap_or("card").to_string();
+        let identity = card["identity_prompt"].as_str().unwrap_or_default();
+        let views = card["views"].as_array().cloned().unwrap_or_default();
+
+        // 视图名 → 已经生成好的那张图在 ComfyUI 那侧的文件名
+        let mut uploaded: BTreeMap<String, String> = BTreeMap::new();
+        // 视图名 → 它为什么当不了参考。
+        //
+        // **「没生成出来」和「生成了但传不回去」必须分开记。** 这两条的排查方向
+        // 完全相反，而下游看到的现象是同一个「缺参考图」。2026-09-05 的端到端就
+        // 栽在这里：锚点图出来了、落盘了、status 是 ready，只是上传超时，于是
+        // 后面五个视图全报「参考图还没生成出来」——一句与事实相反的话。
+        let mut unusable: BTreeMap<String, String> = BTreeMap::new();
+        let mut out = Vec::with_capacity(views.len());
+
+        for view in views {
+            let mut view = view;
+            let name = view["view"].as_str().unwrap_or("view").to_string();
+            // 已经出过的不重跑——retry_stage 之后接着做剩下的。
+            if view["status"].as_str() == Some("ready") {
+                let why = match view["path"].as_str().map(String::from) {
+                    Some(p) => match self.upload_view(ctx, comfy, &card_id, &name, &p) {
+                        Ok(remote) => {
+                            uploaded.insert(name.clone(), remote);
+                            None
+                        }
+                        Err(e) => Some(format!("图在磁盘上，但传不回 ComfyUI：{}", e.message())),
+                    },
+                    // 标着 ready 却没有 path。控制面自己回填的一定两样都有，
+                    // 所以这是 Agent 提交时自己写了 ready——它没生成过这张图。
+                    None => Some("标着 ready 却没有 path：这张图从来没有被生成过".to_string()),
+                };
+                if let Some(why) = why {
+                    ctx.say(format!("{card_id}.{name} {why}"));
+                    mark_reference_unusable(&mut view, &why);
+                    unusable.insert(name.clone(), why);
+                }
+                out.push(view);
+                continue;
+            }
+
+            // 参考必须全都在场。**少一张就报错，不能悄悄退回无参考的那条路**——
+            // 退回去出来的是个「长得像但不是同一个人」，而且一路绿到交付。
+            let want: Vec<String> = view["derived_from"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|d| d.as_str())
+                .map(String::from)
+                .collect();
+            let missing: Vec<String> = want
+                .iter()
+                .filter(|d| !uploaded.contains_key(d.as_str()))
+                .map(|d| match unusable.get(d) {
+                    Some(why) => format!("{d}（{why}）"),
+                    None => format!("{d}（这张卡里没有这个视图，或者它排在本视图后面）"),
+                })
+                .collect();
+            if !missing.is_empty() {
+                ctx.say(format!("{card_id}.{name} 缺参考图：{}", missing.join("；")));
+                let why = format!(
+                    "拿不到参考图 {}。没有锚点就不生成——\
+                     退回无参考出来的是长得像但不是同一个人",
+                    missing.join("；")
+                );
+                view["status"] = json!("failed");
+                view["provenance"] = json!({ "error": why.clone() });
+                unusable.insert(name.clone(), why);
+                out.push(view);
+                continue;
+            }
+            let refs: Vec<String> = want.iter().map(|d| uploaded[d].clone()).collect();
+            let (w, h) = card_dims(view["aspect"].as_str().unwrap_or("9:16"));
+            let prompt = view["prompt"].as_str().unwrap_or(identity).to_string();
+            let seed = stable_seed(&card_id, &name);
+
+            let mut params = Map::new();
+            params.insert("positive".into(), json!(prompt));
+            params.insert("width".into(), json!(w));
+            params.insert("height".into(), json!(h));
+            params.insert("seed".into(), json!(seed));
+            params.insert(
+                "output_prefix".into(),
+                json!(format!("studio/cards/{card_id}/{name}")),
+            );
+
+            let (wf, backend) = if refs.is_empty() {
+                (t2i, CARD_T2I)
+            } else {
+                (multiref, CARD_MULTIREF)
+            };
+            let attempt = self.generate_view(
+                ctx,
+                comfy,
+                wf,
+                &params,
+                &refs,
+                &card_id,
+                &name,
+                (w, h),
+                backend,
+            );
+            match attempt {
+                Ok(rel) => {
+                    let mut prov = json!({
+                        "backend": backend,
+                        "width": w, "height": h, "seed": seed,
+                        "references": view["derived_from"].clone(),
+                    });
+                    match self.upload_view(ctx, comfy, &card_id, &name, &rel) {
+                        Ok(remote) => {
+                            uploaded.insert(name.clone(), remote);
+                        }
+                        Err(e) => {
+                            let why = format!("图在磁盘上，但传不回 ComfyUI：{}", e.message());
+                            ctx.say(format!("{card_id}.{name} {why}"));
+                            prov["reference_upload_error"] = json!(why);
+                            unusable.insert(name.clone(), why);
+                        }
+                    }
+                    view["status"] = json!("ready");
+                    view["path"] = json!(rel);
+                    view["provenance"] = prov;
+                }
+                Err(e) => {
+                    // 这一张没出来，同卡后面的继续——它们照样能拿更前面的当参考。
+                    let why = format!("没生成出来：{}", e.message());
+                    ctx.say(format!("{card_id}.{name} {why}"));
+                    view["status"] = json!("failed");
+                    view["provenance"] = json!({ "backend": backend, "error": e.message() });
+                    unusable.insert(name.clone(), why);
+                }
+            }
+            out.push(view);
+        }
+        Ok(out)
+    }
+
+    /// 把生成好的视图传回 ComfyUI，好让同卡后面的视图拿它当参考。
+    fn upload_view(
+        &self,
+        ctx: &ExecContext<'_>,
+        comfy: &Comfy,
+        card_id: &str,
+        view: &str,
+        rel: &str,
+    ) -> Result<String> {
+        let local = ctx.bundle.resolve(rel)?;
+        let bytes = std::fs::read(&local).map_err(|e| StudioError::ArtifactMissing {
+            path: format!("{}（{e}）", local.display()),
+        })?;
+        comfy.upload_image(&format!("{card_id}_{view}.png"), &bytes)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn generate_view(
+        &self,
+        ctx: &ExecContext<'_>,
+        comfy: &Comfy,
+        wf: &Workflow,
+        params: &Map<String, Value>,
+        refs: &[String],
+        card_id: &str,
+        view: &str,
+        dims: (i64, i64),
+        backend: &str,
+    ) -> Result<String> {
+        let graph = wf.apply_with_refs(params, refs)?;
+        let sub = ctx
+            .progress_and_step(
+                format!("生成 {card_id}.{view}（{} 张参考）", refs.len()),
+                "card_view",
+            )
+            .shot(format!("{card_id}.{view}"))
+            .node(comfy.node())
+            .with("backend", json!(backend))
+            .with("references", json!(refs.len()))
+            .with("size", json!(format!("{}x{}", dims.0, dims.1)))
+            .done(comfy.submit(&graph, "video-studio"))?;
+
+        let files = comfy.wait(&sub)?;
+        let first = files.first().ok_or_else(|| StudioError::ComfyFailed {
+            node: comfy.node().to_string(),
+            detail: format!("{card_id}.{view} 执行完成但没有产出文件"),
+        })?;
+        let rel = format!("media/assets/{card_id}/{view}.png");
+        let dest = ctx.bundle.resolve(&rel)?;
+        ctx.step("card_download")
+            .shot(format!("{card_id}.{view}"))
+            .prompt(&sub.prompt_id)
+            .with("path", json!(rel))
+            .done(comfy.download(first, &dest))?;
+        Ok(rel)
     }
 
     fn post(&self, ctx: &ExecContext<'_>) -> Result<Outputs> {
@@ -1199,6 +1629,127 @@ mod render_tests {
         }
     }
 
+    /// 一切正常，**只有 `/upload/image` 回 500**。
+    ///
+    /// 这是 2026-09-05 端到端里真实发生过的形状：图出来了、下载下来了、
+    /// 落盘了，只有「传回去当下一张的参考」这一步没成。
+    fn node_stub_upload_broken() -> NodeStub {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = std::thread::spawn(move || {
+            for stream in listener.incoming().take(256) {
+                let Ok(mut stream) = stream else { continue };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                if reader.read_line(&mut line).is_err() {
+                    continue;
+                }
+                let path = line.split_whitespace().nth(1).unwrap_or("/").to_string();
+                let (status, body) = if path.starts_with("/upload/image") {
+                    ("500 Internal Server Error", "upload broke".to_string())
+                } else if path.starts_with("/queue") {
+                    (
+                        "200 OK",
+                        json!({ "queue_running": [], "queue_pending": [] }).to_string(),
+                    )
+                } else if path.starts_with("/prompt") {
+                    (
+                        "200 OK",
+                        json!({ "prompt_id": "p1", "number": 1 }).to_string(),
+                    )
+                } else if path.starts_with("/history/") {
+                    (
+                        "200 OK",
+                        json!({ "p1": {
+                            "status": { "status_str": "success", "completed": true },
+                            "outputs": { "save": { "images": [ { "filename": "card.png" } ] } }
+                        }})
+                        .to_string(),
+                    )
+                } else if path.starts_with("/view") {
+                    ("200 OK", "fake-png-bytes".to_string())
+                } else {
+                    ("200 OK", "{}".to_string())
+                };
+                let resp = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(resp.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+        NodeStub {
+            url: format!("http://127.0.0.1:{port}"),
+            _handle: handle,
+        }
+    }
+
+    /// 两份卡片基线，形状跟 `assets/workflows/flux2_dev/` 一致但节点是最小的。
+    fn write_card_baselines(dir: &std::path::Path) {
+        let family = dir.join("flux2_dev");
+        std::fs::create_dir_all(&family).unwrap();
+        let bindings = json!({
+            "positive": ["pos.inputs.text"],
+            "width": ["latent.inputs.width"],
+            "height": ["latent.inputs.height"],
+            "seed": ["noise.inputs.noise_seed"],
+            "output_prefix": ["save.inputs.filename_prefix"]
+        });
+        let nodes = json!({
+            "pos": { "class_type": "CLIPTextEncode", "inputs": { "text": "" } },
+            "guidance": { "class_type": "FluxGuidance", "inputs": { "conditioning": ["pos", 0] } },
+            "latent": { "class_type": "EmptyFlux2LatentImage", "inputs": { "width": 0, "height": 0 } },
+            "noise": { "class_type": "RandomNoise", "inputs": { "noise_seed": 0 } },
+            "guider": { "class_type": "BasicGuider", "inputs": { "conditioning": ["guidance", 0] } },
+            "vae": { "class_type": "VAELoader", "inputs": { "vae_name": "flux2-vae.safetensors" } },
+            "save": { "class_type": "SaveImage", "inputs": { "filename_prefix": "" } }
+        });
+
+        let mut t2i = nodes.clone();
+        t2i["_studio"] = json!({ "role": "card", "bindings": bindings, "bindings_verified": true });
+        std::fs::write(family.join("t2i.json"), t2i.to_string()).unwrap();
+
+        let mut multiref = nodes;
+        multiref["_studio"] = json!({
+            "role": "card",
+            "bindings": bindings,
+            "bindings_verified": true,
+            "reference_chain": {
+                "nodes": {
+                    "load": { "class_type": "LoadImage", "inputs": { "image": "" } },
+                    "encode": { "class_type": "VAEEncode",
+                                "inputs": { "pixels": ["load", 0], "vae": ["vae", 0] } },
+                    "link": { "class_type": "ReferenceLatent",
+                              "inputs": { "conditioning": null, "latent": ["encode", 0] } }
+                },
+                "asset": "load.inputs.image",
+                "chain_in": "link.inputs.conditioning",
+                "chain_out": ["link", 0],
+                "head": ["guidance", 0],
+                "tail": "guider.inputs.conditioning",
+                "max": 10
+            }
+        });
+        std::fs::write(family.join("multiref_edit.json"), multiref.to_string()).unwrap();
+    }
+
+    /// 一张角色卡：一个锚点视图 + 一个派生视图。
+    fn card_inputs() -> Value {
+        json!({ "asset_plan": { "assets": [{
+            "asset_id": "C01",
+            "asset_kind": "character_card",
+            "identity_prompt": "身份锁",
+            "views": [
+                { "view": "front_full", "is_anchor": true, "aspect": "9:16",
+                  "prompt": "正面全身", "status": "planned" },
+                { "view": "three_quarter", "is_anchor": false, "aspect": "9:16",
+                  "derived_from": ["front_full"], "prompt": "四分之三", "status": "planned" }
+            ]
+        }] }})
+    }
+
     /// 已验证的最小 workflow 基线：`minimax_h3/t2v`。
     fn write_baseline(dir: &std::path::Path) {
         let family = dir.join("minimax_h3");
@@ -1251,6 +1802,134 @@ mod render_tests {
             "script": { "segments": [] },
             "brief": { "aspect_ratio": "9:16" }
         })
+    }
+
+    /// **锚点传不回 ComfyUI 时，整阶段阻塞，而且报的是真原因。**
+    ///
+    /// 2026-09-05 的十阶段端到端就栽在这里：锚点图出来了、落盘了、status 是
+    /// ready，只有上传超时，于是派生视图报「参考图**还没生成出来**」——一句
+    /// 与事实相反的话——而且六个视图成一个照样上了确认门。
+    ///
+    /// 这条测试盯两件事，缺一不可：
+    /// 1. **不放行**（`ready == 0` 才拦是不够的，部分成功也不行）；
+    /// 2. **说真话**（错误里要能看出是「传不回去」，不是「没生成」）。
+    #[test]
+    fn an_anchor_that_cannot_be_uploaded_blocks_the_stage_and_says_why() {
+        let bundle_dir = tempfile::tempdir().unwrap();
+        let baselines_dir = tempfile::tempdir().unwrap();
+        write_card_baselines(baselines_dir.path());
+        let node = node_stub_upload_broken();
+        let (bundle, settings) = scaffold_with_concurrency(bundle_dir.path(), &node.url, 1);
+
+        let pipeline = Pipeline::new(baselines_dir.path().to_path_buf());
+        let recorder = ExecRecorder::at(bundle.root());
+        let ctx = ExecContext {
+            bundle: &bundle,
+            settings: &settings,
+            inputs: card_inputs(),
+            progress: &ProgressNote::default(),
+            recorder: &recorder,
+            cancelled: &AtomicBool::new(false),
+        };
+
+        let e = pipeline.visual_assets(&ctx).unwrap_err();
+        assert_eq!(
+            e.code(),
+            "comfy_failed",
+            "部分成功必须阻塞：{}",
+            e.message()
+        );
+
+        let msg = e.message();
+        assert!(
+            msg.contains("传不回 ComfyUI"),
+            "错误要指出锚点是传不回去，不是没生成：{msg}"
+        );
+        assert!(
+            msg.contains("C01.three_quarter"),
+            "错误要点名是哪个视图受连累：{msg}"
+        );
+        assert!(
+            !msg.contains("还没生成出来"),
+            "锚点的图明明生成出来了，不能这么说：{msg}"
+        );
+    }
+
+    /// **Agent 自己把视图写成 `ready` 不能让控制面崩，也不能蒙混过关。**
+    ///
+    /// `status` / `path` / `provenance` 都在 Agent 能提交的那份 JSON 里。
+    /// 提一个「ready 但没有 path」的视图，再把 `provenance` 写成字符串——
+    /// 前者是谎称生成过，后者会让下标赋值 panic 掉 worker 线程。
+    /// 两样都得挡住，而且要说清楚是哪一条。
+    #[test]
+    fn a_view_the_agent_claims_is_ready_neither_panics_nor_passes() {
+        let bundle_dir = tempfile::tempdir().unwrap();
+        let baselines_dir = tempfile::tempdir().unwrap();
+        write_card_baselines(baselines_dir.path());
+        let node = healthy_node();
+        let (bundle, settings) = scaffold_with_concurrency(bundle_dir.path(), &node.url, 1);
+
+        let inputs = json!({ "asset_plan": { "assets": [{
+            "asset_id": "C01",
+            "asset_kind": "character_card",
+            "identity_prompt": "身份锁",
+            "views": [
+                // 谎称已经出过，既没有 path，provenance 还是个字符串
+                { "view": "front_full", "is_anchor": true, "aspect": "9:16",
+                  "prompt": "正面全身", "status": "ready", "provenance": "我瞎写的" },
+                { "view": "three_quarter", "is_anchor": false, "aspect": "9:16",
+                  "derived_from": ["front_full"], "prompt": "四分之三", "status": "planned" }
+            ]
+        }] }});
+
+        let pipeline = Pipeline::new(baselines_dir.path().to_path_buf());
+        let recorder = ExecRecorder::at(bundle.root());
+        let ctx = ExecContext {
+            bundle: &bundle,
+            settings: &settings,
+            inputs,
+            progress: &ProgressNote::default(),
+            recorder: &recorder,
+            cancelled: &AtomicBool::new(false),
+        };
+
+        let e = pipeline.visual_assets(&ctx).unwrap_err();
+        assert_eq!(e.code(), "comfy_failed", "不能放行：{}", e.message());
+        assert!(
+            e.message().contains("从来没有被生成过"),
+            "要点破是谎称 ready，不是别的毛病：{}",
+            e.message()
+        );
+    }
+
+    /// 一切正常时不阻塞：两个视图都出来，派生那个真的挂上了一张参考。
+    #[test]
+    fn a_card_with_every_view_ready_passes_and_the_derived_view_carries_its_anchor() {
+        let bundle_dir = tempfile::tempdir().unwrap();
+        let baselines_dir = tempfile::tempdir().unwrap();
+        write_card_baselines(baselines_dir.path());
+        let node = healthy_node();
+        let (bundle, settings) = scaffold_with_concurrency(bundle_dir.path(), &node.url, 1);
+
+        let pipeline = Pipeline::new(baselines_dir.path().to_path_buf());
+        let recorder = ExecRecorder::at(bundle.root());
+        let ctx = ExecContext {
+            bundle: &bundle,
+            settings: &settings,
+            inputs: card_inputs(),
+            progress: &ProgressNote::default(),
+            recorder: &recorder,
+            cancelled: &AtomicBool::new(false),
+        };
+
+        let out = pipeline.visual_assets(&ctx).unwrap();
+        let views = &out.get("asset_plan").unwrap()["assets"][0]["views"];
+        assert_eq!(views[0]["status"], "ready");
+        assert_eq!(views[1]["status"], "ready");
+        // 派生视图走的是多参考基线，不是文生图——挂参考这一步真的发生了。
+        assert_eq!(views[0]["provenance"]["backend"], CARD_T2I);
+        assert_eq!(views[1]["provenance"]["backend"], CARD_MULTIREF);
+        assert_eq!(views[1]["provenance"]["references"], json!(["front_full"]));
     }
 
     /// **超分缺基线时结构化阻塞，不静默交原生画布。**
@@ -1718,6 +2397,81 @@ mod real_baselines {
         // 音轨从 GetVideoComponents 直接接到 CreateVideo，超分不能把声音丢了。
         assert_eq!(g["create"]["inputs"]["audio"], json!(["comp", 1]));
         assert_eq!(g["create"]["inputs"]["fps"], json!(["comp", 2]));
+    }
+
+    /// 卡片的两条基线：真读仓库里那两份，绑定都要指到存在的节点上。
+    ///
+    /// `multiref_edit` 还多一段 `reference_chain`——参考数由内容决定，
+    /// 固定路径数组喂不下，所以它是第二种可变槽位形态（链式），
+    /// 跟 `minimax_h3` 那边 AUTOGROW 的平铺编号并列。
+    #[test]
+    fn the_card_baselines_are_sound_and_verified() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/workflows");
+        for name in ["flux2_dev/t2i", "flux2_dev/multiref_edit"] {
+            let w =
+                Workflow::load(&dir, name).unwrap_or_else(|e| panic!("{name}: {}", e.message()));
+            w.check()
+                .unwrap_or_else(|e| panic!("{name} 的绑定指向不存在的节点：{}", e.message()));
+            w.require_verified()
+                .unwrap_or_else(|e| panic!("{name} 应当已核验：{}", e.message()));
+            let mut p = Map::new();
+            p.insert("positive".into(), json!("一个人"));
+            p.insert("width".into(), json!(768));
+            p.insert("height".into(), json!(1344));
+            p.insert("seed".into(), json!(7));
+            p.insert("output_prefix".into(), json!("studio/cards/C01"));
+            let g = w.apply(&p).unwrap();
+            assert_eq!(g["pos"]["inputs"]["text"], json!("一个人"));
+            // 宽高要同时落到 scheduler 和 latent 上，只写一处会出错尺寸
+            assert_eq!(g["sigmas"]["inputs"]["width"], json!(768));
+            assert_eq!(g["latent"]["inputs"]["height"], json!(1344));
+            assert_eq!(g["noise"]["inputs"]["noise_seed"], json!(7));
+        }
+    }
+
+    /// 拿**仓库里真实的** `multiref_edit` 展开一条两张参考的链。
+    #[test]
+    fn the_real_card_baseline_expands_a_reference_chain() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/workflows");
+        let w = Workflow::load(&dir, "flux2_dev/multiref_edit").unwrap();
+        assert_eq!(w.max_references(), 10, "FLUX.2 的参考上限是 10");
+
+        let mut p = Map::new();
+        p.insert("positive".into(), json!("侧面"));
+        let g = w
+            .apply_with_refs(&p, &["C01_front_full.png".into(), "C01_profile.png".into()])
+            .unwrap();
+        assert_eq!(
+            g["ref1_load"]["inputs"]["image"],
+            json!("C01_front_full.png")
+        );
+        assert_eq!(g["ref2_load"]["inputs"]["image"], json!("C01_profile.png"));
+        // 链外的 vae 不能被改名，改了就断了
+        assert_eq!(g["ref2_encode"]["inputs"]["vae"], json!(["vae", 0]));
+        // 一环扣一环，最后接回采样器
+        assert_eq!(
+            g["ref1_link"]["inputs"]["conditioning"],
+            json!(["guidance", 0])
+        );
+        assert_eq!(
+            g["ref2_link"]["inputs"]["conditioning"],
+            json!(["ref1_link", 0])
+        );
+        assert_eq!(
+            g["guider"]["inputs"]["conditioning"],
+            json!(["ref2_link", 0])
+        );
+    }
+
+    /// 卡片基线也不该出现在 Agent 看得见的能力面里——它不吃 `length_frames`，
+    /// 写进某一镜没有意义。
+    #[test]
+    fn the_card_baselines_are_not_offered_to_the_agent() {
+        let names = caps().verified_names();
+        assert!(
+            !names.iter().any(|n| n.starts_with("flux2_dev/")),
+            "卡片基线漏进了可选基线列表：{names:?}"
+        );
     }
 
     /// 超分基线不该出现在 Agent 看得见的能力面里。写进某一镜没有任何意义

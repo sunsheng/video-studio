@@ -1,0 +1,157 @@
+{
+  "_studio": {
+    "role": "card",
+    "bindings": {
+      "positive": [
+        "pos.inputs.text"
+      ],
+      "width": [
+        "sigmas.inputs.width",
+        "latent.inputs.width"
+      ],
+      "height": [
+        "sigmas.inputs.height",
+        "latent.inputs.height"
+      ],
+      "seed": [
+        "noise.inputs.noise_seed"
+      ],
+      "output_prefix": [
+        "save.inputs.filename_prefix"
+      ]
+    },
+    "source": "Comfy-Org/workflow_templates templates/image_flux2.json（definitions.subgraphs[0]「Image Edit (Flux.2 Dev)」，摘掉参考分支与 turbo 开关，VAE 换成本机装着的 flux2-vae）",
+    "bindings_verified": true,
+    "source_run": "2026-09-05 A800 80GB / ComfyUI 0.34.0：这份文件填上绑定值原样提交跑通，768×1344 主视图 33 秒；人眼看过——灰底匀光、全身入画、中性表情，符合卡片规格，两份出的是同一个人同一条裙子。"
+  },
+  "clip": {
+    "class_type": "CLIPLoader",
+    "inputs": {
+      "clip_name": "mistral_3_small_flux2_bf16.safetensors",
+      "type": "flux2",
+      "device": "default"
+    }
+  },
+  "unet": {
+    "class_type": "UNETLoader",
+    "inputs": {
+      "unet_name": "flux2_dev_fp8mixed.safetensors",
+      "weight_dtype": "default"
+    }
+  },
+  "vae": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "flux2-vae.safetensors"
+    }
+  },
+  "pos": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": [
+        "clip",
+        0
+      ],
+      "text": ""
+    }
+  },
+  "guidance": {
+    "class_type": "FluxGuidance",
+    "inputs": {
+      "conditioning": [
+        "pos",
+        0
+      ],
+      "guidance": 4
+    }
+  },
+  "sigmas": {
+    "class_type": "Flux2Scheduler",
+    "inputs": {
+      "steps": 20,
+      "width": 768,
+      "height": 1344
+    }
+  },
+  "latent": {
+    "class_type": "EmptyFlux2LatentImage",
+    "inputs": {
+      "width": 768,
+      "height": 1344,
+      "batch_size": 1
+    }
+  },
+  "noise": {
+    "class_type": "RandomNoise",
+    "inputs": {
+      "noise_seed": 0
+    }
+  },
+  "sel": {
+    "class_type": "KSamplerSelect",
+    "inputs": {
+      "sampler_name": "euler"
+    }
+  },
+  "guider": {
+    "class_type": "BasicGuider",
+    "inputs": {
+      "model": [
+        "unet",
+        0
+      ],
+      "conditioning": [
+        "guidance",
+        0
+      ]
+    }
+  },
+  "adv": {
+    "class_type": "SamplerCustomAdvanced",
+    "inputs": {
+      "noise": [
+        "noise",
+        0
+      ],
+      "guider": [
+        "guider",
+        0
+      ],
+      "sampler": [
+        "sel",
+        0
+      ],
+      "sigmas": [
+        "sigmas",
+        0
+      ],
+      "latent_image": [
+        "latent",
+        0
+      ]
+    }
+  },
+  "decode": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "adv",
+        0
+      ],
+      "vae": [
+        "vae",
+        0
+      ]
+    }
+  },
+  "save": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": [
+        "decode",
+        0
+      ],
+      "filename_prefix": "studio/cards"
+    }
+  }
+}

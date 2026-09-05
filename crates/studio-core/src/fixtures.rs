@@ -53,7 +53,10 @@ fn card(
                 "status": "planned",
             });
             if i > 0 {
-                v["derived_from"] = json!(anchor);
+                // 累积锁定：主视图打头，后面把这一张之前已经定稿的都补上。
+                let mut refs = vec![anchor.to_string()];
+                refs.extend(views[1..i].iter().map(|(v, _)| v.to_string()));
+                v["derived_from"] = json!(refs);
             }
             v
         })

@@ -133,8 +133,10 @@ struct HeadSpec {
     /// `(介质, 上限, 这条介质能不能用)`。空表示这个 head 不接参考。
     ///
     /// 「能不能用」= 输入通道验过 **且** 这个 AUTOGROW 槽位真的起作用。
-    /// 两件事：`ref_audios` 的通道验过（audio 锚点跑通了），但挂上去模型
-    /// 不理它——输出里量不到任何影响。所以它是 false 而 `input.audio` 是 true。
+    /// 两件事分开记，是因为它们**真的分开过**：`ref_audios` 一度被判为
+    /// 「素材进得去但模型不理」，后来发现是 AUTOGROW 接线错了——整条参考
+    /// 通道都是死的。修好后四个槽位都生效，但这个两层结构留着，下次再遇到
+    /// 「通道通、槽位不通」还是要分得开。
     references: &'static [(&'static str, usize, bool)],
     /// 具名的首尾帧槽位，如 `first` / `last`。
     frames: &'static [&'static str],
@@ -160,7 +162,7 @@ const MODEL_CARDS: [ModelCard; 3] = [
                     id: "reference",
                     verified: true,
                     what_for: "挂参考锁身份与风格，起幅由模型定。绝大多数镜头用它。",
-                    references: &[("image", 9, true), ("video", 3, true), ("audio", 3, false)],
+                    references: &[("image", 9, true), ("video", 3, true), ("audio", 3, true)],
                     frames: &[],
                     turbo_steps: Some(4),
                 },
@@ -339,7 +341,7 @@ fn checklist(stage: StageId) -> &'static [&'static str] {
             "consistency_lock.character 是从分镜 character_lock.identity_lock 复制来的，逐字相同",
             "每个跨镜头复用的角色、场景、道具都有卡",
             "每张卡的必需视图齐全，一个不少",
-            "每张卡只有一个主视图，其余视图的 derived_from 都指向它",
+            "每张卡只有一个主视图且排在第一位，其余视图的 derived_from 累积挂上前面已定稿的",
             "同一张卡的所有视图画幅一致",
             "每个视图的提示词都以 identity_prompt 逐字开头",
             "一致性锁定写明了外观、机位签名、环境与排版禁止项",
@@ -469,9 +471,10 @@ const SKILLS: [SkillDoc; 10] = [
              consistency/character-sheet.md。",
             "每张卡写一段 identity_prompt，**一次写定**，所有视图逐字复用。\
              角色卡这一段要逐字包含分镜定下的身份锁。",
-            "标出主视图（每张卡有且仅有一个），其余视图的 derived_from 指向它——\
-             主视图先出、单独出，其余以它为参考图。并行出八张，\
-             出来的是八个长得像但不是同一个人的角色。",
+            "标出主视图（每张卡有且仅有一个）并把它排在 views 第一位——**顺序就是\
+             生成顺序**。其余视图的 derived_from 是一个列表：第一项是主视图，\
+             后面补上这一张之前已经定稿的其余视图（累积锁定，最多 10 张）。\
+             并行出八张，出来的是八个长得像但不是同一个人的角色。",
             "写明一致性锁定：角色外观、机位签名、环境、排版禁止项。",
             "降级策略写死：核心系列不可用就结构化阻塞，不自动换系列。",
         ],
@@ -988,7 +991,7 @@ pub fn agents_md() -> String {
 `.studio/` 是控制面私有的，里面是状态库、日志和锁。不要读，不要改。
 它有完整性校验，外部改动会在下一次调用时以 `state_drift` 暴露出来。
 
-## 四条工作习惯
+## 五条工作习惯
 
 1. **不确定就先调 `studio.status`。** 信封里的 `next_action` 说了下一步交什么，
    `pending_question` 说了在等用户答什么，`blocked_by` 说了被什么挡住。
@@ -999,6 +1002,29 @@ pub fn agents_md() -> String {
 4. **写之前先看 `next_action.decisions`。** 那是用户此前**否决过什么**
    （`rejected`，他的原话逐字）和**在门上选过什么**（`chose`）。
    他在剧本阶段说过的话，到分镜阶段依然算数——不要让他再说第二遍。
+5. **`waiting_on` 是 `system` 时，等，不要收尾。** 见下一节。
+
+### `waiting_on: system` 意味着什么
+
+生成、渲染、拼接这些活由控制面自己跑，**没有工具能让你"启动"或"推进"它们**——
+门一通过它自己就开始了。这时信封是这个样子：
+
+```jsonc
+"waiting_on": "system",
+"next_action": {{ "kind": "await", "stage": "visual_assets", … }},
+"note": "生成 C01.three_quarter（2 张参考）"   // 跑到哪了
+```
+
+`kind: "await"` 的字面意思就是**等**：
+
+- **不要结束这一轮对话。** 作品没做完，只是这一步轮不到你。
+- 隔一会儿再调一次 `studio.status`（几十秒一次就够，别连着刷），
+  直到 `waiting_on` 变回 `agent`（该你交东西了）或 `user`（挂了确认门）。
+- `note` 会告诉你跑到哪一步了。它在动就是正常的。
+- 真出事了不会一直挂着——会变成 `blocked_by` 带着 remedy 回来，那时照第 3 条做。
+
+一个阶段跑几分钟是正常的：出一张卡片图几十秒，渲一个镜头一分多钟，
+成片超分还要再加一轮。**耗时长不是卡住了。**
 
 ### 怎么读 decisions
 
@@ -1011,7 +1037,7 @@ pub fn agents_md() -> String {
 
 ## 方法手册
 
-上面三条讲的是**怎么交**。**怎么写得好**是另一回事，写在
+上面几条讲的是**怎么交**。**怎么写得好**是另一回事，写在
 `.agents/doctrine/` 里：镜头语法、光与色、调度、结构与钩子、声音设计、
 一致性、失败模式、禁用词，还有一部完整作品的黄金样例。
 每个 Skill 会指出自己该读哪几份，索引在 `.agents/doctrine/README.md`。
@@ -1592,9 +1618,12 @@ mod tests {
             "要列出 head"
         );
         assert!(md.contains("image × 9"), "要给出参考槽位的上限");
-        // video 通道 2026-09-05 真机核验后不再划掉；audio 还没有，规则由它守着。
+        // 三条介质 2026-09-05 都已真机核验，谁都不该还划着——划掉的规则本身留着。
         assert!(md.contains("video × 3"), "已核验的介质不该还划着");
-        assert!(md.contains("~~audio × 3~~"), "未核验的介质要划掉");
+        assert!(
+            !md.contains("~~audio × 3~~"),
+            "audio 参考已核验，不该再被划掉"
+        );
     }
 
     /// 帧数网格必须写在卡上，而且数值要跟 studio-core 的常量对得上。

@@ -35,22 +35,41 @@ vae          = "wan_2.1_vae.safetensors"
 # 图像系列。视觉资产阶段（角色卡 / 场景卡 / 道具卡）用它出图，
 # 与视频系列是两套模型，不共用。
 #
-# 这一段的文件名**还没确定**：本仓库的开发环境没有 GPU、没有 ComfyUI，
-# 填不出真机验证过的名字。填一串看起来像模像样的名字是这份契约最危险的
-# 用法——它能通过所有静态检查，然后在生产机上安静地加载错东西。
+# 选 FLUX.2 [dev] 而不是别的图像模型，理由有两条：
 #
-# 在装了 ComfyUI 的机器上确认之后，把下面几行的注释去掉并填真名，
-# 同时按 assets/workflows/flux2_dev/README.md 导出两条基线。
-# 两件事都做完之前，视觉资产阶段只能提交计划、生不出图。
+# 1. **参考图容量。** 卡片一致性靠参考图锚定（纯文字锁不住脸，有实测），
+#    而 dev 版一次吃最多 10 张参考图，够把「已定稿的全部视图」一起挂上去
+#    当锚——出第 5 个视图时前 4 个都在场，新视图必须同时与它们自洽。
+# 2. **构图一致性。** 三条路真机比过（见 SPEC-0016 §2.2）：MiniMax 逐视图
+#    独立采样会自己裁成中景，写了 `full body head to toe` 也没守住；FLUX.2
+#    四个视图全身入画一张没漂。卡片是测量用素材，构图漂了比画面不好看更伤。
 #
-# 选 FLUX.2 [dev] 而不是别的图像模型，理由只有一条：**参考图容量**。
-# 卡片一致性靠的是参考图锚定（纯文字锁不住脸，有实测），而 dev 版一次吃
-# 最多 10 张参考图，够把「已定稿的全部视图」一起挂上去当锚——出第 5 个视图
-# 时前 4 个都在场，新视图必须同时与它们自洽。单参考的模型做不到这件事。
 # 许可是 Non-Commercial，本项目自用/研究，不构成约束。见 issue #12。
+#
+# 下面三个文件名是 2026-09-05 在 A800 80G 那台 ComfyUI 上真机跑通四视图
+# 累积锁定之后填的，与 assets/workflows/flux2_dev/{t2i,multiref_edit}.json
+# 里的 loader 一致。**改这里必须同时改基线并重跑真机**，两处对不上等于
+# 契约失效。
 [flux2_dev]
-description = "卡片生成。t2i 出主视图，multiref_edit 挂已定稿视图累积锁定出其余视图。待生产机确认。"
-verified    = false
-# diffusion    = ""
-# text_encoder = ""
-# vae          = ""
+description  = "卡片生成。t2i 出主视图，multiref_edit 挂已定稿视图累积锁定出其余视图。"
+verified     = true
+diffusion    = "flux2_dev_fp8mixed.safetensors"
+text_encoder = "mistral_3_small_flux2_bf16.safetensors"
+vae          = "flux2-vae.safetensors"
+# 模板里的 Flux_2-Turbo-LoRA 与 full_encoder_small_decoder VAE 都不用：
+# 前者权重不在机器上且默认关闭，后者被 flux2-vae 取代。见 SPEC-0016 §3。
+forbidden    = ["Flux_2-Turbo-LoRA*", "full_encoder_small_decoder.safetensors"]
+
+# 成片超分。`post` 拼接之前逐镜把画面超到交付规格（短边 1080）。
+# 走 ComfyUI 原生节点（SeedVR2Preprocess / SeedVR2Conditioning），
+# **不要装第三方 custom node**。见 SPEC-0015。
+#
+# 选 7B 而不是 3B：#13 定的，画质优先；一镜 42.1 秒（渲染 63.9 秒的 66%），
+# 这个代价换得起。`COMFY_UPSCALE=0` 可以整条关掉。
+[seedvr2]
+description = "成片超分。一步采样（steps=1, cfg=1, euler, simple），tiled VAE 编解码。"
+verified    = true
+diffusion   = "seedvr2_7b_int8_convrot.safetensors"
+vae         = "seedvr2_ema_vae_fp16.safetensors"
+# 3B 是同系列的小号，画质换速度；本项目不用它，也不允许 OOM 时静默降级。
+forbidden   = ["seedvr2_3b_int8_convrot.safetensors"]

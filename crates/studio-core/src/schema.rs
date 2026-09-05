@@ -13,6 +13,10 @@ use crate::stage::StageId;
 use crate::Outputs;
 use serde_json::{json, Value};
 
+/// 一个视图最多挂几张参考图——FLUX.2 dev 的上限，见
+/// `assets/workflows/flux2_dev/README.md`。
+pub const MAX_CARD_REFERENCES: usize = 10;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Schema {
     Object {
@@ -726,7 +730,13 @@ pub fn stage_schema(stage: StageId) -> Schema {
             vec![
                 ("backend", text("生成后端，通常是 comfyui")),
                 ("core_model_family", text("核心模型系列，例如 minimax_h3")),
-                ("strategy", text("生成策略，例如先出开发片段再抽帧")),
+                (
+                    "strategy",
+                    text(
+                        "这批卡怎么排：哪些角色/场景/道具要出卡、各要哪些视图、为什么。\
+                         用什么模型出图由控制面决定，不用写",
+                    ),
+                ),
                 (
                     "fallback_policy",
                     text("降级策略。默认结构化阻塞，不自动换系列"),
@@ -819,11 +829,16 @@ pub fn stage_schema(stage: StageId) -> Schema {
                                                 ),
                                                 (
                                                     "derived_from",
-                                                    text(
-                                                        "本视图以哪个视图为参考图。\
-                                                         **非主视图必填**，值就是那张卡的主视图 id；\
-                                                         主视图自己不填。没有锚点就没有参考图可用，\
-                                                         出来的是长得像但不是同一个人",
+                                                    arr(
+                                                        "本视图挂哪几张已定稿的视图当参考图。\
+                                                         **非主视图必填**，第一项是本卡的主视图，\
+                                                         后面按顺序补上**这一张之前已经定稿的其余视图**——\
+                                                         这叫累积锁定：出第 5 个视图时前 4 个都在场，\
+                                                         新视图必须同时与它们自洽，漂移无处可去。\
+                                                         主视图自己不填。只能指向同一张卡里排在自己\
+                                                         前面的视图，最多 10 张",
+                                                        text("同一张卡里的视图 id，例如 front_full"),
+                                                        1,
                                                     ),
                                                 ),
                                                 (
@@ -1313,6 +1328,18 @@ fn structural(stage: StageId, v: &Value, key: &str, out: &mut Vec<Violation>) {
                         format!("{kind} 的主视图必须是 {anchor_name}，不是 {got}"),
                     ));
                 }
+                // V10：主视图要排在第一位。**顺序就是生成顺序**——主视图不先出，
+                // 后面的视图没有参考图可挂。
+                if j != 0 {
+                    out.push(Violation::new(
+                        at(&format!(".views[{j}]")),
+                        format!(
+                            "主视图 {anchor_name} 排在第 {} 位。views 的顺序就是生成顺序，\
+                             主视图必须排第一——它先出、单独出，后面每一张都要拿它当参考图",
+                            j + 1
+                        ),
+                    ));
+                }
             }
             0 => out.push(Violation::new(
                 at(".views"),
@@ -1334,32 +1361,75 @@ fn structural(stage: StageId, v: &Value, key: &str, out: &mut Vec<Violation>) {
         for (j, view) in views.iter().enumerate() {
             let name = view.get("view").and_then(|n| n.as_str()).unwrap_or("");
             let is_anchor = view.get("is_anchor").and_then(|b| b.as_bool()) == Some(true);
-            let derived = view.get("derived_from").and_then(|d| d.as_str());
+            let derived: Vec<&str> = view
+                .get("derived_from")
+                .and_then(|d| d.as_array())
+                .map(|a| a.iter().filter_map(|x| x.as_str()).collect())
+                .unwrap_or_default();
             if let Some(a) = view.get("aspect").and_then(|a| a.as_str()) {
                 aspects.insert(a.to_string());
             }
+            let at_field = at(&format!(".views[{j}].derived_from"));
             if is_anchor {
-                if derived.is_some_and(|d| !d.is_empty()) {
+                if !derived.is_empty() {
                     out.push(Violation::new(
-                        at(&format!(".views[{j}].derived_from")),
+                        at_field,
                         "主视图自己不参考任何视图，这里不要填",
                     ));
                 }
                 continue;
             }
-            match derived {
-                None => out.push(Violation::new(
-                    at(&format!(".views[{j}].derived_from")),
+            // V11：非主视图必须挂参考，第一项是主视图，其余只能指向排在自己
+            // 前面的视图——顺序即生成顺序，指向后面的视图那时还不存在。
+            if derived.is_empty() {
+                out.push(Violation::new(
+                    at_field,
                     format!(
-                        "非主视图必须指向锚点视图（{anchor_name}）。\
-                         没有锚点就没有参考图可用，出来的是长得像但不是同一个人"
+                        "非主视图必须挂参考图，第一项是 {anchor_name}。\
+                         没有参考就没有锚点，出来的是长得像但不是同一个人"
                     ),
-                )),
-                Some(d) if d != anchor_name => out.push(Violation::new(
-                    at(&format!(".views[{j}].derived_from")),
-                    format!("{name} 应当以 {anchor_name} 为参考图，写的却是 {d}"),
-                )),
-                Some(_) => {}
+                ));
+                continue;
+            }
+            if derived[0] != anchor_name {
+                out.push(Violation::new(
+                    at_field.clone(),
+                    format!(
+                        "{name} 的 derived_from 第一项必须是主视图 {anchor_name}，写的却是 {}",
+                        derived[0]
+                    ),
+                ));
+            }
+            let earlier: Vec<&str> = views[..j]
+                .iter()
+                .filter_map(|v| v.get("view").and_then(|n| n.as_str()))
+                .collect();
+            for d in &derived {
+                if !earlier.contains(d) {
+                    out.push(Violation::new(
+                        at_field.clone(),
+                        format!(
+                            "{name} 参考了 {d}，但它不在本卡里、或者排在 {name} 后面还没生成。\
+                             只能挂**已经定稿**的视图；本卡在它之前的有：{}",
+                            if earlier.is_empty() {
+                                "（一个都没有）".to_string()
+                            } else {
+                                earlier.join("、")
+                            }
+                        ),
+                    ));
+                }
+            }
+            // V12：FLUX.2 一次最多吃 10 张参考，多了图会被拒。
+            if derived.len() > MAX_CARD_REFERENCES {
+                out.push(Violation::new(
+                    at_field,
+                    format!(
+                        "挂了 {} 张参考，上限是 {MAX_CARD_REFERENCES}。\
+                         超出的部分卡片后端不吃，图会被判非法",
+                        derived.len()
+                    ),
+                ));
             }
         }
         if aspects.len() > 1 {
@@ -1576,7 +1646,53 @@ mod fixture_tests {
             .as_object_mut()
             .unwrap()
             .remove("derived_from");
-        refuses(&o, "非主视图必须指向锚点视图");
+        refuses(&o, "非主视图必须挂参考图");
+    }
+
+    /// V11：第一项必须是主视图。挂了参考但没挂锚点，等于没锚。
+    #[test]
+    fn derived_from_not_starting_at_the_anchor_is_refused() {
+        let mut o = plan();
+        o["asset_plan"]["assets"][0]["views"][2]["derived_from"] = json!(["three_quarter"]);
+        refuses(&o, "第一项必须是主视图");
+    }
+
+    /// V11：只能挂**已经定稿**的视图——指向排在自己后面的，那时它还不存在。
+    #[test]
+    fn deriving_from_a_later_view_is_refused() {
+        let mut o = plan();
+        let last = o["asset_plan"]["assets"][0]["views"]
+            .as_array()
+            .unwrap()
+            .len()
+            - 1;
+        let last_name = o["asset_plan"]["assets"][0]["views"][last]["view"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        o["asset_plan"]["assets"][0]["views"][1]["derived_from"] = json!(["front_full", last_name]);
+        refuses(&o, "还没生成");
+    }
+
+    /// V10：主视图必须排第一——顺序就是生成顺序。
+    #[test]
+    fn an_anchor_that_is_not_first_is_refused() {
+        let mut o = plan();
+        let views = o["asset_plan"]["assets"][0]["views"]
+            .as_array_mut()
+            .unwrap();
+        views.swap(0, 1);
+        refuses(&o, "views 的顺序就是生成顺序");
+    }
+
+    /// V12：超过卡片后端的参考上限，图会被判非法，要在提交时就挡下。
+    #[test]
+    fn too_many_references_on_one_view_are_refused() {
+        let mut o = plan();
+        let mut refs = vec!["front_full".to_string()];
+        refs.extend((0..MAX_CARD_REFERENCES).map(|i| format!("x{i}")));
+        o["asset_plan"]["assets"][0]["views"][1]["derived_from"] = json!(refs);
+        refuses(&o, "上限是 10");
     }
 
     #[test]
