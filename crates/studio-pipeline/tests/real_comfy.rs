@@ -289,35 +289,16 @@ fn the_preview_turbo_combination_runs_on_a_real_comfyui() {
     }
 }
 
-/// 未核验的通道要**结构化阻塞**，不能悄悄退化成别的东西。
-///
-/// video 通道核验之后，仍未核验的是 audio——规则本身还得有人守着。
-/// `clip` 锚点曾经被错误地映射到 LoadImage：图能过校验、也能出片，只是锚的
-/// 是一张静帧而不是一段。这条测试守着「宁可挡下，不要静默降级」。
-#[test]
-fn an_unverified_input_channel_is_refused_rather_than_downgraded() {
-    let Some(env) = setup() else { return };
-    let input_audio = env.set.inputs.get("audio").expect("片段库缺 input.audio");
-    if input_audio.verified {
-        eprintln!("跳过：所有输入通道都核验过了，这条测试的前提不再成立");
-        return;
-    }
-
-    let mut shot = base("S09", "reference");
-    shot.guides = vec![Guide {
-        kind: GuideKind::Audio,
-        at_frame: 0,
-        asset_id: "S08.tail5".into(),
-    }];
-    let err = assemble_as(&env.set, &shot, "x/S09", Combination::Standard)
-        .expect_err("未核验的通道不该拼得出图");
-    assert_eq!(err.code(), "model_contract_violation");
-    assert!(
-        err.message().contains("尚未核验"),
-        "要说清是没核验：{}",
-        err.message()
-    );
-}
+// 「未核验的通道要结构化阻塞」那条规则原来在这里，靠「片段库里恰好有一个
+// 未核验的通道」才成立。三条输入通道（image / video / audio）全核验之后，
+// 它就变成了打印一行「前提不再成立」然后通过——**一条永远绿、永远什么都不验
+// 的测试比没有更糟**，它让人以为那条规则有人守着。
+//
+// 现在这条规则在 `studio_core::assembly` 的
+// `an_unverified_fragment_blocks_rendering` 里，用合成片段库现场把 `verified`
+// 翻成 false，四个拼接点（head / 参考的输入片段 / guide 片段 / guide 的输入
+// 片段）逐个验。前提永远成立，而且不需要 GPU——「未核验就阻塞」是纯逻辑，
+// 本来就不该拿真机来证。
 
 /// 造一段短视频并传上去，返回 ComfyUI 那侧的文件名。
 ///

@@ -1494,19 +1494,82 @@ pub(crate) mod tests_support {
     }
 
     /// 未核验的片段不许用来渲染——跟未核验的整图基线同一套规矩。
+    ///
+    /// **四个拼接点逐个验，不是抽一个代表。** 组装器有四处会把片段拼进图里
+    /// （head、参考的输入片段、guide 片段本身、guide 的输入片段），每一处都
+    /// 单独调 `require_verified`。只验其中一处，另外三处哪天漏掉了这个调用，
+    /// 测试照样是绿的——而漏掉的后果是拿一份没核验过的接线去烧 GPU，
+    /// 出来的画面错在哪没人说得清。
+    ///
+    /// 这条测试是从 `real_comfy` 那边搬过来并加强的。原来那条挂在真机上，
+    /// 靠「片段库里恰好有一个未核验的通道」才成立；三条输入通道全核验之后
+    /// 它就变成了打印一行「前提不再成立」然后通过——**一条永远绿、永远什么
+    /// 都不验的测试比没有更糟**。这里用合成片段库现场把 `verified` 翻成
+    /// false，前提永远成立，而且不需要 GPU。
     #[test]
     fn an_unverified_fragment_blocks_rendering() {
-        let mut set = fragments();
-        let v = set.inputs.get_mut("image").unwrap();
-        v.verified = false;
-        v.unavailable_reason = Some("没在真机上跑通过".into());
+        // (这一处叫什么, 怎么把某个片段翻成未核验, 怎么造出会用到它的镜头)
+        type Case = (&'static str, fn(&mut FragmentSet), fn() -> ShotDeclaration);
 
-        let mut s = shot("reference");
-        s.references = vec![img_ref("C01")];
-        let e = assemble(&set, &s, "media/S01").unwrap_err();
-        assert_eq!(e.code(), "model_contract_violation");
-        assert!(e.message().contains("尚未核验"), "{}", e.message());
-        assert!(e.message().contains("没在真机上跑通过"), "{}", e.message());
+        fn img_guide() -> ShotDeclaration {
+            let mut s = shot("reference");
+            s.guides = vec![Guide {
+                kind: GuideKind::Image,
+                at_frame: 0,
+                asset_id: "S02.tail".into(),
+            }];
+            s
+        }
+
+        let cases: Vec<Case> = vec![
+            (
+                "head",
+                |set| unverify(set.heads.get_mut("reference").unwrap()),
+                || shot("reference"),
+            ),
+            (
+                "参考的输入片段",
+                |set| unverify(set.inputs.get_mut("image").unwrap()),
+                || {
+                    let mut s = shot("reference");
+                    s.references = vec![img_ref("C01")];
+                    s
+                },
+            ),
+            (
+                "guide 片段",
+                |set| unverify(set.guides.get_mut("image").unwrap()),
+                img_guide,
+            ),
+            (
+                // guide 自己核验过，但它要挂的素材走的输入片段没核验。
+                // 这一处最容易漏——它在 guide 那个循环里，跟上一条隔着几行。
+                "guide 的输入片段",
+                |set| unverify(set.inputs.get_mut("image").unwrap()),
+                img_guide,
+            ),
+        ];
+
+        for (name, break_it, make_shot) in cases {
+            let mut set = fragments();
+            break_it(&mut set);
+            let Err(e) = assemble(&set, &make_shot(), "media/S01") else {
+                panic!("{name} 未核验，却拼出了图——这一处漏了 require_verified");
+            };
+            assert_eq!(e.code(), "model_contract_violation", "{name}");
+            assert!(e.message().contains("尚未核验"), "{name}：{}", e.message());
+            // 原因要带出来——只说「尚未核验」，人还得自己去翻片段库找为什么。
+            assert!(
+                e.message().contains("没在真机上跑通过"),
+                "{name} 没带出未核验的原因：{}",
+                e.message()
+            );
+        }
+    }
+
+    fn unverify(f: &mut Fragment) {
+        f.verified = false;
+        f.unavailable_reason = Some("没在真机上跑通过".into());
     }
 
     /// 骨架留空的三处必须被填上，缺一个都要报错而不是交出半张图。
