@@ -1720,6 +1720,47 @@ mod real_baselines {
         assert_eq!(g["create"]["inputs"]["fps"], json!(["comp", 2]));
     }
 
+    /// 卡片的两条基线：真读仓库里那两份，绑定都要指到存在的节点上。
+    ///
+    /// `multiref_edit` 还多一段 `reference_chain`——参考数由内容决定，
+    /// 固定路径数组喂不下，所以它是第二种可变槽位形态（链式），
+    /// 跟 `minimax_h3` 那边 AUTOGROW 的平铺编号并列。
+    #[test]
+    fn the_card_baselines_are_sound_and_verified() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/workflows");
+        for name in ["flux2_dev/t2i", "flux2_dev/multiref_edit"] {
+            let w =
+                Workflow::load(&dir, name).unwrap_or_else(|e| panic!("{name}: {}", e.message()));
+            w.check()
+                .unwrap_or_else(|e| panic!("{name} 的绑定指向不存在的节点：{}", e.message()));
+            w.require_verified()
+                .unwrap_or_else(|e| panic!("{name} 应当已核验：{}", e.message()));
+            let mut p = Map::new();
+            p.insert("positive".into(), json!("一个人"));
+            p.insert("width".into(), json!(768));
+            p.insert("height".into(), json!(1344));
+            p.insert("seed".into(), json!(7));
+            p.insert("output_prefix".into(), json!("studio/cards/C01"));
+            let g = w.apply(&p).unwrap();
+            assert_eq!(g["pos"]["inputs"]["text"], json!("一个人"));
+            // 宽高要同时落到 scheduler 和 latent 上，只写一处会出错尺寸
+            assert_eq!(g["sigmas"]["inputs"]["width"], json!(768));
+            assert_eq!(g["latent"]["inputs"]["height"], json!(1344));
+            assert_eq!(g["noise"]["inputs"]["noise_seed"], json!(7));
+        }
+    }
+
+    /// 卡片基线也不该出现在 Agent 看得见的能力面里——它不吃 `length_frames`，
+    /// 写进某一镜没有意义。
+    #[test]
+    fn the_card_baselines_are_not_offered_to_the_agent() {
+        let names = caps().verified_names();
+        assert!(
+            !names.iter().any(|n| n.starts_with("flux2_dev/")),
+            "卡片基线漏进了可选基线列表：{names:?}"
+        );
+    }
+
     /// 超分基线不该出现在 Agent 看得见的能力面里。写进某一镜没有任何意义
     /// ——它不吃 positive、不吃 length_frames，`filename` 还会是空的。
     #[test]

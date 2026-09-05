@@ -1,127 +1,95 @@
-# flux2_dev：卡片生成的基线（**尚未落地**）
+# flux2_dev：卡片生成的基线
 
-这个目录目前是**空的**，只有这份说明。视觉资产阶段（角色卡 / 场景卡 /
-道具卡）需要两条基线，都还没有：
+视觉资产阶段（角色卡 / 场景卡 / 道具卡）的两条基线，**都已真机核验**：
 
 | 用途 | 文件 | 做什么 |
 |---|---|---|
 | 文生图 | `t2i.json` | 出主视图：角色的 `front_full`、场景的 `establishing`、道具的 `front` |
 | 多参考编辑 | `multiref_edit.json` | 出其余视图：把**已定稿的全部视图**一起挂上去当锚，换机位/表情 |
 
+两份都标 `"role": "card"`——**不是给镜头选的基线**，不进 Agent 的能力面
+（`role` 机制见 SPEC-0015 §3.1）。写进某一镜没有意义。
+
+## 权重
+
+- diffusion：`flux2_dev_fp8mixed.safetensors`
+- text encoder：`mistral_3_small_flux2_bf16.safetensors`（`CLIPLoader` type=`flux2`）
+- vae：`flux2-vae.safetensors`
+
 ## 为什么是 FLUX.2 [dev]
 
-选它的理由只有一条：**参考图容量**。
+选它的第一理由是**参考图容量**：纯文字身份锁锁不住脸（同一个身份锁逐字复用，
+正面 / 四分之三 / 特写出来是三张不同的脸），而 dev 版一次吃**最多 10 张参考**，
+够把「已定稿的全部视图」一起挂上去——出第 5 个视图时前 4 个都在场，
+新视图必须同时与它们自洽。这叫**累积锁定**。
 
-卡片一致性靠的是参考图锚定——纯文字身份锁锁不住脸，这是实测结论
-（同一个身份锁逐字复用，正面、四分之三、特写出来是三张不同的脸），
-不是提示词写得不够好，是文字能穷尽的只有可枚举的外部特征。
+2026-09-05 三条路真机比过（同一身份提示词、同一套卡片规格 768×1344）：
 
-而 dev 版一次吃**最多 10 张参考图**，够把「已定稿的全部视图」一起挂上去：
-出第 5 个视图时，主视图加前 4 个视图都在场，新视图必须同时与它们自洽，
-漂移无处可去。这叫**累积锁定**，单参考的模型做不到——它每次只能看见一个
-角度，去推另一个角度，前面几个视图的信息用不上。
+| | 主视图耗时 | 构图一致性 | 覆盖范围 |
+|---|---|---|---|
+| **FLUX.2 dev** | 57 s | ✅ 四视图全身入画，一张没漂 | 任意视图 |
+| Z-Image Turbo | 15 s | 主视图很好，多参考那条没验（配的是 Z-Image **Base**，权重不在） | — |
+| MiniMax 转身抽帧 | 168 s / 4 视图 | ✅ 机位固定 | ❌ 只覆盖连续运动扫得到的 |
+| MiniMax 逐视图独立采样 | 22 s | ❌ **会自己裁成中景**，写了 `full body head to toe` 也没守住 | 任意视图 |
 
-许可是 Non-Commercial。本项目自用 / 研究，不构成约束。选型的完整对比见
-issue #12。
+**卡片是测量用的参考素材，构图不一致比画面不好看更伤**——一张全身一张中景，
+喂进 R2V 时比例就不对。这一项 FLUX.2 赢得干净。
 
-## 为什么这里没有 JSON
+累积锁定的耗时随参考数涨：0 张 32 s、1 张 64 s、2 张 102 s、3 张 138 s。
+**这条单调上升本身就是「参考真的进了 conditioning」的机械证据**——
+上一次判断「参考生效」栽过（AUTOGROW 接线是死的），所以这里不只看画面。
 
-上一级 README 第一句写着「这里放**真机跑通过**的 ComfyUI API 格式节点图」。
-本仓库的开发环境**没有 GPU、没有 ComfyUI**，出不了真机导出，也就没有资格
-往这里放一份看起来像模像样的节点图——那种文件的危险之处在于它能通过所有
-静态检查，然后在生产机上安静地画错东西。
+阴性对照：同 seed 同提示词、一张参考都不挂，出来是个「相像但不同」的人
+（脸型更圆、领口从方领变圆领、鞋子多了红条）。**参考确实起作用，但在提示词
+已经写得很死、seed 又相同的情况下，边际影响是中等而不是压倒性的。** 如实记着。
 
-所以这里放的是**导出要求**。
+许可是 Non-Commercial。本项目自用 / 研究，不构成约束。完整选型讨论见 issue #12。
 
-## 导出清单
+## 接线来源
 
-1. 在目标机器的 ComfyUI 里把两条流程各跑通一次，确认出图正常。
-2. 用 **API 格式**导出（不是前端的 UI workflow——带 `nodes` / `links` /
-   `definitions.subgraphs` 的那种不能用）。
-3. 各自补一段 `_studio`，写清参数绑到哪个节点的哪个输入上。
+`Comfy-Org/workflow_templates` 的 `templates/image_flux2.json`，取
+`definitions.subgraphs[0]`（"Image Edit (Flux.2 Dev)"），逐条按 `links` 展平。
 
-### `t2i.json` 至少要绑
+两处**必须偏离模板**，各有理由：
 
-| 参数 | 说明 |
-|---|---|
-| `positive` | 视图提示词。`identity_prompt` 逐字 + 本视图机位描述 + 画幅 |
-| `width` / `height` | 卡片尺寸。同一张卡的所有视图同一套规格 |
-| `seed` | 固定并记录。卡片也要可复现——重出一个视图时要能对齐 |
+| 模板写的 | 这里用 | 为什么 |
+|---|---|---|
+| `VAELoader: full_encoder_small_decoder.safetensors` | `flux2-vae.safetensors` | 模板那份权重这台机器上没有 |
+| `LoraLoaderModelOnly: Flux_2-Turbo-LoRA` + 两个 `ComfySwitchNode` | 全部摘掉，走 20 步 | 模板的 `enable_turbo_mode` 默认 `false`，turbo LoRA 也不在机器上 |
 
-`negative` 有就绑，没有就把约束写成正向句子（和视频那边同一个道理，
-见 `.agents/doctrine/consistency/bible.md`）。
+`t2i.json` 是在此基础上再把参考分支（`VAEEncode` → `ReferenceLatent`）整条
+摘掉，宽高直接给 `Flux2Scheduler` 与 `EmptyFlux2LatentImage`。
 
-### `multiref_edit.json`
+## 参考链是怎么表达的
 
-`t2i.json` 那几项照绑。参考图那一项**现在绑不了，这是已知的**，见下一节。
-
-## 参考图的绑定卡在哪
-
-`multiref_edit` 存在的全部理由是参考图，但**当前的绑定格式表达不了它**。
-
-`_studio.bindings` 的形状是「参数名 → 固定路径数组」：
+参考数由内容决定（1..10），`_studio.bindings` 的固定路径数组喂不下，
+所以 `multiref_edit.json` 多一段 `_studio.reference_chain`：
 
 ```jsonc
-"positive": ["<节点id>.inputs.text"]
-```
-
-它能表达「把一个值写到 N 个固定位置」，表达不了「挂 K 张参考图，K 由内容
-决定」——而累积锁定恰恰是变的：出第 2 个视图挂 1 张，出第 8 个视图挂 7 张。
-
-这是**格式本身的天花板，不是少写了一行绑定**。同一堵墙上还撞着渲染那边的
-R2V（官方支持 9 图 + 3 视频 + 3 音频，仓库基线只有 1 个槽位）和 AddGuide
-链（节点数量 = 锚点数量）。
-
-解法是 issue #14：基线降级为可组合的片段库，参考槽位按声明的实际数量拼。
-**在 #14 落地之前，这两条基线导出来也只能跑固定参数那一半。**
-
-所以导出时请一并记录：参考图走 `/upload/image` 上传之后，承接它的
-`LoadImage`（或等价节点）在图里叫什么、多张参考是并列多个节点还是单节点
-接列表。这些信息 #14 的片段库要用。
-
-### `_studio` 的样子
-
-```jsonc
-{
-  "_studio": {
-    "bindings": {
-      "positive": ["<节点id>.inputs.<字段>"],
-      "width":    ["<节点id>.inputs.width"],
-      "height":   ["<节点id>.inputs.height"],
-      "seed":     ["<节点id>.inputs.<字段>"]
-    },
-    "source": "<从哪台机器、哪份流程导出的>",
-    "bindings_verified": true
-  }
+"reference_chain": {
+  "nodes": {                       // 每张参考复制一份这三个节点
+    "load":   { "class_type": "LoadImage",       "inputs": { "image": "" } },
+    "encode": { "class_type": "VAEEncode",       "inputs": { "pixels": ["load", 0], "vae": ["vae", 0] } },
+    "link":   { "class_type": "ReferenceLatent", "inputs": { "conditioning": null, "latent": ["encode", 0] } }
+  },
+  "asset":     "load.inputs.image",         // 素材文件名写这儿
+  "chain_in":  "link.inputs.conditioning",  // 上一环的输出接这儿
+  "chain_out": ["link", 0],                 // 本环的输出
+  "head":      ["guidance", 0],             // 链条第一环接谁
+  "tail":      "guider.inputs.conditioning",// 链条最后一环接到哪
+  "max": 10
 }
 ```
 
-`bindings_verified` 只有在**真的按这份绑定跑出过正确的图**之后才写
-`true`。没验证过就写 `false` 并补 `unavailable_reason`——控制面会跳过
-未核验的基线，不会拿它去画图。
+这是**链式**可变槽位，区别于 `minimax_h3` 那边 AUTOGROW 的**平铺编号**
+（`"ref_images.ref_image_1": [...]`，见 SPEC-0014 §2.1）。两种都由
+`studio-core` 里的确定性代码展开，Agent 看不见。
 
-## 导出之前先做这个实测
+## `bindings_verified: true` 的依据
 
-FLUX.2 累积锁定到底能不能把脸锁住，**还没验证过**。这是整条卡片路线唯一
-剩下的支点（issue #12 待实测第 2b 项），而且验证成本很低：
+2026-09-05，A800 80GB / ComfyUI 0.34.0。**两份文件都填上绑定值原样提交跑通**：
+`t2i` 768×1344 主视图 33 秒，`multiref_edit` 挂两张参考出正侧面 101 秒。
+**人眼看过**——灰底匀光、全身入画、中性表情，符合卡片规格；两份出的是同一个人、
+同一条裙子、同一双鞋。
 
-用上次那个把脸锁崩了的身份锁，出同样四个视图（`front_full` →
-`three_quarter` → `profile` → `face_close`），每一步把已定稿的都挂上去当
-参考，看四张是不是同一个人。
-
-跟上次的单参考结果直接对比，就知道累积锁定值不值这套架构。**锁不住就别
-急着导基线**——那说明卡片路线要重新选型。
-
-## 落地之前，这个阶段能做到哪一步
-
-Agent 可以完整提交一份资产计划：卡片、视图清单、身份锁、参考关系
-都会被校验（视图缺失、多个主视图、`derived_from` 没指向锚点、
-同卡混画幅、身份锁近义改写，都会被挡下）。
-
-**但图生不出来。** 计划里 `status` 一律是 `planned`，`path` 与
-`provenance` 空着。这不是缺陷，是这一步的真实状态——
-把计划写对，是这台没有 GPU 的机器上能做完的全部。
-
-注意 `derived_from` 现在是**单值**（指向主视图），累积锁定要求它变成
-**数组**（指向所有已定稿视图）。schema 的这处改动也在 #14 之后，
-跟参考槽位一起做。
+跑通不等于画面对，所以这一条写的是「跑完出片并且人眼确认过」。
