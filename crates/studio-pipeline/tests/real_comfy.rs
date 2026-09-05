@@ -293,9 +293,20 @@ fn upload_clip(env: &Env, name: &str) -> String {
         .expect("ffmpeg 起不来");
     assert!(ok.success(), "造锚点视频失败");
     let bytes = std::fs::read(&local).unwrap();
+    // `upload_image` 打的是 `/upload/image`——那个端点收不收 mp4，只有真机
+    // 答得了。收不了的话这里要**把服务端的原话带出来**，否则得再跑一轮才
+    // 知道是被拒了还是别的问题。
     env.comfy
         .upload_image(&format!("{name}.mp4"), &bytes)
-        .expect("锚点视频传不上去")
+        .unwrap_or_else(|e| {
+            panic!(
+                "锚点视频（{} 字节）传不上去：{}\n\
+                 如果是端点不收视频，就得给 studio-comfy 补一条视频上传的路径，\n\
+                 而不是把这条测试改成传图片——传图片验不了 clip 通道。",
+                bytes.len(),
+                e.message()
+            )
+        })
 }
 
 /// **这条测试就是放开 `input.video` 的依据。**
