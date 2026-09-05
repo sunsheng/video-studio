@@ -55,9 +55,20 @@ pub struct ComfyConfig {
     /// 会自动退回普通组合并在进度里说明，所以开着也不会悄悄跑出不可信的东西。
     #[serde(default = "default_preview_turbo")]
     pub preview_turbo: bool,
+    /// `post` 要不要把每一镜超分到交付规格（短边 1080）。默认开——模型的
+    /// 原生画布短边只有 768，不超分的话导出的片子分辨率不达标，而这是
+    /// 用户可见的。代价是整条流水线的 GPU 时间多约 62%（实测同一镜渲染
+    /// 63.9 秒、超分 42.1 秒）。
+    ///
+    /// 关掉是明确的选择，不是降级：`post` 的产物里会写 `upscaled: false`。
+    #[serde(default = "default_upscale")]
+    pub upscale: bool,
 }
 
 fn default_preview_turbo() -> bool {
+    true
+}
+fn default_upscale() -> bool {
     true
 }
 
@@ -83,6 +94,7 @@ impl Default for ComfyConfig {
             poll_interval_secs: default_poll(),
             concurrency: default_concurrency(),
             preview_turbo: default_preview_turbo(),
+            upscale: default_upscale(),
         }
     }
 }
@@ -282,6 +294,17 @@ impl Settings {
         }
     }
 
+    /// `post` 是否把每一镜超分到交付规格。`COMFY_UPSCALE=0` 可以关掉。
+    pub fn comfy_upscale(&self) -> bool {
+        match self.env.get("COMFY_UPSCALE") {
+            Some(v) => !matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "0" | "false" | "no" | "off"
+            ),
+            None => self.file.comfy.upscale,
+        }
+    }
+
     pub fn comfy_poll_secs(&self) -> u64 {
         self.env
             .get("COMFY_POLL_INTERVAL_SECS")
@@ -388,6 +411,23 @@ mod tests {
         assert_eq!(m.get("FFMPEG_PATH").unwrap(), "/opt/bin/ffmpeg");
         assert_eq!(m.get("FFPROBE_PATH").unwrap(), "/opt/bin/ffprobe");
         assert!(m.contains_key("COMFY_NODES"));
+    }
+
+    /// 超分默认开着：模型的原生画布短边只有 768，不超就交付不达标，
+    /// 而这是用户可见的。关掉要显式说。
+    #[test]
+    fn upscale_is_on_by_default_and_turned_off_explicitly() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Settings::load(None, Some(dir.path()));
+        assert!(s.comfy_upscale(), "默认必须是开");
+
+        for off in ["0", "false", "no", "OFF", " off "] {
+            std::fs::write(dir.path().join(".env"), format!("COMFY_UPSCALE={off}\n")).unwrap();
+            let s = Settings::load(None, Some(dir.path()));
+            assert!(!s.comfy_upscale(), "COMFY_UPSCALE={off} 应当关掉超分");
+        }
+        std::fs::write(dir.path().join(".env"), "COMFY_UPSCALE=1\n").unwrap();
+        assert!(Settings::load(None, Some(dir.path())).comfy_upscale());
     }
 
     #[test]

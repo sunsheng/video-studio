@@ -78,6 +78,71 @@ fn scale_to_short_edge(width: i64, height: i64, target_short_edge: i64) -> (i64,
     }
 }
 
+/// 交付短边。短视频平台的通行规格是 1080×1920，短边就是这个数。
+///
+/// 模型的原生画布比它小——MiniMax H3 是短边 768——中间那一段由 `post` 的
+/// 超分补上。
+const DELIVERY_SHORT_EDGE: i64 = 1080;
+
+/// 成片超分用的基线。见 `assets/workflows/seedvr2/SOURCE-README.md`。
+const UPSCALE_WORKFLOW: &str = "seedvr2/upscale";
+
+/// 一镜要怎么超。目标尺寸按 ffprobe 实测的源宽高算，不按提示词包里写的。
+struct UpscaleJob {
+    idx: usize,
+    shot_id: String,
+    src: PathBuf,
+    from: (i64, i64),
+    to: (i64, i64),
+    seed: i64,
+}
+
+/// 这一镜要超到多大。
+///
+/// `aspect` 是 `brief.aspect_ratio` 里那个字符串。它是自由文本（schema 只
+/// 要求是字符串），所以解析不出 `W:H` 时**退回素材自己的宽高比**——那样至少
+/// 分辨率是对的，比拿一个猜出来的画幅去裁画面安全。
+///
+/// 两条规矩：
+///
+/// - **只放大不缩小**。短边取 `max(DELIVERY_SHORT_EDGE, 源短边)`，
+///   已经够大的素材不会被这一步降下去。
+/// - 两边都取偶数。H.264 要求如此。
+///
+/// 顺带修正画幅：MiniMax 的「9:16」画布实际是 768×1344，化简是 4:7；
+/// 按 9:16 算出来的目标交给 `ResizeImageMaskNode` 的 `crop=center`
+/// 居中裁掉多出来的 1.6% 宽度。
+fn delivery_dims(aspect: &str, src_w: i64, src_h: i64) -> (i64, i64) {
+    if src_w <= 0 || src_h <= 0 {
+        return (DELIVERY_SHORT_EDGE, DELIVERY_SHORT_EDGE);
+    }
+    let src_short = src_w.min(src_h);
+    let short = src_short.max(DELIVERY_SHORT_EDGE);
+
+    // `W:H` 解析得出来才用它，否则按素材自己的比例走。
+    let ratio = aspect
+        .split_once(':')
+        .and_then(|(a, b)| Some((a.trim().parse::<f64>().ok()?, b.trim().parse::<f64>().ok()?)))
+        .filter(|(a, b)| *a > 0.0 && *b > 0.0);
+    let (rw, rh) = match ratio {
+        Some(v) => v,
+        None => return scale_to_short_edge(src_w, src_h, short),
+    };
+
+    let (mut w, mut h) = if rw <= rh {
+        (short, (short as f64 * rh / rw).round() as i64)
+    } else {
+        ((short as f64 * rw / rh).round() as i64, short)
+    };
+    if w % 2 != 0 {
+        w += 1;
+    }
+    if h % 2 != 0 {
+        h += 1;
+    }
+    (w, h)
+}
+
 pub struct Pipeline {
     /// 已验证 workflow 基线的所在目录，通常是程序目录下的 `assets/workflows`。
     baselines: PathBuf,
@@ -715,6 +780,19 @@ impl Pipeline {
             parts.push(ctx.bundle.resolve(rel)?);
         }
 
+        // 交付规格是短边 1080，而模型的原生画布只有 768。**先逐镜超分再拼接**：
+        // 显存跟成片长度解耦（整片 300 帧进一个 latent 多半要开分块），
+        // 复用逐镜重试，时序模型也不必去缝合两镜之间的硬切。
+        // 超分后各镜参数仍然一致，下面的 can_stream_copy 照样成立。
+        let upscale = ctx.settings.comfy_upscale();
+        if upscale {
+            let brief = need(&ctx.inputs, "brief", StageId::Post)?;
+            let aspect = brief["aspect_ratio"].as_str().unwrap_or("9:16");
+            parts = self.upscale_shots(ctx, &media, shots, &parts, aspect)?;
+        } else {
+            ctx.say("按配置跳过超分，成片是模型的原生画布");
+        }
+
         // 先用 ffprobe 判断能不能直接 copy —— 五个镜头本来就是同一套参数出的，
         // 一致的话没必要让 ffmpeg 重编码一遍。
         let stream_copy = ctx
@@ -745,7 +823,11 @@ impl Pipeline {
         ctx.progress_and_step("抽取封面", "cover")
             .done(media.extract_frame(&final_path, 0.5, &cover_path))?;
 
-        let mut out = json!({ "video": final_rel, "cover": cover_rel });
+        let mut out = json!({
+            "video": final_rel,
+            "cover": cover_rel,
+            "upscaled": upscale
+        });
 
         if let Some(srt) = subtitles::from_script(script) {
             let srt_rel = "media/subtitles.srt";
@@ -763,6 +845,213 @@ impl Pipeline {
         out["stream_copied"] = json!(stream_copy);
 
         Ok(wrap(StageId::Post, out))
+    }
+
+    /// 逐镜把渲染产物超分到交付规格，返回给拼接用的新路径（按原顺序）。
+    ///
+    /// **不降级。** ComfyUI 不可达、基线缺失或未核验，都在这里结构化阻塞，
+    /// 不会安静地把原生画布的片子当成交付件交出去。真要接受原生画布，
+    /// 用 `COMFY_UPSCALE=0` 明确说——那是一个选择，不是一次失败。
+    fn upscale_shots(
+        &self,
+        ctx: &ExecContext<'_>,
+        media: &Media,
+        shots: &[Value],
+        parts: &[PathBuf],
+        aspect: &str,
+    ) -> Result<Vec<PathBuf>> {
+        let wf = ctx.step("load_upscale_baseline").done(
+            Workflow::load(&self.baselines, UPSCALE_WORKFLOW).and_then(|w| {
+                w.require_verified()?;
+                Ok(w)
+            }),
+        )?;
+
+        let comfy = Comfy::from_settings(ctx.settings);
+        comfy.ensure_reachable()?;
+
+        // 目标尺寸按各镜实测的宽高算，不按提示词包里写的——写的和出的对不上
+        // 正是这个项目反复踩的那种坑，而这里 ffprobe 就在手边。
+        let mut jobs: Vec<UpscaleJob> = Vec::new();
+        for (idx, (shot, src)) in shots.iter().zip(parts).enumerate() {
+            let shot_id = shot["shot_id"].as_str().unwrap_or("shot").to_string();
+            let info = media.probe(src)?;
+            let (w, h) = (info.width as i64, info.height as i64);
+            let (tw, th) = delivery_dims(aspect, w, h);
+            jobs.push(UpscaleJob {
+                idx,
+                shot_id,
+                src: src.clone(),
+                from: (w, h),
+                to: (tw, th),
+                seed: shot["seed"].as_i64().unwrap_or(idx as i64 + 1),
+            });
+        }
+
+        let total = jobs.len();
+        let todo: Vec<usize> = jobs
+            .iter()
+            .enumerate()
+            .filter(|(_, j)| j.to != j.from)
+            .map(|(i, _)| i)
+            .collect();
+        for j in jobs.iter().filter(|j| j.to == j.from) {
+            ctx.step("upscale")
+                .shot(&j.shot_id)
+                .with("skipped", json!("已经是交付规格"))
+                .with("size", json!(format!("{}x{}", j.from.0, j.from.1)))
+                .done(Ok::<(), StudioError>(()))?;
+        }
+        if todo.is_empty() {
+            ctx.say("各镜已经是交付规格，不需要超分");
+            return Ok(parts.to_vec());
+        }
+        ctx.say(format!(
+            "超分 {} 个镜头到 {}x{}",
+            todo.len(),
+            jobs[todo[0]].to.0,
+            jobs[todo[0]].to.1
+        ));
+
+        let results: Mutex<Vec<Option<PathBuf>>> = Mutex::new(vec![None; total]);
+        let queue: Mutex<VecDeque<usize>> = Mutex::new(todo.iter().copied().collect());
+        let failure: Mutex<Option<StudioError>> = Mutex::new(None);
+        let worker_count = ctx.settings.comfy_concurrency().min(todo.len());
+
+        std::thread::scope(|scope| {
+            for _ in 0..worker_count {
+                let (queue, results, failure, comfy, wf, jobs) =
+                    (&queue, &results, &failure, &comfy, &wf, &jobs);
+                scope.spawn(move || loop {
+                    if ctx.is_cancelled() || failure.lock().unwrap().is_some() {
+                        return;
+                    }
+                    let Some(i) = queue.lock().unwrap().pop_front() else {
+                        return;
+                    };
+                    match self.upscale_one(ctx, comfy, wf, &jobs[i], total) {
+                        Ok(p) => results.lock().unwrap()[i] = Some(p),
+                        Err(e) => {
+                            let mut f = failure.lock().unwrap();
+                            if f.is_none() {
+                                *f = Some(e);
+                            }
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+
+        if let Some(e) = failure.into_inner().unwrap() {
+            return Err(e);
+        }
+        if ctx.is_cancelled() {
+            return Err(StudioError::internal("超分被中断"));
+        }
+        // 跳过的那几镜沿用原产物，顺序仍然是分镜顺序——拼接靠的是这个。
+        Ok(results
+            .into_inner()
+            .unwrap()
+            .into_iter()
+            .zip(parts)
+            .map(|(up, src)| up.unwrap_or_else(|| src.clone()))
+            .collect())
+    }
+
+    /// 一镜的上传-提交-等待-下载，失败时最多重试 [`MAX_SHOT_ATTEMPTS`] 次。
+    fn upscale_one(
+        &self,
+        ctx: &ExecContext<'_>,
+        comfy: &Comfy,
+        wf: &Workflow,
+        job: &UpscaleJob,
+        total: usize,
+    ) -> Result<PathBuf> {
+        let mut last_err = None;
+        for attempt in 1..=MAX_SHOT_ATTEMPTS {
+            if ctx.is_cancelled() {
+                return Err(StudioError::internal("超分被中断"));
+            }
+            match self.upscale_once(ctx, comfy, wf, job, total) {
+                Ok(p) => return Ok(p),
+                Err(e) => {
+                    if attempt < MAX_SHOT_ATTEMPTS {
+                        ctx.say(format!(
+                            "{} 超分第 {attempt} 次尝试失败（{}），重试中",
+                            job.shot_id,
+                            e.message()
+                        ));
+                    }
+                    last_err = Some(e);
+                }
+            }
+        }
+        Err(last_err
+            .unwrap_or_else(|| StudioError::internal(format!("{} 超分重试耗尽", job.shot_id))))
+    }
+
+    fn upscale_once(
+        &self,
+        ctx: &ExecContext<'_>,
+        comfy: &Comfy,
+        wf: &Workflow,
+        job: &UpscaleJob,
+        total: usize,
+    ) -> Result<PathBuf> {
+        let node = comfy.node();
+        let bytes = std::fs::read(&job.src).map_err(|_| StudioError::ArtifactMissing {
+            path: job.src.display().to_string(),
+        })?;
+        // `/upload/image` 收 mp4——video 通道那次真机验收里验过。
+        let remote = comfy.upload_image(&format!("{}.mp4", job.shot_id), &bytes)?;
+
+        let mut params = Map::new();
+        params.insert("filename".into(), json!(remote));
+        params.insert("width".into(), json!(job.to.0));
+        params.insert("height".into(), json!(job.to.1));
+        params.insert("seed".into(), json!(job.seed));
+        params.insert(
+            "output_prefix".into(),
+            json!(format!("studio/upscaled/{}", job.shot_id)),
+        );
+        let graph = wf.apply(&params)?;
+
+        let sub = ctx
+            .progress_and_step(
+                format!(
+                    "{}/{total} {} 超分 {}x{} → {}x{}",
+                    job.idx + 1,
+                    job.shot_id,
+                    job.from.0,
+                    job.from.1,
+                    job.to.0,
+                    job.to.1
+                ),
+                "upscale_submit",
+            )
+            .shot(&job.shot_id)
+            .node(node)
+            .with("from", json!(format!("{}x{}", job.from.0, job.from.1)))
+            .with("to", json!(format!("{}x{}", job.to.0, job.to.1)))
+            .done(comfy.submit(&graph, "video-studio"))?;
+
+        let files = comfy.wait(&sub)?;
+        let first = files.first().ok_or_else(|| StudioError::ComfyFailed {
+            node: node.to_string(),
+            detail: format!("{} 超分执行完成但没有产出文件", job.shot_id),
+        })?;
+
+        let rel = format!("media/upscaled/{}.mp4", job.shot_id);
+        let dest = ctx.bundle.resolve(&rel)?;
+        ctx.step("upscale")
+            .shot(&job.shot_id)
+            .node(node)
+            .prompt(&sub.prompt_id)
+            .with("path", json!(rel))
+            .with("to", json!(format!("{}x{}", job.to.0, job.to.1)))
+            .done(comfy.download(first, &dest))?;
+        Ok(dest)
     }
 
     fn review(&self, ctx: &ExecContext<'_>) -> Result<Outputs> {
@@ -949,6 +1238,90 @@ mod render_tests {
         .unwrap();
         let settings = Settings::load(None, Some(dir));
         (bundle, settings)
+    }
+
+    /// 后期阶段的输入：一镜渲染产物 + 剧本 + 需求。
+    fn post_inputs(bundle: &Bundle) -> Value {
+        bundle
+            .write("media/sh01.mp4", "not-really-a-video")
+            .unwrap();
+        json!({
+            "render": { "shots": [{ "shot_id": "sh01", "path": "media/sh01.mp4" }] },
+            "script": { "segments": [] },
+            "brief": { "aspect_ratio": "9:16" }
+        })
+    }
+
+    /// **超分缺基线时结构化阻塞，不静默交原生画布。**
+    ///
+    /// 这条守的是「不降级」：交付规格达不到是要报出来的，不是悄悄把 768
+    /// 短边的片子当成交付件交出去。
+    #[test]
+    fn a_missing_upscale_baseline_blocks_post_instead_of_downgrading() {
+        let bundle_dir = tempfile::tempdir().unwrap();
+        let baselines_dir = tempfile::tempdir().unwrap();
+        write_baseline(baselines_dir.path()); // 只有渲染基线，没有 seedvr2
+        let good = healthy_node();
+        let (bundle, settings) = scaffold(bundle_dir.path(), &good.url);
+
+        let pipeline = Pipeline::new(baselines_dir.path().to_path_buf());
+        let recorder = ExecRecorder::at(bundle.root());
+        let ctx = ExecContext {
+            bundle: &bundle,
+            settings: &settings,
+            inputs: post_inputs(&bundle),
+            progress: &ProgressNote::default(),
+            recorder: &recorder,
+            cancelled: &AtomicBool::new(false),
+        };
+
+        let e = pipeline.post(&ctx).unwrap_err();
+        assert_eq!(e.code(), "model_contract_violation");
+        assert!(
+            e.message().contains("seedvr2/upscale"),
+            "错误里要指名缺的是哪一条基线：{}",
+            e.message()
+        );
+    }
+
+    /// `COMFY_UPSCALE=0` 之后 post 一步都不碰 ComfyUI——基线缺着也照走，
+    /// 后面卡在哪是 ffmpeg 那条老路的事，不再是超分的事。
+    #[test]
+    fn turning_upscale_off_skips_the_baseline_entirely() {
+        let bundle_dir = tempfile::tempdir().unwrap();
+        let baselines_dir = tempfile::tempdir().unwrap();
+        write_baseline(baselines_dir.path());
+        // 节点故意配成连不上：关掉超分之后 post 不该去碰它。
+        let (bundle, _) = scaffold(bundle_dir.path(), "http://127.0.0.1:1");
+        std::fs::write(
+            bundle_dir.path().join(".env"),
+            "COMFY_NODE=http://127.0.0.1:1\nCOMFY_UPSCALE=0\n",
+        )
+        .unwrap();
+        let settings = Settings::load(None, Some(bundle_dir.path()));
+        assert!(!settings.comfy_upscale());
+
+        let pipeline = Pipeline::new(baselines_dir.path().to_path_buf());
+        let recorder = ExecRecorder::at(bundle.root());
+        let ctx = ExecContext {
+            bundle: &bundle,
+            settings: &settings,
+            inputs: post_inputs(&bundle),
+            progress: &ProgressNote::default(),
+            recorder: &recorder,
+            cancelled: &AtomicBool::new(false),
+        };
+
+        // 那段假 mp4 迟早会让 ffprobe 或 ffmpeg 报错——重点是**不是**
+        // model_contract_violation / comfy_unavailable：超分整条路没走。
+        if let Err(e) = pipeline.post(&ctx) {
+            assert!(
+                !matches!(e.code(), "model_contract_violation" | "comfy_unavailable"),
+                "关掉超分之后不该再碰基线或 ComfyUI，却报了 {}：{}",
+                e.code(),
+                e.message()
+            );
+        }
     }
 
     #[test]
@@ -1191,6 +1564,40 @@ mod render_tests {
         assert_eq!(scale_to_short_edge(1024, 1024, 480), (480, 480));
         // 已经比目标短边还小也照样缩放，不做「已经够小就跳过」的特殊分支。
         assert_eq!(scale_to_short_edge(0, 0, 480), (480, 480));
+    }
+
+    #[test]
+    fn delivery_dims_lands_on_the_declared_aspect() {
+        // MiniMax 的「9:16」画布实际是 4:7；按声明的 9:16 算目标，
+        // 多出来的宽度由 ResizeImageMaskNode 的 crop=center 裁掉。
+        assert_eq!(delivery_dims("9:16", 768, 1344), (1080, 1920));
+        assert_eq!(delivery_dims("16:9", 1344, 768), (1920, 1080));
+        assert_eq!(delivery_dims("1:1", 768, 768), (1080, 1080));
+        assert_eq!(delivery_dims("4:5", 768, 960), (1080, 1350));
+    }
+
+    /// `brief.aspect_ratio` 是自由文本。解析不出来时退回素材自己的比例——
+    /// 拿一个猜出来的画幅去裁画面比不裁危险得多。
+    #[test]
+    fn an_unparseable_aspect_falls_back_to_the_source_ratio() {
+        assert_eq!(delivery_dims("竖屏", 768, 1344), (1080, 1890));
+        assert_eq!(delivery_dims("", 768, 1344), (1080, 1890));
+        assert_eq!(delivery_dims("9:0", 768, 1344), (1080, 1890));
+        assert_eq!(delivery_dims("9:16", 0, 0), (1080, 1080));
+    }
+
+    /// 只放大不缩小：已经够大的素材不该被这一步降下去。
+    #[test]
+    fn delivery_dims_never_shrinks_the_source() {
+        assert_eq!(delivery_dims("9:16", 1440, 2560), (1440, 2560));
+        assert_eq!(delivery_dims("16:9", 2560, 1440), (2560, 1440));
+    }
+
+    /// 两边都要偶数，H.264 要求如此。
+    #[test]
+    fn delivery_dims_are_even() {
+        let (w, h) = delivery_dims("7:15", 768, 1344);
+        assert_eq!((w % 2, h % 2), (0, 0), "{w}x{h} 里有奇数边");
     }
 }
 
