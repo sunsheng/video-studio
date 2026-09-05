@@ -5,9 +5,10 @@
 //! 事情（协议合规），但这里的是场景库自己要用的独立小工具函数，不是
 //! 完整的报告结构；`studio-skill-eval` 不能反向依赖 `studio-cli`。
 //!
-//! 语义层面的裁判（LLM 读 SKILL.md 的职责条款去评产物质量）留给 Agent
-//! 场景，见 ADR-0004。
+//! `semantic` 是语义层面的裁判：LLM 读 SKILL.md 的职责条款 + 相关
+//! doctrine 文件去评产物质量，留给 Agent 场景，见 ADR-0004。
 
+pub mod semantic;
 pub mod structural;
 
 use serde::{Deserialize, Serialize};

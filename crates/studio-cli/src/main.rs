@@ -9,7 +9,10 @@ use clap::{Parser, Subcommand};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use studio_cli::{assets, doctor, e2e, exec_report, html, list, pack, quality, rollout};
-use studio_skill_eval::{all_scenarios, run_scenario, ScenarioResult};
+use studio_skill_eval::driver::codex::CodexDriver;
+use studio_skill_eval::driver::direct_llm::DirectLlmDriver;
+use studio_skill_eval::driver::run_agent_scenario;
+use studio_skill_eval::{agent_scenarios, all_scenarios, run_scenario, ScenarioResult};
 
 #[derive(Parser)]
 #[command(
@@ -95,7 +98,7 @@ enum Command {
     /// 已验证 workflow 基线相关
     #[command(subcommand)]
     Workflows(WorkflowCommand),
-    /// Skill 评估：像测代码一样测 AGENTS.md / SKILL.md，见 ADR-0003
+    /// Skill 评估：像测代码一样测 AGENTS.md / SKILL.md，见 ADR-0004
     #[command(subcommand)]
     SkillEval(SkillEvalCommand),
 }
@@ -125,6 +128,15 @@ enum SkillEvalCommand {
     Run {
         /// 场景 id，见 `skill-eval list`
         scenario: String,
+        /// 用哪种驱动跑：scripted（默认，脚本场景专用，确定性）、
+        /// codex（真实 Codex 子进程读 skill 文档自己决策）、direct-llm
+        /// （不依赖 Codex CLI，直连 OpenAI 兼容 API）。后两种只对 Agent
+        /// 场景生效，且不进 CI
+        #[arg(long, default_value = "scripted")]
+        driver: String,
+        /// `--driver direct-llm` 时必填：要用的模型名
+        #[arg(long)]
+        model: Option<String>,
         /// 写 JSON 结果到文件；不给就只打印摘要
         #[arg(short, long)]
         out: Option<PathBuf>,
@@ -224,9 +236,12 @@ fn run(cli: Cli) -> Result<(), String> {
         Command::Exec(ExecCommand::Report { bundle, out, html }) => cmd_exec(bundle, out, html),
         Command::Workflows(WorkflowCommand::Check { dir }) => cmd_workflows_check(dir),
         Command::SkillEval(SkillEvalCommand::List) => cmd_skill_eval_list(),
-        Command::SkillEval(SkillEvalCommand::Run { scenario, out }) => {
-            cmd_skill_eval_run(&scenario, out)
-        }
+        Command::SkillEval(SkillEvalCommand::Run {
+            scenario,
+            driver,
+            model,
+            out,
+        }) => cmd_skill_eval_run(&scenario, &driver, model.as_deref(), out),
         Command::SkillEval(SkillEvalCommand::Diff { old, new }) => cmd_skill_eval_diff(&old, &new),
     }
 }
@@ -508,8 +523,14 @@ fn cmd_unpack(archive: &Path, into: &Path) -> Result<(), String> {
 }
 
 fn cmd_skill_eval_list() -> Result<(), String> {
+    println!("脚本场景（--driver scripted，默认；确定性，能直接进 cargo test）：");
     for m in all_scenarios() {
         println!("  {:<40} {}", m.id, m.description);
+    }
+    println!();
+    println!("Agent 场景（--driver codex|direct-llm；真实 LLM 决策，本机按需跑，不进 CI）：");
+    for (s, _) in agent_scenarios::all() {
+        println!("  {:<40} {}", s.id, s.description);
     }
     Ok(())
 }
@@ -534,14 +555,49 @@ fn render_scenario_result(r: &ScenarioResult) -> String {
     s
 }
 
-fn cmd_skill_eval_run(scenario: &str, out: Option<PathBuf>) -> Result<(), String> {
-    let r = run_scenario(scenario).ok_or_else(|| {
-        let known: Vec<&str> = all_scenarios().into_iter().map(|m| m.id).collect();
-        format!(
-            "没有叫 {scenario} 的场景。已注册的场景：{}",
-            known.join("、")
-        )
-    })?;
+fn unknown_scenario(scenario: &str, agent: bool) -> String {
+    let known: Vec<&str> = if agent {
+        agent_scenarios::all()
+            .into_iter()
+            .map(|(s, _)| s.id)
+            .collect()
+    } else {
+        all_scenarios().into_iter().map(|m| m.id).collect()
+    };
+    format!(
+        "没有叫 {scenario} 的{}场景。已注册的场景：{}",
+        if agent { "Agent " } else { "" },
+        known.join("、")
+    )
+}
+
+fn cmd_skill_eval_run(
+    scenario: &str,
+    driver: &str,
+    model: Option<&str>,
+    out: Option<PathBuf>,
+) -> Result<(), String> {
+    let r = match driver {
+        "scripted" => run_scenario(scenario).ok_or_else(|| unknown_scenario(scenario, false))?,
+        "codex" => {
+            let (s, mut user) =
+                agent_scenarios::find(scenario).ok_or_else(|| unknown_scenario(scenario, true))?;
+            let mut d = CodexDriver::new()?;
+            run_agent_scenario(&s, &mut d, &mut user)
+        }
+        "direct-llm" => {
+            let (s, mut user) =
+                agent_scenarios::find(scenario).ok_or_else(|| unknown_scenario(scenario, true))?;
+            let model = model.ok_or("`--driver direct-llm` 需要同时给 `--model <名字>`")?;
+            let mut d = DirectLlmDriver::from_env(model)?;
+            run_agent_scenario(&s, &mut d, &mut user)
+        }
+        other => {
+            return Err(format!(
+                "不认识的 --driver {other}。可选：scripted / codex / direct-llm。"
+            ))
+        }
+    };
 
     if let Some(path) = &out {
         let json = serde_json::to_string_pretty(&r).map_err(|e| e.to_string())?;

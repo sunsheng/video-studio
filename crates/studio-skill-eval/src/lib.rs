@@ -4,13 +4,20 @@
 //! `e2e`/`exec` report 一样是开发者工具。设计见
 //! `docs/decisions/ADR-0004-skill-evaluation.md`。
 //!
-//! 这个 crate 目前只有"脚本场景"：确定性、不需要任何 LLM、能直接进
-//! `cargo test --workspace`。"Agent 场景"（真实 LLM 读 skill 文档自己
-//! 做决策）是 ADR-0004 里设计好、尚未实现的下一步。
+//! 两类场景：
+//! - "脚本场景"（[`scenario`]）：确定性、不需要任何 LLM、能直接进
+//!   `cargo test --workspace`。
+//! - "Agent 场景"（[`agent_scenarios`] + [`driver`] + [`user_sim`]）：
+//!   真实 LLM 读 skill 文档自己做决策，不进 CI，本机按需跑。
 
+pub mod agent_scenarios;
+pub mod driver;
 pub mod harness;
 pub mod judge;
 pub mod scenario;
+pub mod user_sim;
 
+pub use driver::{run_agent_scenario, AgentDriver, AgentScenario, DriverRun};
 pub use judge::Verdict;
 pub use scenario::{all as all_scenarios, run as run_scenario, ScenarioResult};
+pub use user_sim::{GateState, ScriptedUser, UserSim};

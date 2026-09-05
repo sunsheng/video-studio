@@ -17,7 +17,11 @@ pub struct ScenarioResult {
     pub passed: bool,
 }
 
-fn finish(scenario_id: &str, description: &str, verdicts: Vec<Verdict>) -> ScenarioResult {
+pub(crate) fn finish(
+    scenario_id: &str,
+    description: &str,
+    verdicts: Vec<Verdict>,
+) -> ScenarioResult {
     let passed = verdicts.iter().all(|v| v.passed);
     ScenarioResult {
         scenario_id: scenario_id.to_string(),

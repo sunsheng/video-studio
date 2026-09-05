@@ -14,4 +14,6 @@ studio-mcp = { path = "../studio-mcp" }
 studio-rollout = { path = "../studio-rollout" }
 serde.workspace = true
 serde_json.workspace = true
+ureq.workspace = true
+walkdir.workspace = true
 tempfile = "3"

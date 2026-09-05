@@ -1010,6 +1010,8 @@ dependencies = [
  "studio-mcp",
  "studio-rollout",
  "tempfile",
+ "ureq",
+ "walkdir",
 ]
 
 [[package]]
