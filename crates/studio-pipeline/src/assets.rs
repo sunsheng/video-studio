@@ -17,6 +17,7 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 use studio_comfy::Comfy;
+use studio_core::assembly::{parse_shot_segment, ShotSegment};
 use studio_core::{Result, StudioError};
 use studio_engine::bundle::Bundle;
 use studio_media::Media;
@@ -198,38 +199,6 @@ fn list_ids(cards: &[Value]) -> String {
     } else {
         ids.join("、")
     }
-}
-
-/// `sh01.tail` / `sh01.tail22` / `sh01.head` 拆出来的三段。
-#[derive(Debug, PartialEq)]
-pub struct ShotSegment<'a> {
-    pub shot_id: &'a str,
-    /// true 取尾段，false 取首段。
-    pub from_tail: bool,
-    /// 带了帧数就裁一段，没带就取一帧静图。
-    pub frames: Option<u32>,
-}
-
-/// 认不认得出是镜间引用。规则跟 `studio_core::assembly` 的 V9 一致：
-/// 后缀是 `tail` / `head`，后面可以跟帧数。
-pub fn parse_shot_segment(asset_id: &str) -> Option<ShotSegment<'_>> {
-    let (shot_id, segment) = asset_id.split_once('.')?;
-    let digits: String = segment
-        .chars()
-        .rev()
-        .take_while(|c| c.is_ascii_digit())
-        .collect();
-    let word = &segment[..segment.len() - digits.len()];
-    let from_tail = match word.to_ascii_lowercase().as_str() {
-        "tail" => true,
-        "head" => false,
-        _ => return None,
-    };
-    Some(ShotSegment {
-        shot_id,
-        from_tail,
-        frames: digits.chars().rev().collect::<String>().parse().ok(),
-    })
 }
 
 #[cfg(test)]

@@ -19,7 +19,7 @@ pub mod schema;
 pub mod stage;
 pub mod state;
 
-pub use assembly::{Fragment, FragmentKind, FragmentSet, ShotDeclaration};
+pub use assembly::{Fragment, FragmentKind, FragmentSet, ShotDeclaration, ShotSegment};
 pub use capability::{CapabilitySet, WorkflowCapability, INJECTABLE_PARAMS};
 pub use contract::{
     ActionKind, AnswerOption, Blocked, Confirmation, Decision, DecisionKind, Envelope, Event,

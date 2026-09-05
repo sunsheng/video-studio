@@ -1497,7 +1497,7 @@ pub fn validate_shot(
     let mut v = Vec::new();
     let check_asset = |v: &mut Vec<Violation>, path: String, asset_id: &str| {
         // V9：镜间引用（`sh01.tail`）只能指向本包里更靠前的镜头。
-        if let Some(shot_id) = shot_segment_of(asset_id) {
+        if let Some(shot_id) = parse_shot_segment(asset_id).map(|s| s.shot_id) {
             if prior_shots.iter().any(|s| s == shot_id) {
                 return;
             }
@@ -1700,12 +1700,26 @@ enum AssetRef {
     Unknown,
 }
 
+/// `sh01.tail` / `sh01.tail22` / `sh01.head` 拆出来的三段。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShotSegment<'a> {
+    pub shot_id: &'a str,
+    /// true 取尾段，false 取首段。
+    pub from_tail: bool,
+    /// 带了帧数就是一段，没带就是一帧静图。
+    pub frames: Option<u32>,
+}
+
 /// 镜间引用写成 `<shot_id>.tail` / `<shot_id>.head`（可带帧数，如 `.tail22`）。
 /// 它们不在 `visual_assets` 里，也不可能在——上一镜的尾段要等那一镜渲完
 /// 才存在。所以先按这个形状认，认不出来再回落到登记过的资产。
 ///
 /// 登记过的资产 id 里也可能有点（`C01.front` 这样的视角），但后缀不是
 /// tail/head，认不成镜间引用，会正常落到第二条路上。
+///
+/// **这条规则只能有一份实现。** 上层解析素材、调度分波用的都是这个函数——
+/// 各写一份的话，某一天有人给其中一份加了新后缀，校验就会放行一个解析不出来
+/// 的引用，或者反过来。
 fn classify_asset(asset_id: &str, known_assets: &[String]) -> AssetRef {
     if known_assets.iter().any(|a| a == asset_id) {
         return AssetRef::Registered;
@@ -1714,10 +1728,20 @@ fn classify_asset(asset_id: &str, known_assets: &[String]) -> AssetRef {
 }
 
 /// 这条引用是不是「上一镜的某一段」，是的话指的是哪一镜。
-fn shot_segment_of(asset_id: &str) -> Option<&str> {
+pub fn parse_shot_segment(asset_id: &str) -> Option<ShotSegment<'_>> {
     let (shot_id, segment) = asset_id.split_once('.')?;
-    let word = segment.trim_end_matches(|c: char| c.is_ascii_digit());
-    (word.eq_ignore_ascii_case("tail") || word.eq_ignore_ascii_case("head")).then_some(shot_id)
+    let digits = segment.trim_start_matches(|c: char| !c.is_ascii_digit());
+    let word = &segment[..segment.len() - digits.len()];
+    let from_tail = match word.to_ascii_lowercase().as_str() {
+        "tail" => true,
+        "head" => false,
+        _ => return None,
+    };
+    Some(ShotSegment {
+        shot_id,
+        from_tail,
+        frames: digits.parse().ok(),
+    })
 }
 
 fn preview_list(items: &[String]) -> String {
@@ -1881,6 +1905,34 @@ mod validation_tests {
         let hit = find(&v, "S05").expect("{v:?}");
         assert!(hit.message.contains("还没渲出来"), "{}", hit.message);
         assert!(hit.message.contains("更靠前"), "{}", hit.message);
+    }
+
+    /// 镜间引用的解析规则只有这一份实现——校验、调度分波、素材裁切
+    /// 用的都是它。各写一份的话，某天有人给其中一份加了新后缀，
+    /// 校验就会放行一个解析不出来的引用，或者反过来。
+    #[test]
+    fn the_shot_segment_rule_parses_every_documented_form() {
+        let bare = parse_shot_segment("sh01.tail").unwrap();
+        assert_eq!(bare.shot_id, "sh01");
+        assert!(bare.from_tail);
+        assert_eq!(bare.frames, None, "不带帧数 = 一帧静图");
+
+        let clip = parse_shot_segment("S02.tail22").unwrap();
+        assert_eq!(clip.shot_id, "S02");
+        assert!(clip.from_tail);
+        assert_eq!(clip.frames, Some(22), "带帧数 = 一段");
+
+        let head = parse_shot_segment("S02.head5").unwrap();
+        assert!(!head.from_tail);
+        assert_eq!(head.frames, Some(5));
+
+        // 视角 id 认不成镜间引用，会落到「登记过的资产」那条路上。
+        for not_a_segment in ["C01.front", "C01", "SC02.key_angle", "sh01.", "sh01.tails"] {
+            assert!(
+                parse_shot_segment(not_a_segment).is_none(),
+                "{not_a_segment} 不该被认成镜间引用"
+            );
+        }
     }
 
     /// 资产 id 里带点的（`C01.front` 这种视角）不该被误认成镜间引用。

@@ -232,7 +232,7 @@ fn dependency_waves(shots: &[Value]) -> Vec<Vec<usize>> {
             .filter_map(|item| item["asset_id"].as_str())
             .chain(frames.filter_map(|v| v.as_str()))
         {
-            let Some(seg) = assets::parse_shot_segment(asset_id) else {
+            let Some(seg) = studio_core::assembly::parse_shot_segment(asset_id) else {
                 continue;
             };
             // 指向不存在或更靠后的镜头在提交时就被 V9 挡了；真走到这里
