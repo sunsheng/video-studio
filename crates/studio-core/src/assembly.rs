@@ -632,17 +632,17 @@ fn read_at(graph: &Map<String, Value>, path: &str) -> Option<Value> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests_support {
     use super::*;
     use serde_json::json;
 
-    fn nodes(v: Value) -> Map<String, Value> {
+    pub(crate) fn nodes(v: Value) -> Map<String, Value> {
         v.as_object().unwrap().clone()
     }
 
     /// 一份最小但结构完整的片段库，形状跟真实的
     /// `assets/workflows/minimax_h3/fragments/` 一致。
-    fn fragments() -> FragmentSet {
+    pub(crate) fn fragments() -> FragmentSet {
         let mut backbone = Fragment::new(
             "minimax_h3",
             nodes(json!({
@@ -810,7 +810,7 @@ mod tests {
         }
     }
 
-    fn shot(head: &str) -> ShotDeclaration {
+    pub(crate) fn shot(head: &str) -> ShotDeclaration {
         ShotDeclaration {
             shot_id: "S01".into(),
             head: head.into(),
@@ -827,7 +827,7 @@ mod tests {
         }
     }
 
-    fn img_ref(asset: &str) -> Reference {
+    pub(crate) fn img_ref(asset: &str) -> Reference {
         Reference {
             kind: Medium::Image,
             asset_id: asset.into(),
@@ -1031,5 +1031,361 @@ mod tests {
         let e = assemble(&set, &shot("image"), "media/S01").unwrap_err();
         assert_eq!(e.code(), "model_contract_violation");
         assert!(e.message().contains("filename_prefix"), "{}", e.message());
+    }
+}
+
+/// MiniMax H3 的帧数网格：`17k + 5`，k ≥ 0，即 5 / 22 / 39 / 56 / 73…
+///
+/// 模型会自己 snap 到最近的合法值，所以写个 50 帧下去不报错——但产出的
+/// 时长跟提示词包里声明的对不上，而 `post` 拼接是按声明的时长算的。
+/// 显式挡下比让它悄悄改掉好。
+pub const FRAME_GRID_STEP: i64 = 17;
+pub const FRAME_GRID_BASE: i64 = 5;
+
+pub fn is_on_frame_grid(frames: i64) -> bool {
+    frames >= FRAME_GRID_BASE && (frames - FRAME_GRID_BASE) % FRAME_GRID_STEP == 0
+}
+
+/// 离给定帧数最近的两个合法值，用在报错消息里。
+fn nearest_grid(frames: i64) -> (i64, i64) {
+    if frames <= FRAME_GRID_BASE {
+        return (FRAME_GRID_BASE, FRAME_GRID_BASE + FRAME_GRID_STEP);
+    }
+    let k = (frames - FRAME_GRID_BASE) / FRAME_GRID_STEP;
+    let lo = FRAME_GRID_BASE + k * FRAME_GRID_STEP;
+    (lo, lo + FRAME_GRID_STEP)
+}
+
+/// 提交 `prompt_pack` 时的组合合法性校验（SPEC-0014 §6 的 V1–V8）。
+///
+/// 跟组装器分开是有意的：组装器只在渲染时跑，而这些错误应该在**提交那一刻**
+/// 就报出来——让 Agent 当场按 remedy 改，而不是等花完 GPU 时间才发现。
+///
+/// `known_assets` 是 `visual_assets` 登记过的产物 id。传空切片表示跳过 V7
+/// （上游阶段还没产出时不该拿这条卡住）。
+pub fn validate_shot(
+    set: &FragmentSet,
+    shot: &ShotDeclaration,
+    known_assets: &[String],
+    index: usize,
+) -> Vec<Violation> {
+    let at = |field: &str| format!("prompt_pack.shots[{index}].{field}");
+    let mut v = Vec::new();
+
+    let Some(head) = set.heads.get(&shot.head) else {
+        v.push(Violation::new(
+            at("head"),
+            format!("没有这个 head。可用的：{}", set.verified_heads().join("、")),
+        ));
+        return v;
+    };
+
+    // V4：帧数吃 17k+5 网格
+    if !is_on_frame_grid(shot.length_frames) {
+        let (lo, hi) = nearest_grid(shot.length_frames);
+        v.push(Violation::new(
+            at("length_frames"),
+            format!(
+                "{} 不在 MiniMax H3 的帧数网格上（17k+5：5 / 22 / 39 / 56 / 73…）。\
+                 最近的合法值是 {lo} 或 {hi}。写别的值模型会自己 snap，\
+                 于是成片时长跟这里声明的对不上，而 post 拼接按声明算。",
+                shot.length_frames
+            ),
+        ));
+    }
+
+    // V8：画幅取 32 的倍数，短边不超过原生画布
+    for (name, val) in [("width", shot.width), ("height", shot.height)] {
+        if val % 32 != 0 {
+            v.push(Violation::new(
+                at(name),
+                format!("{val} 不是 32 的倍数。ComfyUI 会四舍五入，实际出图尺寸跟这里对不上。"),
+            ));
+        }
+    }
+    let short_edge = shot.width.min(shot.height);
+    if short_edge > 768 {
+        v.push(Violation::new(
+            at("width"),
+            format!(
+                "短边 {short_edge} 超过 MiniMax H3 的原生画布 768。\
+                 超出部分不会带来细节，只是更慢；要更高分辨率走 post 的超分。"
+            ),
+        ));
+    }
+
+    // V1 / V2：head 决定能挂什么
+    if head.autogrow.is_empty() && !shot.references.is_empty() {
+        v.push(Violation::new(
+            at("references"),
+            format!(
+                "head「{}」不接参考（它没有 AUTOGROW 槽位）。要挂参考就换成有槽位的 head。",
+                head.id
+            ),
+        ));
+    }
+    let mut used: BTreeMap<&str, usize> = BTreeMap::new();
+    for (i, r) in shot.references.iter().enumerate() {
+        let n = used.entry(r.kind.as_str()).or_insert(0);
+        *n += 1;
+        match head.autogrow.get(r.kind.as_str()) {
+            Some(slot) if *n > slot.max => v.push(Violation::new(
+                at(&format!("references[{i}]")),
+                format!(
+                    "{} 类参考最多 {} 个，这是第 {} 个。",
+                    r.kind.as_str(),
+                    slot.max,
+                    n
+                ),
+            )),
+            Some(_) => {}
+            None if !head.autogrow.is_empty() => v.push(Violation::new(
+                at(&format!("references[{i}].kind")),
+                format!("head「{}」没有 {} 类参考的槽位。", head.id, r.kind.as_str()),
+            )),
+            None => {}
+        }
+        // V6：音轨只能跟着视频走
+        if r.with_audio && r.kind != Medium::Video {
+            v.push(Violation::new(
+                at(&format!("references[{i}].with_audio")),
+                "只有 video 类参考能带音轨——它占用同号的 ref_video_audio 槽位。",
+            ));
+        }
+        // V7：引用的资产必须真的存在
+        if !known_assets.is_empty() && !known_assets.iter().any(|a| a == &r.asset_id) {
+            v.push(Violation::new(
+                at(&format!("references[{i}].asset_id")),
+                format!(
+                    "visual_assets 里没有「{}」。可用的：{}",
+                    r.asset_id,
+                    preview_list(known_assets)
+                ),
+            ));
+        }
+    }
+
+    // V2：image head 的 guide 只能是首尾两帧
+    let frames_only = head.autogrow.is_empty() && !head.frames.is_empty();
+    if frames_only && shot.guides.len() > 2 {
+        v.push(Violation::new(
+            at("guides"),
+            format!(
+                "head「{}」只有首尾两个帧槽位，挂不了 {} 个 guide。",
+                head.id,
+                shot.guides.len()
+            ),
+        ));
+    }
+
+    for (j, g) in shot.guides.iter().enumerate() {
+        // V3：帧号必须落在这一镜的范围内
+        let in_range = g.at_frame >= -shot.length_frames && g.at_frame < shot.length_frames;
+        if !in_range {
+            v.push(Violation::new(
+                at(&format!("guides[{j}].at_frame")),
+                format!(
+                    "{} 超出这一镜的帧范围。合法区间是 [-{}, {})，负数从末尾倒数。",
+                    g.at_frame, shot.length_frames, shot.length_frames
+                ),
+            ));
+        }
+        if frames_only && !(g.at_frame == 0 || g.at_frame == -1) {
+            v.push(Violation::new(
+                at(&format!("guides[{j}].at_frame")),
+                format!(
+                    "head「{}」只能锚首帧（0）或尾帧（-1），锚不了第 {} 帧。\
+                     要在任意帧锚定就换成有 AddGuide 支持的 head。",
+                    head.id, g.at_frame
+                ),
+            ));
+        }
+        if !known_assets.is_empty() && !known_assets.iter().any(|a| a == &g.asset_id) {
+            v.push(Violation::new(
+                at(&format!("guides[{j}].asset_id")),
+                format!(
+                    "visual_assets 里没有「{}」。可用的：{}",
+                    g.asset_id,
+                    preview_list(known_assets)
+                ),
+            ));
+        }
+    }
+
+    v
+}
+
+fn preview_list(items: &[String]) -> String {
+    if items.len() <= 8 {
+        return items.join("、");
+    }
+    format!("{}… 等 {} 个", items[..8].join("、"), items.len())
+}
+
+#[cfg(test)]
+mod validation_tests {
+    use super::tests_support::{fragments, img_ref, shot};
+    use super::*;
+
+    fn assets() -> Vec<String> {
+        ["C01.front", "C01.anchor", "SC02.key", "S02.tail"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    }
+
+    fn find<'a>(vs: &'a [Violation], needle: &str) -> Option<&'a Violation> {
+        vs.iter().find(|v| v.message.contains(needle))
+    }
+
+    /// V4：帧数必须落在 17k+5 网格上。模型会自己 snap，于是成片时长跟
+    /// 声明的对不上，而 post 拼接按声明算——这是会一路错到交付的那种。
+    #[test]
+    fn v4_frames_off_the_grid_are_rejected_with_the_nearest_legal_values() {
+        assert!(is_on_frame_grid(5) && is_on_frame_grid(22) && is_on_frame_grid(73));
+        assert!(!is_on_frame_grid(50) && !is_on_frame_grid(0));
+
+        let mut s = shot("reference");
+        s.length_frames = 50;
+        let v = validate_shot(&fragments(), &s, &[], 0);
+        let hit = find(&v, "帧数网格").expect("应当报帧数网格");
+        assert!(
+            hit.message.contains("39") && hit.message.contains("56"),
+            "{}",
+            hit.message
+        );
+        assert_eq!(hit.path, "prompt_pack.shots[0].length_frames");
+    }
+
+    #[test]
+    fn v8_dimensions_must_be_multiples_of_32_and_within_the_native_canvas() {
+        let mut s = shot("reference");
+        s.width = 1000;
+        s.height = 900;
+        let v = validate_shot(&fragments(), &s, &[], 0);
+        assert!(find(&v, "32 的倍数").is_some(), "{v:?}");
+        assert!(
+            find(&v, "原生画布").is_some(),
+            "短边 900 超 768 该报，{v:?}"
+        );
+    }
+
+    /// V1：超出槽位上限在提交时就挡下，不等到渲染。
+    #[test]
+    fn v1_too_many_references_are_caught_at_submit_time() {
+        let mut s = shot("reference");
+        s.references = (0..10).map(|i| img_ref(&format!("A{i}"))).collect();
+        let v = validate_shot(&fragments(), &s, &[], 0);
+        assert!(find(&v, "最多 9 个").is_some(), "{v:?}");
+    }
+
+    /// V2：image head 只有首尾两个帧槽位。
+    #[test]
+    fn v2_an_image_head_takes_neither_references_nor_arbitrary_frame_guides() {
+        let mut s = shot("image");
+        s.references = vec![img_ref("C01.front")];
+        s.guides = vec![Guide {
+            kind: GuideKind::Image,
+            at_frame: 30,
+            asset_id: "S02.tail".into(),
+        }];
+        let v = validate_shot(&fragments(), &s, &[], 0);
+        assert!(find(&v, "不接参考").is_some(), "{v:?}");
+        assert!(find(&v, "只能锚首帧").is_some(), "{v:?}");
+    }
+
+    /// V3：帧号要落在这一镜的范围内，负数从末尾倒数所以下界是 -length。
+    #[test]
+    fn v3_guide_frames_must_fall_inside_the_shot() {
+        let mut s = shot("reference");
+        s.length_frames = 22;
+        s.guides = vec![
+            Guide {
+                kind: GuideKind::Image,
+                at_frame: 22,
+                asset_id: "S02.tail".into(),
+            },
+            Guide {
+                kind: GuideKind::Image,
+                at_frame: -1,
+                asset_id: "S02.tail".into(),
+            },
+        ];
+        let v = validate_shot(&fragments(), &s, &[], 0);
+        assert_eq!(v.len(), 1, "只有第一个越界：{v:?}");
+        assert!(v[0].message.contains("[-22, 22)"), "{}", v[0].message);
+    }
+
+    /// V6：音轨只能跟着视频参考走。
+    #[test]
+    fn v6_only_a_video_reference_may_carry_audio() {
+        let mut s = shot("reference");
+        s.references = vec![Reference {
+            kind: Medium::Image,
+            asset_id: "C01.front".into(),
+            with_audio: true,
+        }];
+        let v = validate_shot(&fragments(), &s, &[], 0);
+        assert!(find(&v, "只有 video").is_some(), "{v:?}");
+    }
+
+    /// V7：引用不存在的资产要当场报，并把可用的列出来。
+    #[test]
+    fn v7_an_unknown_asset_id_lists_what_is_available() {
+        let mut s = shot("reference");
+        s.references = vec![img_ref("C99.nope")];
+        let v = validate_shot(&fragments(), &s, &assets(), 0);
+        let hit = find(&v, "C99.nope").expect("{v:?}");
+        assert!(
+            hit.message.contains("C01.front"),
+            "要列出可用的：{}",
+            hit.message
+        );
+    }
+
+    /// 上游还没产出时传空清单，V7 不该拿这条卡住。
+    #[test]
+    fn v7_is_skipped_when_the_asset_list_is_not_available_yet() {
+        let mut s = shot("reference");
+        s.references = vec![img_ref("C99.nope")];
+        assert!(validate_shot(&fragments(), &s, &[], 0).is_empty());
+    }
+
+    /// 一份完全合规的声明不该报任何东西。
+    #[test]
+    fn a_valid_shot_produces_no_violations() {
+        let mut s = shot("reference");
+        s.width = 1344;
+        s.height = 768;
+        s.length_frames = 73;
+        s.references = vec![img_ref("C01.front"), img_ref("SC02.key")];
+        s.guides = vec![Guide {
+            kind: GuideKind::Image,
+            at_frame: 0,
+            asset_id: "S02.tail".into(),
+        }];
+        assert_eq!(validate_shot(&fragments(), &s, &assets(), 0), vec![]);
+    }
+
+    /// 每条违规都要有可定位的路径，否则 Agent 不知道改哪。
+    #[test]
+    fn every_violation_carries_an_addressable_path() {
+        let mut s = shot("reference");
+        s.length_frames = 50;
+        s.width = 1000;
+        s.references = vec![Reference {
+            kind: Medium::Image,
+            asset_id: "nope".into(),
+            with_audio: true,
+        }];
+        let v = validate_shot(&fragments(), &s, &assets(), 3);
+        assert!(v.len() >= 3, "{v:?}");
+        for one in &v {
+            assert!(
+                one.path.starts_with("prompt_pack.shots[3]."),
+                "路径要能定位到具体镜头与字段：{}",
+                one.path
+            );
+        }
     }
 }
