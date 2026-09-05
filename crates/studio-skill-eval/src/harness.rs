@@ -123,15 +123,27 @@ impl Harness {
         )
     }
 
-    /// 提交某阶段的样例产物；有确认门时自动选 approve。
+    /// 提交某阶段的样例产物；有确认门时自动选第一个「通过」选项。
+    ///
+    /// 不写死 `"approve"` 这个 id：选题那道门给的是几个方案各一个通过
+    /// 选项（id 是 concept_id），门上的选项本来就该随阶段而变，只有
+    /// `outcome` 字段才是稳定的（见 `studio_core::contract::Outcome`）。
     pub fn advance(&mut self, stage: StageId) {
         let (env, err) = self.submit(stage);
         assert!(!err, "提交 {stage} 失败：{env}");
         if let Some(q) = env["pending_question"].as_object() {
             let qid = q["question_id"].as_str().unwrap().to_string();
+            let options = q["options"].as_array().expect("门上应该有可选项");
+            let approve_id = options
+                .iter()
+                .find(|o| o["outcome"] == "approve")
+                .unwrap_or_else(|| panic!("{stage} 的门上没有通过选项：{options:?}"))["id"]
+                .as_str()
+                .unwrap()
+                .to_string();
             let (_, err) = self.call(
                 "studio.answer",
-                serde_json::json!({ "question_id": qid, "answer": "approve" }),
+                serde_json::json!({ "question_id": qid, "answer": approve_id }),
             );
             assert!(!err, "确认 {stage} 失败");
         }
