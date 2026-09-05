@@ -16,6 +16,10 @@
           "description": "封面相对路径",
           "type": "string"
         },
+        "delivery": {
+          "description": "成片实际尺寸，例如 1080x1920",
+          "type": "string"
+        },
         "duration_seconds": {
           "description": "成片实际时长",
           "type": "number"
@@ -23,6 +27,10 @@
         "subtitles": {
           "description": "字幕相对路径",
           "type": "string"
+        },
+        "upscaled": {
+          "description": "有没有做成片超分。false 表示成片停在模型的原生画布上，交付分辨率达不到 1080——那是配置里明确关掉的结果，不是失败",
+          "type": "boolean"
         },
         "video": {
           "description": "成片的 bundle 内相对路径",

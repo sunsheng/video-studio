@@ -3,8 +3,8 @@
 //! 这一组测试有环境前置条件，**CI 里不会跑**：
 //!
 //! - `COMFY_NODE` 指向一个可达的 ComfyUI 入口
-//! - 该实例上装着 `minimax_h3` 的权重
-//! - 本机有 `ffmpeg`（用来现造参考图）
+//! - 该实例上装着 `minimax_h3` 与 `seedvr2` 的权重
+//! - 本机有 `ffmpeg` / `ffprobe`（现造参考图，核对产物的尺寸帧数音轨）
 //!
 //! 缺任何一条就跳过并说明原因——不满足前置条件时**假装通过**比红更糟，
 //! 但把它变成红也不对：那不是代码的问题。所以跳过 + 打印理由。
@@ -22,6 +22,7 @@ use studio_core::assembly::{
 };
 use studio_engine::bundle::Bundle;
 use studio_engine::Settings;
+use studio_pipeline::workflow::Workflow;
 
 /// 一镜的规格：小而快，只为验接线，不为出好看的画面。
 const W: i64 = 640;
@@ -33,6 +34,8 @@ struct Env {
     _dir: tempfile::TempDir,
     bundle: Bundle,
     comfy: Comfy,
+    /// 超分那条验收要用它建 `Media`（ffprobe 核对尺寸、帧数、音轨）。
+    settings: Settings,
     /// `mut` 是给放开 video 通道那条测试用的：它要临时把
     /// `input.video` 置为已核验才拼得出图，见那条测试的注释。
     set: FragmentSet,
@@ -77,6 +80,7 @@ fn setup() -> Option<Env> {
         _dir: dir,
         bundle,
         comfy,
+        settings,
         set,
     })
 }
@@ -98,6 +102,31 @@ fn fragments() -> Option<FragmentSet> {
     }
     set.backbone.as_ref()?;
     Some(set)
+}
+
+/// 数一段视频有几帧。用 `nb_read_packets` 而不是 `nb_frames`——后者对某些
+/// 封装是空的，而这里恰恰要靠帧数把成片和锚点素材分开，读不到就等于没验。
+fn probe_frames(path: &std::path::Path) -> i64 {
+    let out = std::process::Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-count_packets",
+            "-show_entries",
+            "stream=nb_read_packets",
+            "-of",
+            "csv=p=0",
+        ])
+        .arg(path)
+        .output()
+        .expect("ffprobe 起不来");
+    String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .trim_end_matches(',')
+        .parse()
+        .unwrap_or_else(|_| panic!("ffprobe 读不出帧数：{}", path.display()))
 }
 
 /// 现造一张纯色参考图并传上去，返回 ComfyUI 那侧的文件名。
@@ -396,7 +425,30 @@ fn the_video_input_channel_renders_on_a_real_comfyui() {
             .wait(&sub)
             .unwrap_or_else(|e| panic!("{name}执行失败：{}", e.message()));
         assert!(!files.is_empty(), "{name}跑完却没有产出文件");
-        eprintln!("✅ {name}（{}）：{} 个产物", sub.prompt_id, files.len());
+
+        // **必须下载下来核对。** `LoadVideo` 会把输入素材回显进 history 的
+        // outputs，节点 id 排序下它还排在 `save_video` 前面；只断言「有产物」
+        // 的话，拿到锚点素材当成成片也照样绿。核对帧数就能分开——锚点 5 帧，
+        // 镜头 39 帧。
+        let dest = env
+            .bundle
+            .resolve(&format!("media/out_{}.mp4", shot.shot_id))
+            .unwrap();
+        env.comfy
+            .download(&files[0], &dest)
+            .unwrap_or_else(|e| panic!("{name}的产物下不下来：{}", e.message()));
+        let frames = probe_frames(&dest);
+        assert_eq!(
+            frames, shot.length_frames,
+            "{name}拿到的不是这一镜的成片（{frames} 帧，应当是 {} 帧）——\
+             多半是把 LoadVideo 回显的输入素材当成产物了（锚点只有 {ANCHOR_FRAMES} 帧）",
+            shot.length_frames
+        );
+        eprintln!(
+            "✅ {name}（{}）：{} 个产物，成片 {frames} 帧",
+            sub.prompt_id,
+            files.len()
+        );
     }
 
     if !already {
@@ -591,4 +643,130 @@ fn every_fragment_parses_with_complete_metadata() {
     for id in overlays {
         assert!(set.heads.contains_key(id), "叠加层 {id} 没有对应的 head");
     }
+}
+
+/// SPEC-0015 §8.2：成片超分链路的真机验收。
+///
+/// 真渲一镜（原生画布短边 768 的竖屏），再用 `seedvr2/upscale` 基线把它超到
+/// 交付规格 1080×1920，核对**尺寸、帧数、音轨**三样。
+///
+/// 帧数和音轨是重点：超分链路把视频拆成 `IMAGE` 序列再 `CreateVideo` 拼回去，
+/// 拆错了会掉帧，`audio` 那根线接漏了会把声音丢掉——两样都是「图照样合法、
+/// 跑照样成功」的静默错误。
+///
+/// 跑法：
+/// ```text
+/// COMFY_NODE=<入口> COMFY_TOKEN=<token> \
+///   cargo test -p studio-pipeline --test real_comfy upscales_a_shot -- --nocapture
+/// ```
+#[test]
+fn upscaling_a_shot_lands_on_the_delivery_spec() {
+    let Some(env) = setup() else { return };
+
+    // 竖屏原生画布：短边 768，长边 1344——正是 MiniMax 的「9:16」。
+    const SRC_W: i64 = 768;
+    const SRC_H: i64 = 1344;
+    const OUT_W: i64 = 1080;
+    const OUT_H: i64 = 1920;
+
+    let swatch = upload_swatch(&env, "up_ref", "0x35506e");
+    let mut shot = base("U01", "image");
+    shot.width = SRC_W;
+    shot.height = SRC_H;
+    shot.first_frame = Some(swatch);
+    let out = assemble_as(
+        &env.set,
+        &shot,
+        "real-acceptance/U01",
+        Combination::Standard,
+    )
+    .unwrap_or_else(|e| panic!("竖屏镜头组装失败：{}", e.message()));
+    let sub = env
+        .comfy
+        .submit(&out.graph, "real-acceptance")
+        .unwrap_or_else(|e| panic!("竖屏镜头被判为非法：{}", e.message()));
+    let files = env
+        .comfy
+        .wait(&sub)
+        .unwrap_or_else(|e| panic!("竖屏镜头渲染失败：{}", e.message()));
+    let src = env.bundle.resolve("media/U01.mp4").unwrap();
+    env.comfy.download(&files[0], &src).unwrap();
+    assert_eq!(probe_frames(&src), FRAMES, "源片帧数就不对，后面没法比");
+    eprintln!("✅ 源片：{SRC_W}x{SRC_H} {FRAMES} 帧");
+
+    // 超分：走仓库里那份基线，不在测试里手写图。
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/workflows");
+    let wf = Workflow::load(&dir, "seedvr2/upscale").expect("超分基线读不出来");
+    wf.require_verified().expect("超分基线应当已核验");
+
+    let bytes = std::fs::read(&src).unwrap();
+    let remote = env
+        .comfy
+        .upload_image("U01.mp4", &bytes)
+        .expect("成片传不上去");
+    let mut params = serde_json::Map::new();
+    params.insert("filename".into(), json!(remote));
+    params.insert("width".into(), json!(OUT_W));
+    params.insert("height".into(), json!(OUT_H));
+    params.insert("seed".into(), json!(20260905));
+    params.insert("output_prefix".into(), json!("real-acceptance/U01-up"));
+    let graph = wf.apply(&params).unwrap();
+
+    let sub = env
+        .comfy
+        .submit(&graph, "real-acceptance")
+        .unwrap_or_else(|e| panic!("超分图被判为非法：{}", e.message()));
+    let files = env
+        .comfy
+        .wait(&sub)
+        .unwrap_or_else(|e| panic!("超分执行失败：{}", e.message()));
+    assert_eq!(
+        files.len(),
+        1,
+        "超分图里有 LoadVideo，输入回显不该被当成产物"
+    );
+    let up = env.bundle.resolve("media/U01-up.mp4").unwrap();
+    env.comfy.download(&files[0], &up).unwrap();
+
+    let info = studio_media::Media::new(&env.settings).probe(&up).unwrap();
+    assert_eq!(
+        (info.width as i64, info.height as i64),
+        (OUT_W, OUT_H),
+        "超分后的尺寸不是交付规格"
+    );
+    assert_eq!(probe_frames(&up), FRAMES, "超分掉帧了");
+    assert!(
+        info.has_audio,
+        "超分把音轨丢了——CreateVideo 的 audio 那根线"
+    );
+    eprintln!(
+        "✅ 超分：{}x{} {} 帧，音轨 {}",
+        info.width,
+        info.height,
+        probe_frames(&up),
+        info.audio_codec.as_deref().unwrap_or("无")
+    );
+
+    // 拼接那一步的前提：超分后的各镜参数一致，仍然能直接复制流。
+    let second = env.bundle.resolve("media/U01-up-copy.mp4").unwrap();
+    std::fs::copy(&up, &second).unwrap();
+    assert!(
+        studio_media::Media::new(&env.settings)
+            .can_stream_copy(&[up.clone(), second])
+            .unwrap(),
+        "超分后的片段拼接不能直接复制流了——post 会退成重编码，慢且掉画质"
+    );
+
+    // bundle 是临时目录，测试一结束就没了。产物拷到 target/ 下留着——
+    // 「跑完不等于画面对」，下一步是人眼看，看不到文件就等于没这一步。
+    let keep =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/real-acceptance");
+    std::fs::create_dir_all(&keep).unwrap();
+    std::fs::copy(&src, keep.join("upscale-before.mp4")).unwrap();
+    std::fs::copy(&up, keep.join("upscale-after.mp4")).unwrap();
+    eprintln!(
+        "\n跑完不等于画面对。人眼看一遍：\n  {}\n  {}",
+        keep.join("upscale-after.mp4").display(),
+        keep.join("upscale-before.mp4").display()
+    );
 }

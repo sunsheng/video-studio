@@ -131,6 +131,7 @@ pub fn run(program_dir: Option<&std::path::Path>, bundle: Option<&std::path::Pat
 
     checks.push(check_workflow_assets(program_dir));
     checks.push(check_image_baselines(program_dir));
+    checks.push(check_upscale_baseline(program_dir));
 
     if let Some(root) = bundle {
         checks.push(check_codex_config(root));
@@ -250,6 +251,55 @@ fn check_image_baselines(program_dir: Option<&std::path::Path>) -> Check {
              导出两条基线，核验过再把 bindings_verified 改成 true。",
             dir.display()
         )),
+    }
+}
+
+/// 成片超分要一份已核验的 SeedVR2 基线。
+///
+/// 这一项是 **Warn**：超分默认开着，但关掉（`COMFY_UPSCALE=0`）之后
+/// `post` 就是原来那条纯 ffmpeg 的路，前九个阶段一步都不少。它存在的意义
+/// 是别等到跑完渲染、进了 `post` 才发现交付规格达不到——那时候 GPU 时间
+/// 已经烧完了。
+fn check_upscale_baseline(program_dir: Option<&std::path::Path>) -> Check {
+    let path = program_dir
+        .map(|p| p.join("assets/workflows/seedvr2/upscale.json"))
+        .unwrap_or_else(|| std::path::PathBuf::from("assets/workflows/seedvr2/upscale.json"));
+
+    let state = std::fs::read_to_string(&path).ok().map(|text| {
+        serde_json::from_str::<serde_json::Value>(&text)
+            .ok()
+            .and_then(|v| v.get("_studio")?.get("bindings_verified")?.as_bool())
+            .unwrap_or(false)
+    });
+
+    match state {
+        Some(true) => Check {
+            name: "成片超分基线".into(),
+            level: Level::Ok,
+            detail: "seedvr2/upscale 在，且已核验".into(),
+            remedy: None,
+        },
+        Some(false) => Check {
+            name: "成片超分基线未核验".into(),
+            level: Level::Warn,
+            detail: format!("{} 的 bindings_verified 是 false", path.display()),
+            remedy: Some(
+                "post 会在超分那一步结构化阻塞。要么在真机上跑通并核验，\n  \
+                 要么 COMFY_UPSCALE=0 明确接受原生画布的成片。"
+                    .into(),
+            ),
+        },
+        None => Check {
+            name: "成片超分基线缺失".into(),
+            level: Level::Warn,
+            detail: format!("{} 不存在", path.display()),
+            remedy: Some(format!(
+                "post 默认要超分到交付规格（短边 1080），基线不在就会在那一步阻塞。\n  \
+                 把仓库的 assets/ 整个复制到 studiod 所在目录；\n  \
+                 或者 COMFY_UPSCALE=0 明确接受原生画布的成片（{}）。",
+                path.display()
+            )),
+        },
     }
 }
 
@@ -481,9 +531,9 @@ mod tests {
         let report = run(None, None);
         assert!(report.bundle.is_none());
         assert!(!report.checks.iter().any(|c| c.name.contains("Codex 配置")));
-        // ffmpeg、ffprobe、ComfyUI 节点、基线目录、卡片生成基线——
-        // 不看 bundle 时总归只有这五项。
-        assert_eq!(report.checks.len(), 5);
+        // ffmpeg、ffprobe、ComfyUI 节点、基线目录、卡片生成基线、成片超分
+        // 基线——不看 bundle 时总归只有这六项。
+        assert_eq!(report.checks.len(), 6);
     }
 
     #[test]

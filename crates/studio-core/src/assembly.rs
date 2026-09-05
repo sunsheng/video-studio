@@ -919,10 +919,19 @@ fn push_autogrow(
     Ok(())
 }
 
-fn split_target(path: &str) -> Result<(String, String)> {
-    let mut parts = path.split('.');
-    match (parts.next(), parts.next(), parts.next(), parts.next()) {
-        (Some(node), Some("inputs"), Some(field), None) => {
+/// `<节点id>.inputs.<输入名>` 拆成节点与输入名。
+///
+/// **输入名本身可以带点。** ComfyUI 的动态组合框（`COMFY_DYNAMICCOMBO_V3`）
+/// 在 API 格式里是平铺的点号兄弟键——`ResizeImageMaskNode` 选了
+/// `scale dimensions` 之后，宽高就叫 `resize_type.width` / `resize_type.height`。
+/// 所以第三段之后的部分要原样接回去当输入名，不能判成「层级过深」。
+///
+/// 片段库（本模块）和整图基线（`studio-pipeline` 的 `Workflow`）都走这一份，
+/// 不各写一份——同一条规则两处实现，这个项目已经栽过三次。
+pub fn split_target(path: &str) -> Result<(String, String)> {
+    let mut parts = path.splitn(3, '.');
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some(node), Some("inputs"), Some(field)) if !node.is_empty() && !field.is_empty() => {
             Ok((node.to_string(), field.to_string()))
         }
         _ => Err(StudioError::ModelContractViolation {

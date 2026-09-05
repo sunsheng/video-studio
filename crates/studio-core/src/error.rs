@@ -178,10 +178,13 @@ impl StudioError {
             ),
             StudioError::ComfyUnavailable { tried } => format!(
                 "连不上 ComfyUI（试过 {}）。在 .env 里配好 COMFY_NODE（需要鉴权的代理\
-                 再配 COMFY_TOKEN）后，调 studio.status() 确认当前卡在 preview 还是 \
-                 render，再对它调 studio.retry_stage(<该阶段>) 让控制面重新尝试——它会先\
+                 再配 COMFY_TOKEN）后，调 studio.status() 确认当前卡在 preview、render \
+                 还是 post（post 也要 ComfyUI——成片超分走的是它），再对它调 \
+                 studio.retry_stage(<该阶段>) 让控制面重新尝试——它会先\
                  停掉可能还在跑的 worker，也会当场重新读取 `.env`，不需要重启 MCP 进程，\
-                 也不需要在这部作品之外做任何事；恢复之前不要降级换模型。",
+                 也不需要在这部作品之外做任何事；恢复之前不要降级换模型。\
+                 这台机器本来就没有 GPU 时，`.env` 里写 COMFY_UPSCALE=0 可以让 post \
+                 跳过超分——那是明确接受原生画布的交付分辨率，不是降级绕过。",
                 if tried.is_empty() { "无".to_string() } else { tried.join("、") }
             ),
             StudioError::ComfyFailed { node, detail } => format!(
