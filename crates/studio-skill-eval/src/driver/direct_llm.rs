@@ -62,6 +62,24 @@ impl DirectLlmDriver {
     }
 }
 
+/// OpenAI 兼容 Chat Completions 的 function name 只认 `[a-zA-Z0-9_-]+`，
+/// MCP 工具名里的 `.`（`studio.status`、`studio.comfy.exclude_node`）会
+/// 被直接拒收——把点换成下划线，调用时再用 [`resolve_tool_name`] 换回去。
+fn sanitize_tool_name(name: &str) -> String {
+    name.replace('.', "_")
+}
+
+/// 把 OpenAI 返回的（消毒过的）工具名换回真正的 MCP 工具名。换不回去
+/// 就原样返回——那种情况下 `Harness::call` 会自己报"没有这个工具"，
+/// 不在这里假装知道该调用什么。
+fn resolve_tool_name(sanitized: &str) -> String {
+    studio_mcp::TOOLS
+        .iter()
+        .find(|t| sanitize_tool_name(t.name) == sanitized)
+        .map(|t| t.name.to_string())
+        .unwrap_or_else(|| sanitized.to_string())
+}
+
 fn openai_tools() -> Vec<Value> {
     studio_mcp::TOOLS
         .iter()
@@ -69,7 +87,7 @@ fn openai_tools() -> Vec<Value> {
             json!({
                 "type": "function",
                 "function": {
-                    "name": t.name,
+                    "name": sanitize_tool_name(t.name),
                     "description": t.description,
                     "parameters": (t.input_schema)()
                 }
@@ -141,12 +159,13 @@ impl AgentDriver for DirectLlmDriver {
             }
 
             for call in &tool_calls {
-                let name = call["function"]["name"].as_str().unwrap_or_default();
+                let sanitized = call["function"]["name"].as_str().unwrap_or_default();
+                let name = resolve_tool_name(sanitized);
                 let args: Value = call["function"]["arguments"]
                     .as_str()
                     .and_then(|s| serde_json::from_str(s).ok())
                     .unwrap_or_else(|| json!({}));
-                let (result, _err) = h.call(name, args);
+                let (result, _err) = h.call(&name, args);
                 messages.push(json!({
                     "role": "tool",
                     "tool_call_id": call["id"],
@@ -252,5 +271,27 @@ mod tests {
         assert!(tools
             .iter()
             .all(|t| t["type"] == "function" && t["function"]["name"].is_string()));
+    }
+
+    /// OpenAI 兼容 Chat Completions 的 function name 只认
+    /// `[a-zA-Z0-9_-]+`——MCP 工具名里的点必须先换掉，换完还要能唯一地
+    /// 换回来，调用真正的工具时不能认错。
+    #[test]
+    fn sanitized_names_are_openai_legal_and_round_trip_uniquely() {
+        let mut seen = std::collections::HashSet::new();
+        for t in studio_mcp::TOOLS.iter() {
+            let sanitized = sanitize_tool_name(t.name);
+            assert!(
+                sanitized
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'),
+                "{sanitized} 不满足 OpenAI function name 的字符集要求"
+            );
+            assert!(
+                seen.insert(sanitized.clone()),
+                "{sanitized} 跟别的工具名消毒后撞了"
+            );
+            assert_eq!(resolve_tool_name(&sanitized), t.name);
+        }
     }
 }
