@@ -40,7 +40,7 @@
                 "type": "integer"
               },
               "negative": {
-                "description": "负向提示词。**不是每条基线都支持**——不支持的基线上写了会被忽略，该把约束改写成正向的连续性约束（「一镜到底」「主体全程居中」「不切场景」）。先看能力卡",
+                "description": "负向提示词。**不是每条基线都支持**——不支持的基线上写了会被**挡下**（提交时按能力面对账，报 schema_violation），该把约束改写成正向的连续性约束（「一镜到底」「主体全程居中」「不切场景」）。先看能力卡",
                 "type": "string"
               },
               "positive": {
@@ -48,7 +48,7 @@
                 "type": "string"
               },
               "references": {
-                "description": "引用的视觉资产。**当前所有基线都还没绑图片输入**，写在这里的 asset_id 暂时不会进渲染请求——一致性目前只能靠 positive 里逐字复用同一段外观描述",
+                "description": "引用的视觉资产。可以照常写——它声明这一镜用到哪些资产，基线补上图片输入绑定后会自动生效。但**当前所有基线都还没绑图片输入**，写在这里的 asset_id 暂时进不了渲染请求，一致性目前只能靠 positive 里逐字复用同一段外观描述",
                 "items": {
                   "description": "asset_id",
                   "type": "string"
@@ -69,7 +69,7 @@
                 "type": "integer"
               },
               "workflow": {
-                "description": "使用的已验证 workflow 名，例如 minimax_h3/t2v。每条基线吃的参数不同，写之前先看这个系列的能力卡",
+                "description": "使用的已验证 workflow 名，例如 minimax_h3/t2v。每条基线吃的参数不同，写之前先看这个系列的能力卡——提交时会按这台机器上基线的能力面逐项对账，多写、少写、用未核验的基线都会被挡下",
                 "type": "string"
               }
             },

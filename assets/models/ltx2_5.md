@@ -9,13 +9,16 @@
 | `ltx2_5/t2v` | 是 | `positive`、`negative`、`width`、`height`、`duration_seconds`、`fps`、`seed` |
 | `ltx2_5/i2v` | 是 | `positive`、`negative`、`width`、`height`、`duration_seconds`、`fps`、`seed` |
 
-**写了会被静默丢弃**：`references`、`length_frames`。这些参数在这条系列上没有绑定——不报错、不留痕、也不生效。
+**这条系列不吃、写了会被挡下**：`length_frames`。提交提示词包时会按这张表对账，写了它不吃的参数直接报 `schema_violation`，不会等到渲染才发现。
+
+`references` 可以照常写——它声明的是这一镜用到哪些资产，可审计，基线补上图片输入绑定之后会自动生效。但**现在它进不了渲染请求**，所以跨镜一致性目前只能靠在每一镜的正向提示词里逐字复用同一段身份锁。
 
 ## 时长按秒算，不按帧
 
 **这是最容易踩的坑。** 这个系列绑定的是 `duration_seconds`，
-不是 `length_frames`。写了 `length_frames` 会被静默跳过，
-渲染用基线的默认时长——成片总长于是对不上剧本，而且不报错。
+不是 `length_frames`。两个都会在提交时被对账挡下：写了 `length_frames`
+报「这条基线按秒收时长」，没写 `duration_seconds` 报「不写就用基线默认值」。
+以前这两种错都是静默的，成片总长对不上剧本却不报错——现在不会了。
 
 写 `duration_seconds`，同时给 `fps`（24 是电影感，25 是广播标准，
 30 更顺滑）。

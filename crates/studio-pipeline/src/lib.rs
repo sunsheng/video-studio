@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use studio_comfy::Comfy;
 use studio_core::contract::{AnswerOption, Confirmation, SelectionType};
-use studio_core::{Outputs, Result, StageId, StudioError};
+use studio_core::{CapabilitySet, Outputs, Result, StageId, StudioError, WorkflowCapability};
 use studio_engine::executor::{ExecContext, StageExecutor};
 use studio_media::Media;
 use workflow::Workflow;
@@ -123,6 +123,56 @@ impl StageExecutor for Pipeline {
             }),
             _ => None,
         }
+    }
+
+    /// 扫一遍基线目录，把每条基线的 `_studio.bindings` 投影成能力面。
+    ///
+    /// 引擎拿它在提交 `prompt_pack` 时对账。读不出来的基线直接跳过——
+    /// 目录本身缺失或损坏是部署问题，会在渲染时以
+    /// `model_contract_violation` 报出来，不该在提交阶段变成一堆噪声。
+    fn capabilities(&self) -> Option<CapabilitySet> {
+        let mut out = Vec::new();
+        let families = std::fs::read_dir(&self.baselines).ok()?;
+        for family in families.flatten() {
+            if !family.file_type().is_ok_and(|t| t.is_dir()) {
+                continue;
+            }
+            let family_name = family.file_name().to_string_lossy().to_string();
+            let Ok(modes) = std::fs::read_dir(family.path()) else {
+                continue;
+            };
+            for mode in modes.flatten() {
+                let path = mode.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                    continue;
+                }
+                let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                    continue;
+                };
+                // `SOURCE-*.json` 是随基线一起留档的上游说明，不是基线本身。
+                if stem.starts_with("SOURCE-") {
+                    continue;
+                }
+                let name = format!("{family_name}/{stem}");
+                let Ok(text) = std::fs::read_to_string(&path) else {
+                    continue;
+                };
+                let Ok(wf) = Workflow::parse(&text, &name) else {
+                    continue;
+                };
+                out.push(WorkflowCapability {
+                    params: wf.parameters(),
+                    verified: wf.is_verified(),
+                    unavailable_reason: wf.unavailable_reason().map(String::from),
+                    name,
+                });
+            }
+        }
+        if out.is_empty() {
+            return None;
+        }
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        Some(CapabilitySet::new(out))
     }
 }
 
@@ -786,5 +836,84 @@ mod render_tests {
         assert_eq!(scale_to_short_edge(1024, 1024, 480), (480, 480));
         // 已经比目标短边还小也照样缩放，不做「已经够小就跳过」的特殊分支。
         assert_eq!(scale_to_short_edge(0, 0, 480), (480, 480));
+    }
+}
+
+/// 拿**仓库里真实的基线文件**验能力面，而不是测试里手写的假数据。
+///
+/// 这一组测试是「写了会被静默丢弃」这条规则的最后一道锁：基线一改，
+/// 这里立刻红，而不是等到某次渲染出来的画面莫名其妙不对。
+#[cfg(test)]
+mod real_baselines {
+    use super::*;
+
+    fn caps() -> CapabilitySet {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/workflows");
+        Pipeline::new(dir)
+            .capabilities()
+            .expect("仓库里应当有基线可读")
+    }
+
+    #[test]
+    fn minimax_takes_no_negative_and_no_references() {
+        let caps = caps();
+        let t2v = caps
+            .get("minimax_h3/t2v")
+            .expect("默认核心系列的 t2v 应当在");
+        assert!(t2v.verified, "minimax_h3/t2v 应当是已核验的");
+        assert!(t2v.accepts("positive") && t2v.accepts("length_frames"));
+        assert!(
+            !t2v.accepts("negative"),
+            "这条基线没有 negative 绑定——写了会被静默丢弃，能力面必须如实反映"
+        );
+        assert!(
+            !t2v.accepts("references"),
+            "还没有图片输入通道，能力面不能假装有"
+        );
+    }
+
+    #[test]
+    fn ltx_takes_seconds_not_frames() {
+        let caps = caps();
+        let t2v = caps.get("ltx2_5/t2v").unwrap();
+        assert!(t2v.accepts("duration_seconds"));
+        assert!(
+            !t2v.accepts("length_frames"),
+            "LTX 按秒收时长；混用会让时长完全不受控"
+        );
+        assert!(t2v.accepts("negative"), "这条基线是吃负向提示词的");
+    }
+
+    #[test]
+    fn unverified_baselines_are_excluded_from_the_choices() {
+        let caps = caps();
+        let names = caps.verified_names();
+        assert!(names.contains(&"minimax_h3/t2v".to_string()));
+        for unverified in ["wan2_2/i2v", "wan2_2/flf2v", "wan_animate2/i2v"] {
+            assert!(
+                !names.contains(&unverified.to_string()),
+                "{unverified} 尚未真机核验，不该出现在可选基线里"
+            );
+            assert!(caps.get(unverified).is_some_and(|w| !w.verified));
+        }
+    }
+
+    /// 随包分发的黄金样例必须过得了自己这一关——它是 Agent 照着抄的范文。
+    #[test]
+    fn the_golden_exemplar_passes_the_real_capability_check() {
+        let outputs = studio_core::fixtures::outputs(StageId::PromptPack);
+        caps()
+            .check_prompt_pack(&outputs)
+            .expect("黄金样例应当与真实基线的能力面对得上");
+    }
+
+    /// 反过来验一次：给样例加一条 negative，就该被挡下。
+    #[test]
+    fn adding_a_negative_to_the_exemplar_is_rejected() {
+        let mut outputs = studio_core::fixtures::outputs(StageId::PromptPack);
+        outputs["prompt_pack"]["shots"][0]["negative"] = json!("文字, 水印");
+        let e = caps().check_prompt_pack(&outputs).unwrap_err();
+        assert_eq!(e.code(), "schema_violation");
+        assert!(e.message().contains("negative"), "{}", e.message());
     }
 }

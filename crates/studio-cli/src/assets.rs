@@ -606,27 +606,32 @@ fn model_card_md(card: &ModelCard) -> String {
             }
         }
     }
-    let mut dropped: Vec<&str> = Vec::new();
-    for p in [
-        "negative",
-        "references",
-        "length_frames",
-        "duration_seconds",
-    ] {
-        if !supported.contains(&p) {
-            dropped.push(p);
-        }
-    }
-    if !dropped.is_empty() {
+    // 「写了会被挡下」的那一类：提交时按能力面对账，直接报 schema_violation。
+    let rejected: Vec<&str> = studio_core::INJECTABLE_PARAMS
+        .iter()
+        .copied()
+        .filter(|p| !supported.contains(p))
+        .collect();
+    if !rejected.is_empty() {
         s.push_str(&format!(
-            "\n**写了会被静默丢弃**：{}。\
-             这些参数在这条系列上没有绑定——不报错、不留痕、也不生效。\n",
-            dropped
+            "\n**这条系列不吃、写了会被挡下**：{}。\
+             提交提示词包时会按这张表对账，写了它不吃的参数直接报 \
+             `schema_violation`，不会等到渲染才发现。\n",
+            rejected
                 .iter()
                 .map(|p| format!("`{p}`"))
                 .collect::<Vec<_>>()
                 .join("、")
         ));
+    }
+    // `references` 是另一类：允许提前写，但当前进不了渲染请求。
+    if !supported.contains(&"references") {
+        s.push_str(
+            "\n`references` 可以照常写——它声明的是这一镜用到哪些资产，\
+             可审计，基线补上图片输入绑定之后会自动生效。\
+             但**现在它进不了渲染请求**，所以跨镜一致性目前只能靠在每一镜的\
+             正向提示词里逐字复用同一段身份锁。\n",
+        );
     }
     if card.modes.iter().any(|(_, _, v)| !v) {
         s.push_str(
@@ -1140,17 +1145,23 @@ mod tests {
         }
     }
 
-    /// 能力卡必须把「写了会被丢弃」的参数点出来——这是它存在的主要理由。
+    /// 能力卡必须把「写了会被挡下」的参数点出来——这是它存在的主要理由。
+    /// 两类要分清：negative 是硬错误，references 是允许提前写但暂不生效。
     #[test]
-    fn minimax_card_warns_that_negative_is_dropped() {
+    fn minimax_card_separates_rejected_params_from_inert_references() {
         let card = MODEL_CARDS
             .iter()
             .find(|c| c.family == "minimax_h3")
             .unwrap();
         let md = model_card_md(card);
-        assert!(md.contains("写了会被静默丢弃"), "没有点出被丢弃的参数");
+        assert!(md.contains("写了会被挡下"), "没有点出会被挡下的参数");
         assert!(md.contains("`negative`"), "没有点名 negative");
-        assert!(md.contains("`references`"), "没有点名 references");
+        assert!(md.contains("schema_violation"), "没说清会当场报错");
+        assert!(
+            md.contains("`references` 可以照常写"),
+            "references 是另一类，不该和 negative 混为一谈"
+        );
+        assert!(md.contains("进不了渲染请求"), "要说清它当前不生效");
     }
 
     /// LTX 用的是按秒计的时长参数，写 length_frames 会被丢弃——

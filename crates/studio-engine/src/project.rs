@@ -269,7 +269,15 @@ impl Project {
     }
 
     pub fn schema_of(&self, stage: StageId) -> Value {
-        schema::stage_schema_document(stage)
+        let mut doc = schema::stage_schema_document(stage);
+        // 提示词包的 workflow 取值随机器而变：只给出这台机器上真正能跑的
+        // 那几条，而不是让 Agent 写完一整包才在提交时被告知基线没核验。
+        if stage == StageId::PromptPack {
+            if let Some(caps) = self.executor.capabilities() {
+                caps.narrow_schema(&mut doc);
+            }
+        }
+        doc
     }
 
     pub fn stage_output(&self, stage: StageId) -> Result<Value> {
@@ -323,6 +331,14 @@ impl Project {
         };
 
         schema::validate(stage, &outputs)?;
+        // 形状对了还不够：还要对得上这台机器上基线的能力面。写了基线没有
+        // 绑定的参数会被静默跳过——不报错、不留痕，只让画面莫名其妙地不对。
+        // 这道关必须在 prompt_pack 那道门之前，因为门一过就开始烧 GPU。
+        if stage == StageId::PromptPack {
+            if let Some(caps) = self.executor.capabilities() {
+                caps.check_prompt_pack(&outputs)?;
+            }
+        }
         // 先校验再压栈：没通过校验的调用不该占掉一层撤销。
         self.store.take_snapshot(&format!("提交 {stage} 之前"))?;
         let submitted = draft.submit(outputs, confirmation)?;

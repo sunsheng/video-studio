@@ -267,6 +267,16 @@ pub trait StageExecutor: Send + Sync {
     fn gate_confirmation(&self, _stage: StageId) -> Option<studio_core::Confirmation> {
         None
     }
+
+    /// 这台机器上可用基线的能力面。
+    ///
+    /// 引擎拿它在**提交** `prompt_pack` 时做双向对账：写了基线不吃的参数
+    /// 会被静默丢弃，少写的参数会让基线用自己的默认值——两种都要在花 GPU
+    /// 时间之前挡下来。返回 `None` 表示这个构建没有基线可查（例如测试里的
+    /// [`NotWired`]），此时不做这层校验。
+    fn capabilities(&self) -> Option<studio_core::CapabilitySet> {
+        None
+    }
 }
 
 /// 测试与「还没接线」时用的执行器：什么都不做，直接说自己不可用。
