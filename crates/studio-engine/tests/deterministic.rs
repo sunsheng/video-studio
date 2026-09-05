@@ -5,10 +5,24 @@
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use studio_core::contract::Outcome;
 use studio_core::contract::{ProjectStatus, WaitingOn};
 use studio_core::{fixtures, Outputs, Result, StageId, StudioError};
 use studio_engine::executor::{ExecContext, StageExecutor};
 use studio_engine::{init_project, Project};
+
+/// 挑这道门上第一个「通过」选项。
+///
+/// 不写死 `"approve"`：选题那道门给的是几个方案各一个通过选项
+/// （id 是 concept_id），门上的选项本来就该随阶段而变。
+fn first_approve(q: &studio_core::contract::Question) -> String {
+    q.options
+        .iter()
+        .find(|o| o.outcome == Outcome::Approve)
+        .unwrap_or_else(|| panic!("{} 的门上没有通过选项", q.stage))
+        .id
+        .clone()
+}
 
 fn submit_through_prompt_pack(p: &Project) {
     for s in [
@@ -27,7 +41,7 @@ fn submit_through_prompt_pack(p: &Project) {
             )
             .unwrap();
         if let Some(q) = env.pending_question {
-            p.answer(&q.question_id, "approve").unwrap();
+            p.answer(&q.question_id, &first_approve(&q)).unwrap();
         }
     }
 }
@@ -100,7 +114,7 @@ fn approve_preview_gate(p: &Project) {
             || e.blocked_by.is_some()
     });
     if let Some(q) = env.pending_question {
-        p.answer(&q.question_id, "approve").unwrap();
+        p.answer(&q.question_id, &first_approve(&q)).unwrap();
     }
 }
 

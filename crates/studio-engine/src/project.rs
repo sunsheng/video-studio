@@ -425,19 +425,45 @@ impl Project {
                         detail: format!("门挂在 {} 上，但该阶段并非等待确认", q.stage),
                     });
                 };
+                let label = q
+                    .options
+                    .iter()
+                    .find(|o| o.id == answer)
+                    .map(|o| o.label.clone())
+                    .unwrap_or_else(|| answer.to_string());
                 let approved = awaiting.approve(answer)?;
+                // 门上选了哪一项**是作品状态的一部分**，不只是一条日志：
+                // 一道门给出多个通过选项时（例如让用户从几个方案里挑一个），
+                // 下游必须知道用户挑的是哪个。写进产物，`next_action.inputs`
+                // 就会自动带给下游阶段，不必让 Agent 回头翻 timeline。
+                let outputs = approved.outputs().map(|o| {
+                    let mut o = o.clone();
+                    if let Some(v) = o.get_mut(q.stage.output_key()) {
+                        if let Some(obj) = v.as_object_mut() {
+                            obj.insert(
+                                "_gate_choice".to_string(),
+                                serde_json::json!({
+                                    "option_id": answer,
+                                    "label": label,
+                                    "question_id": q.question_id,
+                                }),
+                            );
+                        }
+                    }
+                    o
+                });
                 self.store.save_stage(
                     q.stage,
                     StageState::Approved,
                     approved.attempt(),
-                    approved.outputs(),
+                    outputs.as_ref(),
                     self.store.stage_summary(q.stage)?.as_deref(),
                     None,
                 )?;
                 self.store.append_event(
                     q.stage,
                     "approved",
-                    &format!("已确认 {}", q.question_id),
+                    &format!("已确认 {}：选择了「{label}」", q.question_id),
                     None,
                 )?;
                 self.status()

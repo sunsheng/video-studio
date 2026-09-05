@@ -29,7 +29,7 @@ pub fn outputs(stage: StageId) -> Outputs {
             stage,
             json!({
                 "title": TITLE,
-                "logline": "20岁黑长发女孩穿白裙和板鞋，在千岛湖完成一段轻快、连续、以30度侧脸为视觉标识的五镜头游玩Vlog。",
+                "logline": "20岁黑长发女孩在千岛湖的十秒五镜头游玩Vlog。三个方案在「怎么讲」上分岔，平台、时长、画幅不变。",
                 "platform": "抖音竖屏短视频",
                 "audience": "18-35岁周末短途旅行、自然风景和轻松Vlog受众",
                 "theme": "湖光、微风、轻松出游的即时快乐",
@@ -38,13 +38,49 @@ pub fn outputs(stage: StageId) -> Outputs {
                 "shot_count": 5,
                 "aspect_ratio": "9:16",
                 "delivery_spec": "1080x1920, 30fps, H.264/AAC",
-                "hook_0_3s": "船头掠过碧绿湖面切入女孩30度侧脸，她转头笑着把千岛湖映入画面。",
-                "story_beats": [
-                    "镜头1：船头湖面建立地点与侧脸笑容",
-                    "镜头2：沿湖栈道小跑，白裙被风吹起",
-                    "镜头3：观景台举起手机取景，湖中群岛展开",
-                    "镜头4：递出冷饮与镜头轻碰杯，保持30度侧脸",
-                    "镜头5：夕阳前回头挥手，湖面远山收束"
+                "concepts": [
+                    {
+                        "concept_id": "c1",
+                        "logline": "跟着她的脚走完一段湖边路，十秒里只做一件事：把「在这儿很自在」拍出来。",
+                        "angle": "以人物动作为主线，风景是背景",
+                        "hook_0_3s": "船头切开清透湖面，她以约30度侧脸快速入画并转头笑出来——0.6 秒内认出地点和人。",
+                        "story_beats": [
+                            "镜头1：船头湖面建立地点与侧脸笑容",
+                            "镜头2：沿湖栈道小跑，白裙被风吹起",
+                            "镜头3：观景台举起手机取景，湖中群岛展开",
+                            "镜头4：递出冷饮与镜头轻碰杯，保持30度侧脸",
+                            "镜头5：夕阳前回头挥手，湖面远山收束"
+                        ],
+                        "tradeoff": "牺牲行程信息与地标全貌，换十秒内更连贯的人物情绪"
+                    },
+                    {
+                        "concept_id": "c2",
+                        "logline": "从一只沾着水的板鞋开始，一路往上，最后才让人看见她的脸。",
+                        "angle": "先藏人后露脸，用局部特写攒出好奇",
+                        "hook_0_3s": "特写：一只白色板鞋踩上湿木板，水从鞋边挤出来——看不见人，只听见笑声。",
+                        "story_beats": [
+                            "镜头1：板鞋踩上湿木栈道的特写，画外一声轻笑",
+                            "镜头2：裙摆与手中冷饮杯的中近景，仍不露脸",
+                            "镜头3：她把手机举高取景，镜头顺手臂上摇",
+                            "镜头4：终于给到30度侧脸，她正对着湖笑",
+                            "镜头5：拉远，人和千岛湖一起进画"
+                        ],
+                        "tradeoff": "前四秒不给地点，靠好奇心留人；地点辨识度让给了悬念"
+                    },
+                    {
+                        "concept_id": "c3",
+                        "logline": "十秒里只有湖，人只是最后一秒的一个剪影。",
+                        "angle": "风景片，人物退到点缀位置",
+                        "hook_0_3s": "船头劈开的水把上午的光切成两半，群岛在雾里一层层退开。",
+                        "story_beats": [
+                            "镜头1：船头切水的广角，光在水面碎开",
+                            "镜头2：群岛层层退开的横摇",
+                            "镜头3：水面倒影里的云",
+                            "镜头4：栈道尽头的空景",
+                            "镜头5：夕阳里她的背影剪影，抬手挥了一下"
+                        ],
+                        "tradeoff": "牺牲人物代入感，换更强的画面质感；对「跟着谁玩」这个期待没有回应"
+                    }
                 ],
                 "success_metrics": [
                     "五镜头严格合计10秒，转场可审计",
@@ -69,24 +105,60 @@ pub fn outputs(stage: StageId) -> Outputs {
         StageId::Selection => wrap(
             stage,
             json!({
-                "recommendation": "fast_vlog",
-                "feasibility": {
-                    "score": "high",
-                    "rationale": "10秒、五镜头、单角色、单主色服装和明确侧脸角度都适合分镜化生成。",
-                    "model_control": "每镜头只保留一个主动作和一个主镜头运动，角色外观由 C01 锁定。",
-                    "production_cost": "低到中等"
-                },
-                "audience_fit": {
-                    "hook_strength": "强；前2秒用湖面掠过加30度侧脸笑容建立地点认知。",
-                    "benefit": "清爽风景、轻松穿搭与周末出游情绪",
-                    "retention_plan": "地点钩子→人物动作→湖岛展开→互动碰杯→挥手回收"
-                },
+                "candidates": [
+                    {
+                        "concept_id": "c1",
+                        "feasibility": {
+                            "score": "high",
+                            "rationale": "单角色、单套服装、明确的侧脸角度，五镜都能各自独立生成；\
+                                          每镜一个主动作一个主运镜，是三个方案里最好控的。"
+                        },
+                        "audience_fit": {
+                            "hook_strength": "strong",
+                            "rationale": "0.6 秒就同时给出地点和人，刷到的人不需要等就知道这是什么。"
+                        },
+                        "risks": ["动作类镜头多，模型可能把小跑拍成滑步"],
+                        "verdict": "recommended"
+                    },
+                    {
+                        "concept_id": "c2",
+                        "feasibility": {
+                            "score": "medium",
+                            "rationale": "四个镜头都要精确控制「不露脸」，模型很容易自作主张把脸转过来；\
+                                          一旦露早了，整个悬念结构就塌了。"
+                        },
+                        "audience_fit": {
+                            "hook_strength": "medium",
+                            "rationale": "局部特写开场对停留有帮助，但前四秒不给地点，\
+                                          冲着「千岛湖」刷进来的人可能提前划走。"
+                        },
+                        "risks": ["露脸时机不可控", "前四秒没有地点信息，完播率风险"],
+                        "verdict": "viable"
+                    },
+                    {
+                        "concept_id": "c3",
+                        "feasibility": {
+                            "score": "high",
+                            "rationale": "纯风景，没有人物一致性问题，是三个里最容易出片的。"
+                        },
+                        "audience_fit": {
+                            "hook_strength": "weak",
+                            "rationale": "用户明确要的是「游玩 vlog」，风景片对不上这个期待；\
+                                          好看，但看完不知道跟着谁玩了一趟。"
+                        },
+                        "risks": ["与用户原始需求偏离"],
+                        "verdict": "not_advised"
+                    }
+                ],
+                "recommendation": "c1",
+                "tradeoffs": "选 c1 就放弃了 c2 那种「憋一下再给脸」的张力——\
+                              c1 第一秒就把牌全摊开，后面靠动作和情绪撑，不靠悬念。\
+                              代价是它更平，没有一个让人「哦」一声的转折点。",
                 "publishing_risks": {
                     "avoidable": ["景区Logo入镜", "危险动作误导"],
                     "unacceptable": ["伪造真实人物肖像"],
                     "user_decision": ["是否使用流行歌曲"]
                 },
-                "tradeoffs": "牺牲复杂行程信息和长旁白，换取10秒内更清楚的快乐情绪与可执行性。",
                 "acceptance_metrics": ["地点3秒内可辨识", "角色五镜头一致", "总时长误差为0"]
             }),
         ),
@@ -341,10 +413,25 @@ pub fn outputs(stage: StageId) -> Outputs {
 /// 该阶段的确认门样例。无门阶段返回 None。
 pub fn confirmation(stage: StageId) -> Option<Confirmation> {
     let (prompt, approve_label) = match stage {
-        StageId::Selection => (
-            "是否按推荐方案推进：10秒五镜头轻快旅行Vlog，原生环境声，不使用外部歌曲？",
-            "确认方案，进入剧本",
-        ),
+        // 选题这道门是唯一一个「多选一」的门：三个通过选项各对应一个方案，
+        // 用户挑哪个由控制面记进产物的 _gate_choice，下游据此推进。
+        StageId::Selection => {
+            return Some(Confirmation {
+                prompt: "三个方案，选一个推进：\n\
+                         A（推荐）跟着她走——第一秒就给地点和笑脸，最好控，但比较平；\n\
+                         B 先藏后露——从一只湿板鞋开始攒好奇，第四秒才给脸，\
+                         张力最强，但露脸时机不可控，前四秒没有地点；\n\
+                         C 纯风景——最容易出片，但看完不知道跟着谁玩了一趟。"
+                    .to_string(),
+                selection_type: SelectionType::Single,
+                options: vec![
+                    AnswerOption::new("c1", "A：跟着她走（推荐）"),
+                    AnswerOption::new("c2", "B：先藏后露"),
+                    AnswerOption::new("c3", "C：纯风景"),
+                    AnswerOption::revise("revise", "三个都不满意，重想"),
+                ],
+            });
+        }
         StageId::Script => (
             "是否确认按镜头内容智能分配时长的10秒剧本：1.4 / 2.0 / 2.4 / 2.0 / 2.2 秒？",
             "确认剧本，进入分镜",

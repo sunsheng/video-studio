@@ -31,6 +31,54 @@
           "description": "目标受众",
           "type": "string"
         },
+        "concepts": {
+          "description": "**互斥**的创意方案，2–3 个。同一个需求的几种不同拍法：平台、受众、时长这些由需求定死的东西共用，各方案不同的是切入角度、钩子和节拍。只给一个方案，下一阶段的「筛选」就成了自问自答",
+          "items": {
+            "additionalProperties": true,
+            "description": "一个方案",
+            "properties": {
+              "angle": {
+                "description": "切入角度：同一件事，这个方案从哪儿讲起",
+                "type": "string"
+              },
+              "concept_id": {
+                "description": "稳定标识，例如 c1",
+                "type": "string"
+              },
+              "hook_0_3s": {
+                "description": "前三秒钩子。要具体到画面，不能写「用悬念抓住观众」",
+                "type": "string"
+              },
+              "logline": {
+                "description": "这个方案的一句话概括",
+                "type": "string"
+              },
+              "story_beats": {
+                "description": "故事节拍，逐镜头一条",
+                "items": {
+                  "description": "一个节拍",
+                  "type": "string"
+                },
+                "minItems": 1,
+                "type": "array"
+              },
+              "tradeoff": {
+                "description": "选它要牺牲什么。三个方案的牺牲不该是同一件事",
+                "type": "string"
+              }
+            },
+            "required": [
+              "concept_id",
+              "logline",
+              "angle",
+              "hook_0_3s",
+              "story_beats"
+            ],
+            "type": "object"
+          },
+          "minItems": 2,
+          "type": "array"
+        },
         "delivery_spec": {
           "description": "交付规格，例如 1080x1920, 30fps, H.264/AAC",
           "type": "string"
@@ -48,10 +96,6 @@
           },
           "minItems": 0,
           "type": "array"
-        },
-        "hook_0_3s": {
-          "description": "前三秒钩子",
-          "type": "string"
         },
         "logline": {
           "description": "一句话概括",
@@ -96,15 +140,6 @@
           "description": "镜头数",
           "type": "integer"
         },
-        "story_beats": {
-          "description": "故事节拍，逐镜头一条",
-          "items": {
-            "description": "一个节拍",
-            "type": "string"
-          },
-          "minItems": 1,
-          "type": "array"
-        },
         "success_metrics": {
           "description": "可验收的成功标准",
           "items": {
@@ -135,7 +170,7 @@
         "duration_seconds",
         "shot_count",
         "aspect_ratio",
-        "story_beats",
+        "concepts",
         "success_metrics"
       ],
       "type": "object"

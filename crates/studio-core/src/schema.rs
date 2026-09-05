@@ -302,10 +302,39 @@ pub fn stage_schema(stage: StageId) -> Schema {
                     "delivery_spec",
                     text("交付规格，例如 1080x1920, 30fps, H.264/AAC"),
                 ),
-                ("hook_0_3s", text("前三秒钩子")),
                 (
-                    "story_beats",
-                    arr("故事节拍，逐镜头一条", text("一个节拍"), 1),
+                    "concepts",
+                    arr(
+                        "**互斥**的创意方案，2–3 个。同一个需求的几种不同拍法：\
+                         平台、受众、时长这些由需求定死的东西共用，\
+                         各方案不同的是切入角度、钩子和节拍。\
+                         只给一个方案，下一阶段的「筛选」就成了自问自答",
+                        obj(
+                            "一个方案",
+                            vec![
+                                ("concept_id", text("稳定标识，例如 c1")),
+                                ("logline", text("这个方案的一句话概括")),
+                                (
+                                    "angle",
+                                    text("切入角度：同一件事，这个方案从哪儿讲起"),
+                                ),
+                                (
+                                    "hook_0_3s",
+                                    text("前三秒钩子。要具体到画面，不能写「用悬念抓住观众」"),
+                                ),
+                                (
+                                    "story_beats",
+                                    arr("故事节拍，逐镜头一条", text("一个节拍"), 1),
+                                ),
+                                (
+                                    "tradeoff",
+                                    text("选它要牺牲什么。三个方案的牺牲不该是同一件事"),
+                                ),
+                            ],
+                            vec!["concept_id", "logline", "angle", "hook_0_3s", "story_beats"],
+                        ),
+                        2,
+                    ),
                 ),
                 (
                     "success_metrics",
@@ -342,44 +371,71 @@ pub fn stage_schema(stage: StageId) -> Schema {
                 "duration_seconds",
                 "shot_count",
                 "aspect_ratio",
-                "story_beats",
+                "concepts",
                 "success_metrics",
             ],
         ),
 
         StageId::Selection => obj(
-            "从可行性、受众匹配和发布风险筛选方案",
+            "从可行性、受众匹配和发布风险里挑一个方案，并说清代价",
             vec![
-                ("recommendation", text("推荐方案的标识")),
                 (
-                    "feasibility",
-                    obj(
-                        "可行性",
-                        vec![
-                            ("score", text("high / medium / low")),
-                            ("rationale", text("判断依据")),
-                            ("model_control", text("模型可控性说明")),
-                            ("production_cost", text("制作成本")),
-                        ],
-                        vec!["score", "rationale"],
+                    "candidates",
+                    arr(
+                        "逐个评估 idea 阶段给出的方案。**每个都要评**——\
+                         只评推荐的那个，等于没有比较",
+                        obj(
+                            "一个方案的评估",
+                            vec![
+                                ("concept_id", text("对应 idea 的 concept_id")),
+                                (
+                                    "feasibility",
+                                    obj(
+                                        "可行性",
+                                        vec![
+                                            ("score", one_of("高 / 中 / 低", vec!["high", "medium", "low"])),
+                                            ("rationale", text("判断依据：模型可控性、制作成本")),
+                                        ],
+                                        vec!["score", "rationale"],
+                                    ),
+                                ),
+                                (
+                                    "audience_fit",
+                                    obj(
+                                        "受众匹配",
+                                        vec![
+                                            ("hook_strength", one_of("钩子强度", vec!["strong", "medium", "weak"])),
+                                            ("rationale", text("为什么这个钩子对这批受众有效")),
+                                        ],
+                                        vec!["hook_strength"],
+                                    ),
+                                ),
+                                ("risks", arr("这个方案特有的风险", text("一条"), 0)),
+                                (
+                                    "verdict",
+                                    one_of(
+                                        "结论：推荐 / 可选 / 不建议",
+                                        vec!["recommended", "viable", "not_advised"],
+                                    ),
+                                ),
+                            ],
+                            vec!["concept_id", "feasibility", "audience_fit", "verdict"],
+                        ),
+                        2,
                     ),
                 ),
                 (
-                    "audience_fit",
-                    obj(
-                        "受众匹配",
-                        vec![
-                            ("hook_strength", text("钩子强度")),
-                            ("benefit", text("观看收益")),
-                            ("retention_plan", text("留存设计")),
-                        ],
-                        vec!["hook_strength"],
-                    ),
+                    "recommendation",
+                    text("推荐哪个方案，写 concept_id。它必须是 candidates 里 verdict 为 recommended 的那个"),
+                ),
+                (
+                    "tradeoffs",
+                    text("推荐它**牺牲了什么**。只讲优点的推荐等于没推荐"),
                 ),
                 (
                     "publishing_risks",
                     obj(
-                        "发布风险分级",
+                        "发布风险分级（针对推荐方案）",
                         vec![
                             ("avoidable", arr("可规避", text("一条"), 0)),
                             ("unacceptable", arr("不可接受", text("一条"), 0)),
@@ -388,13 +444,11 @@ pub fn stage_schema(stage: StageId) -> Schema {
                         vec![],
                     ),
                 ),
-                ("tradeoffs", text("取舍说明")),
                 ("acceptance_metrics", arr("验收标准", text("一条"), 1)),
             ],
             vec![
+                "candidates",
                 "recommendation",
-                "feasibility",
-                "audience_fit",
                 "tradeoffs",
                 "acceptance_metrics",
             ],

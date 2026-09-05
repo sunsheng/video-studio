@@ -66,9 +66,19 @@ impl Harness {
         assert!(!err, "提交 {stage} 失败：{env}");
         if let Some(q) = env["pending_question"].as_object() {
             let qid = q["question_id"].as_str().unwrap().to_string();
+            // 不写死 "approve"：选题那道门的通过选项是几个方案各一个（id 是 concept_id）。
+            let answer = q["options"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|o| o["outcome"] == "approve")
+                .unwrap_or_else(|| panic!("{stage} 的门上没有通过选项"))["id"]
+                .as_str()
+                .unwrap()
+                .to_string();
             let (_, err) = self.call(
                 "studio.answer",
-                json!({ "question_id": qid, "answer": "approve" }),
+                json!({ "question_id": qid, "answer": answer }),
             );
             assert!(!err, "确认 {stage} 失败");
         }
@@ -251,7 +261,10 @@ fn the_revise_round_trip_over_mcp_is_three_calls() {
 fn errors_come_back_as_an_envelope_with_a_remedy() {
     let mut h = Harness::new();
     let mut bad = fixtures::outputs(StageId::Idea);
-    bad["brief"].as_object_mut().unwrap().remove("story_beats");
+    bad["brief"]["concepts"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("story_beats");
 
     let (env, err) = h.call("studio.submit_stage", json!({ "outputs": bad }));
     assert!(err, "schema 不合规必须报错");
@@ -260,7 +273,7 @@ fn errors_come_back_as_an_envelope_with_a_remedy() {
     assert!(blocked["message"]
         .as_str()
         .unwrap()
-        .contains("brief.story_beats"));
+        .contains("brief.concepts[0].story_beats"));
     let remedy = blocked["remedy"].as_str().unwrap();
     assert!(!remedy.is_empty(), "blocked_by 必须带 remedy");
     assert!(

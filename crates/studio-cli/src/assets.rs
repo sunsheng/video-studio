@@ -20,11 +20,15 @@ use studio_mcp::TOOLS;
 ///
 /// 全部按需加载：SKILL.md 只给索引，Agent 用到哪份读哪份。默认一份都不进
 /// 上下文——前身项目把 30 行模型文件名塞进每个会话的教训在这里同样适用。
-const DOCTRINE: [(&str, &str); 11] = [
+const DOCTRINE: [(&str, &str); 12] = [
     ("README.md", include_str!("../assets/doctrine/README.md")),
     (
         "story/structure.md",
         include_str!("../assets/doctrine/story/structure.md"),
+    ),
+    (
+        "story/concepts.md",
+        include_str!("../assets/doctrine/story/concepts.md"),
     ),
     (
         "story/hook.md",
@@ -199,10 +203,14 @@ const MODEL_CARDS: [ModelCard; 3] = [
 fn doctrine_for(skill: &str) -> &'static [&'static str] {
     match skill {
         "idea" => &[
+            ".agents/doctrine/story/concepts.md",
             ".agents/doctrine/story/hook.md",
             ".agents/doctrine/story/structure.md",
         ],
-        "selection" => &[".agents/doctrine/story/hook.md"],
+        "selection" => &[
+            ".agents/doctrine/story/concepts.md",
+            ".agents/doctrine/story/hook.md",
+        ],
         "script" => &[
             ".agents/doctrine/story/structure.md",
             ".agents/doctrine/story/voice.md",
@@ -237,11 +245,16 @@ fn doctrine_for(skill: &str) -> &'static [&'static str] {
 fn checklist(stage: StageId) -> &'static [&'static str] {
     match stage {
         StageId::Idea => &[
+            "至少两个方案，且互斥：选了一个，另一个独有的东西就拍不进去了",
+            "各方案的 angle、hook_0_3s、story_beats 都不同，不是换了说法的同一拍法",
+            "各方案的 tradeoff 各不相同，没有三条都写成需求本身的约束",
             "钩子在前 3 秒内成立，且说得出具体是什么画面",
             "对模糊输入的判断写进了 assumptions，没有私下假设也没有反复追问",
             "success_metrics 每一条都能被验收，不是「效果好」这类说法",
         ],
         StageId::Selection => &[
+            "每个方案都单独评过，没有只写推荐那个",
+            "recommendation 指向的 concept_id 确实在候选里",
             "推荐说清了牺牲什么，不是只讲优点",
             "风险分成可规避 / 需用户决定 / 不可接受三类",
         ],
@@ -295,12 +308,16 @@ const SKILLS: [SkillDoc; 10] = [
         not_trigger: "已经有 brief 之后的任何阶段。",
         duties: &[
             "把口语化的创意转成结构化 brief：标题、logline、平台、受众、时长、镜头数、画幅。",
+            "给出 **2–3 个互斥方案**：平台受众时长这些由需求定死的共用，\
+             各方案不同的是切入角度、前三秒钩子和节拍走向。互斥的判据见 concepts.md。",
+            "每个方案写清选它要牺牲什么，且各方案牺牲的不是同一件事。",
             "对模糊输入做出判断并**写进 assumptions**，不要私下假设也不要反复追问。",
             "识别发布风险并分级：可规避 / 需用户决定 / 不可接受。",
             "定义可验收的成功标准——后面的 review 阶段会照着它逐条核对。",
         ],
         notes: &[
-            "这一阶段没有确认门，提交即通过。真正的第一道门在选题阶段。",
+            "这一阶段没有确认门，提交即通过。真正的第一道门在选题阶段，\
+             用户在那里从你给的方案里挑一个——只给一个方案，那道门就退化成「同意 / 重来」。",
             "用户说「20色女性」这类明显笔误，按最合理的理解处理并在 assumptions 里写明，不要卡住不动。",
         ],
     },
@@ -311,12 +328,20 @@ const SKILLS: [SkillDoc; 10] = [
         trigger: "brief 已通过，需要决定往哪个方向做。",
         not_trigger: "创意本身还没成形；那是 idea 的事。",
         duties: &[
-            "评估可行性：模型可控性、制作成本、需要牺牲什么。",
-            "评估受众匹配：钩子强度、观看收益、留存设计。",
+            "**逐个**评估上一阶段给出的每个方案，不要只写推荐的那个——\
+             用户要看的是比较，不是结论。",
+            "每个方案都评三样：可行性（模型可控性、制作成本）、\
+             受众匹配（钩子强度、观看收益、留存）、风险。",
             "把发布风险分成可规避、不可接受、需用户决定三类。",
-            "给出一个明确推荐，并说清楚推荐它牺牲了什么。",
+            "给出一个明确推荐（`recommendation.concept_id` 指向候选之一），\
+             并说清楚推荐它牺牲了什么。",
         ],
-        notes: &["确认门问的是方向，不是细节。细节留到剧本阶段再改。"],
+        notes: &[
+            "确认门在这里把你的候选列表原样摆给用户选。\
+             用户可能不选你推荐的那个——这是设计如此，不是异常。",
+            "被选中的方案会记进产物的 `_gate_choice`，后面的阶段照它写，不要回头改主意。",
+            "确认门问的是方向，不是细节。细节留到剧本阶段再改。",
+        ],
     },
     SkillDoc {
         name: "script",

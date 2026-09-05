@@ -3,9 +3,23 @@
 //! 这些用例不需要 GPU、不需要 ComfyUI、不需要 ffmpeg——
 //! 提交给 ComfyUI 之前的每一步都可以在开发环境完整验证。
 
+use studio_core::contract::Outcome;
 use studio_core::contract::{ProjectStatus, WaitingOn};
 use studio_core::{fixtures, StageId};
 use studio_engine::{init_project, Project};
+
+/// 挑这道门上第一个「通过」选项。
+///
+/// 不写死 `"approve"`：选题那道门给的是几个方案各一个通过选项
+/// （id 是 concept_id），门上的选项本来就该随阶段而变。
+fn first_approve(q: &studio_core::contract::Question) -> String {
+    q.options
+        .iter()
+        .find(|o| o.outcome == Outcome::Approve)
+        .unwrap_or_else(|| panic!("{} 的门上没有通过选项", q.stage))
+        .id
+        .clone()
+}
 
 fn new_project() -> (tempfile::TempDir, Project) {
     let dir = tempfile::tempdir().unwrap();
@@ -25,7 +39,7 @@ fn advance(p: &Project, stage: StageId) {
         )
         .unwrap_or_else(|e| panic!("提交 {stage} 失败：{e}"));
     if let Some(q) = env.pending_question {
-        p.answer(&q.question_id, "approve").unwrap();
+        p.answer(&q.question_id, &first_approve(&q)).unwrap();
     }
 }
 
@@ -170,7 +184,7 @@ fn the_revise_round_trip_takes_three_calls() {
     assert_eq!(q.question_id, "script.approval");
 
     // 用户确认，进入分镜
-    let env = p.answer(&q.question_id, "approve").unwrap();
+    let env = p.answer(&q.question_id, &first_approve(&q)).unwrap();
     assert_eq!(env.project.stage, StageId::Storyboard);
     assert_eq!(env.progress.completed, 3);
 }
@@ -271,8 +285,8 @@ fn undo_can_walk_back_past_a_revise() {
             fixtures::confirmation(StageId::Script),
         )
         .unwrap();
-    p.answer(&env.pending_question.unwrap().question_id, "approve")
-        .unwrap();
+    let q = env.pending_question.unwrap();
+    p.answer(&q.question_id, &first_approve(&q)).unwrap();
     assert_eq!(p.status().unwrap().project.stage, StageId::Storyboard);
 
     // 觉得还不如原来那版：退回确认前、提交前、修订前
