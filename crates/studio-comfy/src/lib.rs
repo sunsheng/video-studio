@@ -76,6 +76,16 @@ const CONTROL_READ_TIMEOUT: Duration = Duration::from_secs(30);
 /// 真死掉的连接挂到天亮。
 const BULK_READ_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// 提交失败后的退避间隔。长度就是最多提交几次。
+///
+/// 这是给「刚好撞上一次调度抖动」留的余地——真正的长时间排队由
+/// [`Comfy::submit_timeout`] 覆盖，代理会替我们等，不需要客户端在这里死磕。
+const SUBMIT_RETRY_BACKOFF: [Duration; 3] = [
+    Duration::from_secs(2),
+    Duration::from_secs(4),
+    Duration::from_secs(8),
+];
+
 pub struct Comfy {
     node: String,
     /// 代理的 Bearer token。None 表示对端不需要鉴权。
@@ -143,10 +153,6 @@ impl Comfy {
         self.auth(self.agent().get(url))
     }
 
-    fn post(&self, url: &str) -> ureq::Request {
-        self.auth(self.agent().post(url))
-    }
-
     /// 大块传输专用的 GET：下载产物。读超时按 [`BULK_READ_TIMEOUT`]。
     fn bulk_get(&self, url: &str) -> ureq::Request {
         self.auth(self.agent_with(BULK_READ_TIMEOUT).get(url))
@@ -197,16 +203,53 @@ impl Comfy {
         })
     }
 
+    /// 提交用的读超时。
+    ///
+    /// **提交跟其他控制面调用不是一回事。** `/queue`、`/history` 是即时返回的
+    /// 小 JSON，而 `/prompt` 那一侧是个负载均衡代理：所有节点都到了
+    /// `MAX_CONCURRENT_PER_NODE` 时，它会**一直排队等节点空出来，直到调用方
+    /// 自己的 HTTP 客户端超时或取消**。八台节点、默认队列深度 16，排队是常态。
+    ///
+    /// 拿控制面那 30 秒去接排队，等于把「排了 31 秒」报成「渲染失败」。
+    ///
+    /// 取 `COMFY_TIMEOUT_SECS` 的一半：那个值本来就是「这一镜我愿意等多久」，
+    /// 排队占掉一半还没轮上，等下去也没意义了。夹在 [60, 600] 是为了不让一个
+    /// 手滑写小的配置把提交变成必失败。
+    fn submit_timeout(&self) -> Duration {
+        Duration::from_secs((self.timeout.as_secs() / 2).clamp(60, 600))
+    }
+
     /// 提交一张 API 格式的节点图。
+    ///
+    /// `503` 会指数退避重试（[`SUBMIT_RETRY_BACKOFF`]）——按代理的约定那是
+    /// 临时的基础设施状况，不是这一镜的内容有问题。`400`/`401`/`404` 立即
+    /// 失败，重试没有意义。
     pub fn submit(&self, api_graph: &Value, client_id: &str) -> Result<Submission> {
         let body = serde_json::json!({ "prompt": api_graph, "client_id": client_id });
-        let resp = self
-            .post(&format!("{}/prompt", self.node))
-            .send_json(body)
-            .map_err(|e| StudioError::ComfyFailed {
-                node: self.node.clone(),
-                detail: short_error(e),
-            })?;
+        let url = format!("{}/prompt", self.node);
+        let mut last: Option<Failure> = None;
+
+        let resp = 'attempt: {
+            for (i, backoff) in SUBMIT_RETRY_BACKOFF.iter().enumerate() {
+                let req = self.auth(self.agent_with(self.submit_timeout()).post(&url));
+                match req.send_json(body.clone()) {
+                    Ok(r) => break 'attempt r,
+                    Err(e) => match classify(e) {
+                        // 请求本身有问题，再提交一百次也是同一个结果。
+                        f @ Failure::Fatal(_) => return Err(self.submit_error(f)),
+                        f @ Failure::Retryable(_) => {
+                            last = Some(f);
+                            // 最后一次失败之后不必再睡。
+                            if i + 1 < SUBMIT_RETRY_BACKOFF.len() {
+                                std::thread::sleep(*backoff);
+                            }
+                        }
+                    },
+                }
+            }
+            return Err(self.submit_error(last.expect("重试循环至少跑过一次")));
+        };
+
         let v: Value = resp.into_json().map_err(|e| StudioError::ComfyFailed {
             node: self.node.clone(),
             detail: format!("提交返回不是 JSON：{e}"),
@@ -221,6 +264,23 @@ impl Comfy {
             node: self.node.clone(),
             prompt_id: prompt_id.to_string(),
         })
+    }
+
+    /// 提交最终失败时报哪个错。
+    ///
+    /// **`no healthy node` 和「节点都在忙」是两件事，remedy 指的方向也不同：**
+    /// 前者是集群不可用（去配置、去恢复节点），后者是这一次执行没成
+    /// （`retry_stage` 重来一遍就好）。混成一个，人就会去查错的地方。
+    fn submit_error(&self, f: Failure) -> StudioError {
+        if f.is_no_healthy_node() {
+            return StudioError::ComfyUnavailable {
+                tried: vec![format!("{}（{}）", self.node, f.detail())],
+            };
+        }
+        StudioError::ComfyFailed {
+            node: self.node.clone(),
+            detail: f.detail().to_string(),
+        }
     }
 
     /// 轮询直到出结果或超时。返回该次执行产出的文件清单。
@@ -281,7 +341,17 @@ impl Comfy {
         let url = format!("{}/history/{}", self.node, sub.prompt_id);
         let resp = match self.get(&url).call() {
             Ok(r) => r,
-            Err(e) => return PollOutcome::Unreachable(short_error(e)),
+            // **`Fatal` 不进宽限期。** 「路径写错了」「token 不对」再轮询五轮
+            // 也是同一个结果，而把它们记成「联系不上节点」会把排查引向网络。
+            Err(e) => {
+                return match classify(e) {
+                    Failure::Retryable(d) => PollOutcome::Unreachable(d),
+                    Failure::Fatal(d) => PollOutcome::Failed(StudioError::ComfyFailed {
+                        node: sub.node.clone(),
+                        detail: format!("查历史被拒（{d}），重试没有意义"),
+                    }),
+                };
+            }
         };
         let v: Value = match resp.into_json() {
             Ok(v) => v,
@@ -796,6 +866,101 @@ mod tests {
         let s = scripted_stub(vec![(code, body.to_string())]);
         let c = Comfy::new(s.url.clone(), None, 5, 1);
         classify(c.get(&format!("{}/queue", s.url)).call().unwrap_err())
+    }
+
+    /// **排队不是失败。** 八台节点都在忙时代理回 503，退一会儿再来就成了。
+    /// 这条守的是整份 SPEC-0017 的落点。
+    #[test]
+    fn a_submission_that_queues_behind_a_busy_cluster_eventually_succeeds() {
+        let s = scripted_stub(vec![
+            (503, r#"{"error":"context deadline exceeded"}"#.into()),
+            (503, r#"{"error":"context deadline exceeded"}"#.into()),
+            (200, r#"{"prompt_id":"p1","number":1}"#.into()),
+        ]);
+        let c = Comfy::new(s.url.clone(), None, 5, 1);
+        let sub = c.submit(&json!({}), "video-studio").unwrap();
+        assert_eq!(sub.prompt_id, "p1");
+        assert_eq!(s.hits(), 3, "该重试两次之后才成功");
+    }
+
+    /// 请求本身不对时**一次都不重试**——重试没有意义，而且会把一个即时的
+    /// 错误拖成十几秒。只断言最终错误码分不清这两种，所以要数请求次数。
+    #[test]
+    fn a_bad_submission_is_not_retried() {
+        let s = scripted_stub(vec![(400, r#"{"error":"prompt is required"}"#.into())]);
+        let c = Comfy::new(s.url.clone(), None, 5, 1);
+        let e = c.submit(&json!({}), "video-studio").unwrap_err();
+        assert_eq!(e.code(), "comfy_failed");
+        assert!(
+            e.message().contains("prompt is required"),
+            "{}",
+            e.message()
+        );
+        assert_eq!(s.hits(), 1, "400 上不该重试");
+    }
+
+    /// 一个健康节点都没有 → 集群不可用，remedy 该指向配置与恢复。
+    #[test]
+    fn no_healthy_node_reports_the_cluster_as_unavailable() {
+        let s = scripted_stub(vec![(503, r#"{"error":"no healthy node"}"#.into())]);
+        let c = Comfy::new(s.url.clone(), None, 5, 1);
+        let e = c.submit(&json!({}), "video-studio").unwrap_err();
+        assert_eq!(e.code(), "comfy_unavailable", "{}", e.message());
+        assert!(e.remedy().contains("COMFY_NODE"), "{}", e.remedy());
+        assert_eq!(s.hits(), SUBMIT_RETRY_BACKOFF.len(), "该退避重试到顶");
+    }
+
+    /// 节点在、只是一直忙 → 这次执行失败，remedy 该指向 retry_stage，
+    /// **不是**「去检查 COMFY_NODE 配置」。两者混起来人就会去查错的地方。
+    #[test]
+    fn a_cluster_that_stays_busy_reports_a_failed_run_not_a_broken_config() {
+        let s = scripted_stub(vec![(
+            503,
+            r#"{"error":"context deadline exceeded"}"#.into(),
+        )]);
+        let c = Comfy::new(s.url.clone(), None, 5, 1);
+        let e = c.submit(&json!({}), "video-studio").unwrap_err();
+        assert_eq!(e.code(), "comfy_failed", "{}", e.message());
+        assert!(e.remedy().contains("retry_stage"), "{}", e.remedy());
+    }
+
+    /// 提交超时不跟控制面共用：代理会替我们排队，等的是「有节点空出来」，
+    /// 不是「节点没反应」。夹住上下限是为了不让手滑写小的配置把提交变成必失败。
+    #[test]
+    fn the_submit_timeout_is_clamped_not_inherited() {
+        let tiny = Comfy::new("http://x".into(), None, 10, 1);
+        assert_eq!(tiny.submit_timeout(), Duration::from_secs(60), "下限没夹住");
+        let huge = Comfy::new("http://x".into(), None, 36000, 1);
+        assert_eq!(
+            huge.submit_timeout(),
+            Duration::from_secs(600),
+            "上限没夹住"
+        );
+        let mid = Comfy::new("http://x".into(), None, 600, 1);
+        assert_eq!(
+            mid.submit_timeout(),
+            Duration::from_secs(300),
+            "区间内取一半"
+        );
+        // 默认的 COMFY_TIMEOUT_SECS=1800 会被上限夹到 600——这是有意的，
+        // 排了十分钟还没轮上，等下去也没意义了。
+        let default = Comfy::new("http://x".into(), None, 1800, 1);
+        assert_eq!(default.submit_timeout(), Duration::from_secs(600));
+    }
+
+    /// 轮询遇到 `Fatal` 立即失败，不进那五轮宽限期。
+    #[test]
+    fn a_history_lookup_that_is_rejected_fails_immediately() {
+        let s = scripted_stub(vec![(404, r#"{"error":"not found"}"#.into())]);
+        let c = Comfy::new(s.url.clone(), None, 30, 1);
+        let sub = Submission {
+            node: s.url.clone(),
+            prompt_id: "p1".into(),
+        };
+        let e = c.wait(&sub).unwrap_err();
+        assert_eq!(e.code(), "comfy_failed");
+        assert!(e.message().contains("重试没有意义"), "{}", e.message());
+        assert_eq!(s.hits(), 1, "404 上不该白等五轮");
     }
 
     #[test]
