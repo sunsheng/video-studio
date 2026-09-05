@@ -542,6 +542,10 @@ impl Project {
                     self.store.stage_summary(q.stage)?.as_deref(),
                     None,
                 )?;
+                // 产物刚被改过（多了 _gate_choice），人可读的那份也要跟上，
+                // 否则 stages/<stage>.json 里看不到用户到底选了哪个方案——
+                // bundle 是文档即事实，两份对不上就等于文档在撒谎。
+                self.mirror_stage_file(q.stage, outputs.as_ref())?;
                 self.store.append_event(
                     q.stage,
                     "approved",

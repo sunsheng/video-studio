@@ -514,3 +514,38 @@ fn undo_does_not_erase_what_the_user_said() {
         "撤销那次修订不等于他改了口味——真要改口味他会再说一句新的：{before:#?}"
     );
 }
+
+/// 用户在门上选了哪个方案，人可读的那份产物里也要看得见。
+///
+/// bundle 是文档即事实：数据库里记着选了 c2、`stages/selection.json`
+/// 里却什么都没有，等于文档在撒谎。
+#[test]
+fn the_gate_choice_shows_up_in_the_human_readable_stage_file() {
+    let (_d, p) = new_project();
+    advance(&p, StageId::Idea);
+
+    let env = p
+        .submit_stage(
+            fixtures::outputs(StageId::Selection),
+            Some(fixtures::summary(StageId::Selection)),
+            fixtures::confirmation(StageId::Selection),
+        )
+        .unwrap();
+    let q = env.pending_question.unwrap();
+    // 故意不选第一个通过选项：选题门给的是几个方案，用户完全可能挑推荐之外的。
+    let picked = q
+        .options
+        .iter()
+        .filter(|o| o.outcome == Outcome::Approve)
+        .nth(1)
+        .expect("选题门至少要给两个方案")
+        .clone();
+    p.answer(&q.question_id, &picked.id).unwrap();
+
+    let path = p.bundle().root().join("stages/selection.json");
+    let text = std::fs::read_to_string(&path).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let choice = &v["selection"]["_gate_choice"];
+    assert_eq!(choice["option_id"], picked.id, "落盘的那份没记下用户的选择");
+    assert_eq!(choice["label"], picked.label);
+}
