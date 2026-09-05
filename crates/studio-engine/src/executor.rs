@@ -268,6 +268,24 @@ pub trait StageExecutor: Send + Sync {
         None
     }
 
+    /// 这个 Hybrid 阶段的产物还需不需要控制面执行。
+    ///
+    /// Hybrid 的意思是「Agent 定内容，控制面执行生成」——Agent 提交的是一份
+    /// **计划**（`visual_assets` 那份里每个视图 `status: planned`、没有 `path`），
+    /// 控制面照着计划真的把东西生成出来，再回填。
+    ///
+    /// **执行完才上确认门**，不是先上门再执行：门要人确认的是「卡片长得对不对」，
+    /// 按后一种顺序人是在批准一份自己没见过的 JSON。旁边就有先例——`preview`
+    /// 也是先执行、再在门上让人看 480p。
+    ///
+    /// 判据交给执行器而不是引擎，是因为「执行过没有」只有产物自己说得清
+    /// （`visual_assets` 看的是还有没有 `planned` 的视图），引擎不该知道
+    /// `asset_plan` 内部长什么样。返回 `false` 时 Hybrid 退化成 Creative：
+    /// 提交完直接上门，跟以前一样。
+    fn needs_execution(&self, _stage: StageId, _outputs: &Outputs) -> bool {
+        false
+    }
+
     /// 这台机器上可用基线的能力面。
     ///
     /// 引擎拿它在**提交** `prompt_pack` 时做双向对账：写了基线不吃的参数

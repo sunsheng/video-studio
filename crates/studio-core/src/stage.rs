@@ -40,7 +40,11 @@ pub enum Capability {
 pub enum StageKind {
     /// 产物全部由 Agent 给出，控制面不注册执行器。
     Creative,
-    /// Agent 定内容，确认后由控制面执行生成。
+    /// Agent 定内容，**控制面先执行生成，然后才上确认门**。
+    ///
+    /// 顺序要紧：门要人确认的是生成出来的东西长得对不对，按「先确认再生成」
+    /// 的顺序，人是在批准一份自己没见过的计划。旁边就有先例——`preview`
+    /// 也是先执行、再在门上让人看 480p。
     Hybrid,
     /// 纯代码，失败时才回到 Agent。
     Deterministic,

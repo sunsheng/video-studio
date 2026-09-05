@@ -155,6 +155,26 @@ impl Project {
         Ok((completed, current))
     }
 
+    /// 现在轮到控制面跑这个阶段了吗。
+    ///
+    /// 确定性阶段永远是；**Hybrid 阶段是「Agent 已经提交了计划、控制面还没
+    /// 照着执行」的那一段**——`visual_assets` 提交完是一份每个视图
+    /// `status: planned` 的计划，卡片得由控制面真的生成出来。执行完才上确认门，
+    /// 因为门要人确认的是卡片长得对不对，不是一份没见过的 JSON。
+    fn control_plane_runs(&self, stage: StageId) -> Result<bool> {
+        if stage.kind() == StageKind::Deterministic {
+            return Ok(true);
+        }
+        if stage.kind() != StageKind::Hybrid {
+            return Ok(false);
+        }
+        let loaded = self.store.load_stage(stage)?;
+        if loaded.state() != StageState::Draft {
+            return Ok(false);
+        }
+        Ok(loaded_outputs(&loaded).is_some_and(|o| self.executor.needs_execution(stage, o)))
+    }
+
     /// 已通过阶段的产物，作为下一阶段的输入。
     fn inputs_for(&self, stage: StageId) -> Result<Value> {
         let mut map = serde_json::Map::new();
@@ -209,20 +229,18 @@ impl Project {
                 WaitingOn::System,
                 None,
             ),
-            (None, Some(s)) => match s.kind() {
-                StageKind::Deterministic => (
-                    s,
-                    ProjectStatus::Active,
-                    WaitingOn::System,
-                    Some(self.await_action(s)?),
-                ),
-                _ => (
-                    s,
-                    ProjectStatus::Active,
-                    WaitingOn::Agent,
-                    Some(self.submit_action(s)?),
-                ),
-            },
+            (None, Some(s)) if self.control_plane_runs(s)? => (
+                s,
+                ProjectStatus::Active,
+                WaitingOn::System,
+                Some(self.await_action(s)?),
+            ),
+            (None, Some(s)) => (
+                s,
+                ProjectStatus::Active,
+                WaitingOn::Agent,
+                Some(self.submit_action(s)?),
+            ),
         };
 
         let status = if blocked.is_some() {
@@ -402,6 +420,30 @@ impl Project {
         self.check_identity_lock_across_stages(stage, &outputs)?;
         // 先校验再压栈：没通过校验的调用不该占掉一层撤销。
         self.store.take_snapshot(&format!("提交 {stage} 之前"))?;
+
+        // Hybrid 阶段提交的是一份**计划**，控制面还要照着把东西生成出来，
+        // 所以它先停在 Draft（带着产物）等 worker 接手，**不在这里上门**——
+        // 门要人确认的是生成出来的卡片，不是一份没见过的 JSON。
+        if stage.kind() == StageKind::Hybrid && self.executor.needs_execution(stage, &outputs) {
+            let attempt = draft.attempt();
+            self.store.save_stage(
+                stage,
+                StageState::Draft,
+                attempt,
+                Some(&outputs),
+                summary,
+                None,
+            )?;
+            self.mirror_stage_file(stage, Some(&outputs))?;
+            self.store.append_event(
+                stage,
+                "submitted",
+                summary.unwrap_or("已提交阶段计划，控制面开始生成"),
+                None,
+            )?;
+            return self.status();
+        }
+
         let submitted = draft.submit(outputs, confirmation)?;
 
         let (state, question) = match &submitted {
@@ -753,7 +795,9 @@ impl Project {
     /// worker，旧线程跑完照样会覆盖新状态。`retry_stage` 在清错误之前先
     /// `Worker::stop()`，状态和实际执行不会再脱节。
     pub fn retry_stage(&self, stage: StageId) -> Result<Envelope> {
-        if stage.kind() != StageKind::Deterministic {
+        // Hybrid 也放开：生成卡片一样会因为 ComfyUI 挂了、显存不够而失败，
+        // 失败之后必须能原样重跑，跟 render 是同一类需求。
+        if !matches!(stage.kind(), StageKind::Deterministic | StageKind::Hybrid) {
             return Err(StudioError::InvalidTransition {
                 stage,
                 current: "not_deterministic",
@@ -806,7 +850,7 @@ impl Project {
         let Ok(Some(stage)) = self.current_stage() else {
             return;
         };
-        if stage.kind() != StageKind::Deterministic {
+        if !matches!(self.control_plane_runs(stage), Ok(true)) {
             return;
         }
         if matches!(self.store.pending_question(), Ok(Some(_))) {
@@ -1062,7 +1106,10 @@ fn run_deterministic(
             StageState::AwaitingConfirmation => return,
             StageState::Draft => {}
         }
-        if stage.kind() != StageKind::Deterministic {
+        // Hybrid 阶段只在「Agent 已经提交计划、还没执行」时轮到控制面。
+        let hybrid_pending = stage.kind() == StageKind::Hybrid
+            && loaded_outputs(&loaded).is_some_and(|o| executor.needs_execution(stage, o));
+        if stage.kind() != StageKind::Deterministic && !hybrid_pending {
             // 轮到需要 Agent 或用户的阶段了，交回去。
             return;
         }
@@ -1071,7 +1118,16 @@ fn run_deterministic(
         progress.set(format!("{stage} 开始"));
         let _ = store.append_event(stage, "started", &format!("控制面开始执行 {stage}"), None);
 
-        let inputs = collect_inputs(&store, stage).unwrap_or(Value::Null);
+        let mut inputs = collect_inputs(&store, stage).unwrap_or(Value::Null);
+        // Hybrid 阶段执行的对象就是 Agent 刚提交的那份计划，所以它自己的产物
+        // 也要进 inputs——确定性阶段没有这一份（它们的产物是从零算出来的）。
+        if hybrid_pending {
+            if let (Some(map), Some(o)) = (inputs.as_object_mut(), loaded_outputs(&loaded)) {
+                if let Some(v) = o.get(stage.output_key()) {
+                    map.insert(stage.output_key().to_string(), v.clone());
+                }
+            }
+        }
         let ctx = ExecContext {
             bundle: &bundle,
             settings: &settings,

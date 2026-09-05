@@ -555,3 +555,99 @@ fn the_gate_choice_shows_up_in_the_human_readable_stage_file() {
     assert_eq!(choice["option_id"], picked.id, "落盘的那份没记下用户的选择");
     assert_eq!(choice["label"], picked.label);
 }
+
+/// Hybrid 阶段：**先执行，再上确认门**。
+///
+/// `visual_assets` 提交的是一份计划（每个视图 `status: planned`），卡片要由
+/// 控制面照着真的生成出来。所以提交完不该立刻上门——门要人确认的是卡片长得
+/// 对不对，按「先确认再生成」的顺序，人是在批准一份自己没见过的 JSON。
+///
+/// 这条测试用一个假执行器把那段时序钉住，不需要 GPU。
+#[test]
+fn a_hybrid_stage_waits_for_the_control_plane_before_its_gate() {
+    use std::sync::Arc;
+    use studio_core::{Outputs, Result};
+    use studio_engine::executor::{ExecContext, StageExecutor};
+
+    /// 只管 `visual_assets`：把每个视图的 `status` 从 `planned` 改成 `ready`。
+    struct FakeCards;
+    impl StageExecutor for FakeCards {
+        fn execute(&self, stage: StageId, ctx: &ExecContext<'_>) -> Result<Outputs> {
+            let mut plan = ctx.inputs[stage.output_key()].clone();
+            for card in plan["assets"].as_array_mut().unwrap() {
+                for (i, view) in card["views"].as_array_mut().unwrap().iter_mut().enumerate() {
+                    view["status"] = serde_json::json!("ready");
+                    view["path"] = serde_json::json!(format!("media/assets/x/{i}.png"));
+                }
+            }
+            let mut out = Outputs::new();
+            out.insert(stage.output_key().to_string(), plan);
+            Ok(out)
+        }
+        /// 还有 `planned` 的视图就说明这份计划还没被执行过。
+        fn needs_execution(&self, stage: StageId, outputs: &Outputs) -> bool {
+            stage == StageId::VisualAssets
+                && serde_json::to_string(outputs)
+                    .unwrap_or_default()
+                    .contains("\"planned\"")
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("千岛湖.studio");
+    init_project(&root, fixtures::TITLE, "0.1.0-test", &[]).unwrap();
+    let p = Project::open_with(&root, None, Arc::new(FakeCards)).unwrap();
+
+    for stage in [
+        StageId::Idea,
+        StageId::Selection,
+        StageId::Script,
+        StageId::Storyboard,
+    ] {
+        advance(&p, stage);
+    }
+
+    // 提交计划：**不该立刻上门**，而是交给控制面去生成。
+    let env = p
+        .submit_stage(
+            fixtures::outputs(StageId::VisualAssets),
+            Some("卡片计划"),
+            fixtures::confirmation(StageId::VisualAssets),
+        )
+        .unwrap();
+    assert!(
+        env.pending_question.is_none(),
+        "计划刚提交就上门了——人会在没见过卡片的情况下批准它"
+    );
+    assert_eq!(env.waiting_on, WaitingOn::System, "该轮到控制面生成卡片了");
+
+    // 等 worker 把卡片「生成」完，门才挂出来。
+    let mut env = p.status().unwrap();
+    for _ in 0..200 {
+        if env.pending_question.is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        env = p.status().unwrap();
+    }
+    let q = env
+        .pending_question
+        .expect("控制面执行完之后应当挂出确认门让人看卡片");
+    assert_eq!(q.stage, StageId::VisualAssets);
+
+    // 门上看到的产物已经是回填过的，不再有 planned。
+    let out = p.stage_output(StageId::VisualAssets).unwrap();
+    let text = serde_json::to_string(&out).unwrap();
+    assert!(
+        !text.contains("\"planned\""),
+        "门上给人看的还是没生成的计划"
+    );
+    assert!(text.contains("media/assets/"), "回填的 path 没进产物");
+
+    p.answer(&q.question_id, &first_approve(&q)).unwrap();
+    assert_eq!(
+        p.status().unwrap().project.status,
+        ProjectStatus::Active,
+        "确认之后应当继续往下走"
+    );
+}
