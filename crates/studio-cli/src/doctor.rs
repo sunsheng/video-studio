@@ -118,19 +118,19 @@ pub fn run(program_dir: Option<&std::path::Path>, bundle: Option<&std::path::Pat
     }
 }
 
-/// 卡片能不能生成，取决于 `z_image` 的两条基线在不在、核验过没有。
+/// 卡片能不能生成，取决于 `flux2_dev` 的两条基线在不在、核验过没有。
 ///
 /// 这一项**永远不是 Fail**：视觉资产阶段可以只提交计划，前六个阶段更是
 /// 完全不受影响。它存在的意义是把「计划能提交」和「图能生出来」分开说清楚，
 /// 免得有人看着一份通过校验的资产计划，以为卡片已经有了。
 fn check_image_baselines(program_dir: Option<&std::path::Path>) -> Check {
     let dir = program_dir
-        .map(|p| p.join("assets/workflows/z_image"))
-        .unwrap_or_else(|| std::path::PathBuf::from("assets/workflows/z_image"));
+        .map(|p| p.join("assets/workflows/flux2_dev"))
+        .unwrap_or_else(|| std::path::PathBuf::from("assets/workflows/flux2_dev"));
 
     let mut missing = Vec::new();
     let mut unverified = Vec::new();
-    for name in ["t2i", "edit"] {
+    for name in ["t2i", "multiref_edit"] {
         let path = dir.join(format!("{name}.json"));
         let Ok(text) = std::fs::read_to_string(&path) else {
             missing.push(name);
@@ -149,7 +149,7 @@ fn check_image_baselines(program_dir: Option<&std::path::Path>) -> Check {
         return Check {
             name: "卡片生成基线".into(),
             level: Level::Ok,
-            detail: "z_image 的 t2i 与 edit 都在，且已核验".into(),
+            detail: "flux2_dev 的 t2i 与 multiref_edit 都在，且已核验".into(),
             remedy: None,
         };
     }
@@ -304,20 +304,20 @@ mod tests {
     #[test]
     fn an_unverified_baseline_still_counts_as_not_ready() {
         let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().join("assets/workflows/z_image");
+        let dir = tmp.path().join("assets/workflows/flux2_dev");
         baseline(&dir, "t2i", true);
-        baseline(&dir, "edit", false);
+        baseline(&dir, "multiref_edit", false);
         let c = check_image_baselines(Some(tmp.path()));
         assert_eq!(c.level, Level::Warn);
-        assert!(c.detail.contains("edit 未核验"), "{}", c.detail);
+        assert!(c.detail.contains("multiref_edit 未核验"), "{}", c.detail);
     }
 
     #[test]
     fn both_verified_baselines_report_ready() {
         let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().join("assets/workflows/z_image");
+        let dir = tmp.path().join("assets/workflows/flux2_dev");
         baseline(&dir, "t2i", true);
-        baseline(&dir, "edit", true);
+        baseline(&dir, "multiref_edit", true);
         assert_eq!(check_image_baselines(Some(tmp.path())).level, Level::Ok);
     }
 

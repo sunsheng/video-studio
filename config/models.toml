@@ -40,10 +40,16 @@ vae          = "wan_2.1_vae.safetensors"
 # 用法——它能通过所有静态检查，然后在生产机上安静地加载错东西。
 #
 # 在装了 ComfyUI 的机器上确认之后，把下面几行的注释去掉并填真名，
-# 同时按 assets/workflows/z_image/README.md 导出两条基线。
+# 同时按 assets/workflows/flux2_dev/README.md 导出两条基线。
 # 两件事都做完之前，视觉资产阶段只能提交计划、生不出图。
-[z_image]
-description = "卡片生成。t2i 出主视图，edit 以主视图为参考图出其余视图。待生产机确认。"
+#
+# 选 FLUX.2 [dev] 而不是别的图像模型，理由只有一条：**参考图容量**。
+# 卡片一致性靠的是参考图锚定（纯文字锁不住脸，有实测），而 dev 版一次吃
+# 最多 10 张参考图，够把「已定稿的全部视图」一起挂上去当锚——出第 5 个视图
+# 时前 4 个都在场，新视图必须同时与它们自洽。单参考的模型做不到这件事。
+# 许可是 Non-Commercial，本项目自用/研究，不构成约束。见 issue #12。
+[flux2_dev]
+description = "卡片生成。t2i 出主视图，multiref_edit 挂已定稿视图累积锁定出其余视图。待生产机确认。"
 verified    = false
 # diffusion    = ""
 # text_encoder = ""
