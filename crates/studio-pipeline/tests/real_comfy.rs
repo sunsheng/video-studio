@@ -33,6 +33,8 @@ struct Env {
     _dir: tempfile::TempDir,
     bundle: Bundle,
     comfy: Comfy,
+    /// `mut` 是给放开 video 通道那条测试用的：它要临时把
+    /// `input.video` 置为已核验才拼得出图，见那条测试的注释。
     set: FragmentSet,
 }
 
@@ -272,6 +274,119 @@ fn an_unverified_input_channel_is_refused_rather_than_downgraded() {
         "要说清是没核验：{}",
         err.message()
     );
+}
+
+/// 造一段短视频并传上去，返回 ComfyUI 那侧的文件名。
+///
+/// 帧数落在 `17k+5` 网格上——clip 锚点的长度吃同一套网格（SPEC-0014 V5）。
+fn upload_clip(env: &Env, name: &str) -> String {
+    let local = env.bundle.resolve(&format!("media/{name}.mp4")).unwrap();
+    let seconds = FRAMES as f64 / FPS;
+    let ok = std::process::Command::new("ffmpeg")
+        .args(["-hide_banner", "-v", "error", "-y", "-f", "lavfi", "-i"])
+        // 渐变色块：帧与帧之间有变化，才看得出接进去的是一段而不是一张静图。
+        .arg(format!(
+            "gradients=s={W}x{H}:c0=0x1a3a5a:c1=0x7a5a2a:duration={seconds}:rate={FPS}"
+        ))
+        .args(["-t", &format!("{seconds}"), "-pix_fmt", "yuv420p"])
+        .arg(&local)
+        .status()
+        .expect("ffmpeg 起不来");
+    assert!(ok.success(), "造锚点视频失败");
+    let bytes = std::fs::read(&local).unwrap();
+    env.comfy
+        .upload_image(&format!("{name}.mp4"), &bytes)
+        .expect("锚点视频传不上去")
+}
+
+/// **这条测试就是放开 `input.video` 的依据。**
+///
+/// `clip` 锚点和 `kind: video` 的参考都走 `LoadVideo` + `GetVideoComponents`，
+/// 那条通道的 `bindings_verified` 现在是 `false`——所以组装器会拒绝拼图。
+/// 测试里**临时把它置为已核验**再拼：这不是绕过规矩，是产出「能不能改成
+/// true」这个问题的答案。真机跑通了才有资格去改片段文件里那个字段。
+///
+/// 跑法：
+/// ```text
+/// COMFY_NODE=<入口> COMFY_TOKEN=<token> \
+///   cargo test -p studio-pipeline --test real_comfy video_channel -- --nocapture
+/// ```
+#[test]
+fn the_video_input_channel_renders_on_a_real_comfyui() {
+    let Some(mut env) = setup() else { return };
+    let already = env.set.inputs["video"].verified;
+    // 未核验时先解锁，好让组装器肯出图；已核验就照原样跑，当回归测试用。
+    if !already {
+        env.set.inputs.get_mut("video").unwrap().verified = true;
+    }
+
+    let clip = upload_clip(&env, "anchor_clip");
+    eprintln!("锚点视频上传后的文件名：{clip}");
+
+    // 1. clip 锚点：把一段帧序列锚在第 0 帧。
+    let mut anchored = base("V01", "reference");
+    anchored.guides = vec![Guide {
+        kind: GuideKind::Clip,
+        at_frame: 0,
+        asset_id: clip.clone(),
+    }];
+
+    // 2. video 参考：同一条通道，放开之后这条也跟着可用，一并验。
+    let mut with_video_ref = base("V02", "reference");
+    with_video_ref.references = vec![Reference {
+        kind: Medium::Video,
+        asset_id: clip.clone(),
+        with_audio: false,
+    }];
+
+    for (name, shot) in [("clip 锚点", anchored), ("video 参考", with_video_ref)] {
+        let out = assemble_as(
+            &env.set,
+            &shot,
+            &format!("real-acceptance/{}", shot.shot_id),
+            Combination::Standard,
+        )
+        .unwrap_or_else(|e| panic!("{name}组装失败：{}", e.message()));
+
+        // 接的必须是 GetVideoComponents 的 IMAGE 输出，不是 LoadImage——
+        // 两边类型都是 IMAGE，接错了图照样合法，只是喂进去一张静帧。
+        let g = &out.graph;
+        let load = g
+            .as_object()
+            .unwrap()
+            .iter()
+            .find(|(k, _)| k.ends_with("_load"))
+            .expect("图里应当有一个素材加载节点");
+        assert_eq!(
+            load.1["class_type"],
+            json!("LoadVideo"),
+            "{name}：走的不是 LoadVideo"
+        );
+
+        let sub = env
+            .comfy
+            .submit(&out.graph, "real-acceptance")
+            .unwrap_or_else(|e| {
+                panic!(
+                    "{name}被 ComfyUI 判为非法——video 通道的接线不对：{}",
+                    e.message()
+                )
+            });
+        let files = env
+            .comfy
+            .wait(&sub)
+            .unwrap_or_else(|e| panic!("{name}执行失败：{}", e.message()));
+        assert!(!files.is_empty(), "{name}跑完却没有产出文件");
+        eprintln!("✅ {name}（{}）：{} 个产物", sub.prompt_id, files.len());
+    }
+
+    if !already {
+        eprintln!(
+            "\n两条都跑通了。现在可以把 assets/workflows/minimax_h3/fragments/\
+             input.video.json 的 bindings_verified 改成 true，并在 SOURCE-fragments.md \
+             里记下这次的 run。**改之前先人眼看一遍产出**——跑完出片证明不了画面是对的。"
+        );
+    }
 }
 
 /// 同一份声明组装两次逐字节相同——`studio.retry_stage`（内容没问题，
