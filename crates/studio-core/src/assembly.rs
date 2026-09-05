@@ -331,6 +331,8 @@ pub struct FragmentSet {
     pub guides: BTreeMap<String, Fragment>,
     /// input 介质 → 片段。
     pub inputs: BTreeMap<String, Fragment>,
+    /// head id → 该 head 的 turbo 叠加层。preview 用，正式渲染不挂。
+    pub overlays: BTreeMap<String, Fragment>,
 }
 
 impl FragmentSet {
@@ -359,6 +361,9 @@ impl FragmentSet {
             }
             FragmentKind::Input => {
                 self.inputs.insert(frag.id.clone(), frag);
+            }
+            FragmentKind::Overlay => {
+                self.overlays.insert(frag.id.clone(), frag);
             }
         }
     }
@@ -395,6 +400,8 @@ pub enum FragmentKind {
     Head,
     Guide,
     Input,
+    /// 叠加在骨架上的可选组合，目前只有 preview 的 turbo LoRA。
+    Overlay,
 }
 
 impl FragmentKind {
@@ -404,9 +411,23 @@ impl FragmentKind {
             "head" => Some(FragmentKind::Head),
             "guide" => Some(FragmentKind::Guide),
             "input" => Some(FragmentKind::Input),
+            "overlay" => Some(FragmentKind::Overlay),
             _ => None,
         }
     }
+}
+
+/// 出图用哪一套组合。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Combination {
+    /// 正式渲染：骨架原样，steps 按基线。
+    Standard,
+    /// 预览：挂 head 配套的 turbo LoRA、steps 降到 LoRA 的步数。
+    ///
+    /// 片段库里没有对应的叠加层、或者它还没真机核验时**自动退回
+    /// [`Combination::Standard`]**，并在 [`AssembledGraph::notes`] 里说明。
+    /// preview 少花点时间是锦上添花，为它把整个预览阶段卡死不值得。
+    PreviewTurbo,
 }
 
 /// 组装出来的节点图，外加一份可读的组装记录。
@@ -415,6 +436,9 @@ pub struct AssembledGraph {
     pub graph: Value,
     /// 这张图用了哪些片段，按顺序。留痕用，出问题时能看出是怎么拼的。
     pub used: Vec<String>,
+    /// 组装过程中做过的降级说明，比如 turbo 叠加层没核验所以退回了普通组合。
+    /// 空的表示完全按请求的组合拼出来了。
+    pub notes: Vec<String>,
 }
 
 /// 把声明翻译成节点图。
@@ -425,6 +449,16 @@ pub fn assemble(
     set: &FragmentSet,
     shot: &ShotDeclaration,
     output_prefix: &str,
+) -> Result<AssembledGraph> {
+    assemble_as(set, shot, output_prefix, Combination::Standard)
+}
+
+/// [`assemble`] 加一个组合的选择。见 [`Combination`]。
+pub fn assemble_as(
+    set: &FragmentSet,
+    shot: &ShotDeclaration,
+    output_prefix: &str,
+    combination: Combination,
 ) -> Result<AssembledGraph> {
     let backbone = set
         .backbone
@@ -470,6 +504,35 @@ pub fn assemble(
     }
     for (path, wire) in &head.wires_from_backbone {
         write_at(&mut graph, path, wire.clone())?;
+    }
+
+    // 2b. 可选的叠加层（preview 的 turbo LoRA）。它跟 head 是配套的
+    //     ——ref2v 的 LoRA 挂不到 fl2va 的权重上——所以按 head id 取。
+    let mut notes = Vec::new();
+    if combination == Combination::PreviewTurbo {
+        match set.overlays.get(&head.id) {
+            Some(o) if o.verified => {
+                for (k, v) in &o.nodes {
+                    graph.insert(k.clone(), v.clone());
+                }
+                for (path, wire) in &o.wires_from_backbone {
+                    write_at(&mut graph, path, wire.clone())?;
+                }
+                for (path, val) in &o.backbone_overrides {
+                    write_at(&mut graph, path, val.clone())?;
+                }
+                used.push(format!("overlay/{}", o.id));
+            }
+            // 没核验就退回普通组合并说明。preview 省时间是锦上添花，
+            // 为它把整个预览阶段卡死不值得——但也不能让人以为跑的是 turbo。
+            Some(o) => notes.push(format!(
+                "turbo 叠加层「{}」尚未真机核验（{}），这一镜退回普通组合，\
+                 预览会慢一些但结果可信",
+                o.id,
+                o.unavailable_reason.as_deref().unwrap_or("原因未记录")
+            )),
+            None => notes.push(format!("head「{}」没有 turbo 叠加层，用普通组合", head.id)),
+        }
     }
 
     // 3. 逐镜头参数。骨架与 head 的 bindings 合起来用。
@@ -644,6 +707,7 @@ pub fn assemble(
     Ok(AssembledGraph {
         graph: Value::Object(graph),
         used,
+        notes,
     })
 }
 
@@ -871,7 +935,7 @@ pub(crate) mod tests_support {
                 "vae_video": { "class_type": "VAELoader", "inputs": {} },
                 "vae_audio": { "class_type": "VAELoader", "inputs": {} },
                 "noise": { "class_type": "RandomNoise", "inputs": {} },
-                "scheduler": { "class_type": "BasicScheduler", "inputs": { "scheduler": "PLACEHOLDER" } },
+                "scheduler": { "class_type": "BasicScheduler", "inputs": { "scheduler": "PLACEHOLDER", "steps": 20 } },
                 "guider": { "class_type": "BasicGuider", "inputs": { "model": ["sigmashift", 0] } },
                 "sampler": { "class_type": "SamplerCustomAdvanced", "inputs": { "guider": ["guider", 0] } },
                 "create_video": { "class_type": "CreateVideo", "inputs": {} },
@@ -1041,11 +1105,35 @@ pub(crate) mod tests_support {
         let mut guide_clip = guide_img.clone();
         guide_clip.id = "clip".into();
 
+        // preview 的 turbo 叠加层：LoRA 插在 load_unet 与 sigmashift 之间，
+        // steps 与调度器都跟着 LoRA 走。
+        let mut overlay_ref = Fragment::new(
+            "reference",
+            nodes(json!({
+                "lora": { "class_type": "LoraLoaderModelOnly",
+                          "inputs": { "lora_name": "ref2v_turbo_4step.safetensors",
+                                      "strength_model": 1.0 } }
+            })),
+        );
+        overlay_ref
+            .wires_from_backbone
+            .insert("lora.inputs.model".into(), json!(["load_unet", 0]));
+        overlay_ref
+            .backbone_overrides
+            .insert("sigmashift.inputs.model".into(), json!(["lora", 0]));
+        overlay_ref
+            .backbone_overrides
+            .insert("scheduler.inputs.steps".into(), json!(4));
+        overlay_ref
+            .backbone_overrides
+            .insert("scheduler.inputs.scheduler".into(), json!("simple"));
+
         FragmentSet {
             backbone: Some(backbone),
             heads: BTreeMap::from([("reference".into(), head_ref), ("image".into(), head_img)]),
             guides: BTreeMap::from([("image".into(), guide_img), ("clip".into(), guide_clip)]),
             inputs: BTreeMap::from([("image".into(), input_img), ("video".into(), input_video)]),
+            overlays: BTreeMap::from([("reference".into(), overlay_ref)]),
         }
     }
 
@@ -1151,6 +1239,64 @@ pub(crate) mod tests_support {
             json!({ "ref_image_1": ["ref1_load", 0], "ref_image_2": ["ref2_load", 0] })
         );
         assert_eq!(g["scheduler"]["inputs"]["scheduler"], json!("beta"));
+    }
+
+    /// preview 的 turbo 组合：LoRA 进图、steps 与调度器跟着 LoRA 走。
+    #[test]
+    fn the_preview_turbo_combination_swaps_in_the_lora_and_its_steps() {
+        let set = fragments();
+        let s = shot("reference");
+        let out = assemble_as(&set, &s, "media/S01", Combination::PreviewTurbo).unwrap();
+        let g = &out.graph;
+        assert_eq!(g["lora"]["class_type"], json!("LoraLoaderModelOnly"));
+        // LoRA 插在 load_unet 与 sigmashift 之间。
+        assert_eq!(g["lora"]["inputs"]["model"], json!(["load_unet", 0]));
+        assert_eq!(g["sigmashift"]["inputs"]["model"], json!(["lora", 0]));
+        // steps 与调度器都跟着 LoRA 走——低步数下 beta 出来的画面是坏的。
+        assert_eq!(g["scheduler"]["inputs"]["steps"], json!(4));
+        assert_eq!(g["scheduler"]["inputs"]["scheduler"], json!("simple"));
+        assert!(out.used.contains(&"overlay/reference".to_string()));
+        assert!(out.notes.is_empty(), "挂上了就不该有降级说明");
+    }
+
+    /// 关掉 turbo（正式渲染就是这条路）回到普通组合，图里没有 LoRA。
+    #[test]
+    fn the_standard_combination_has_no_lora() {
+        let out = assemble(&fragments(), &shot("reference"), "media/S01").unwrap();
+        assert!(out.graph.get("lora").is_none());
+        assert_eq!(out.graph["scheduler"]["inputs"]["steps"], json!(20));
+        assert_eq!(out.graph["scheduler"]["inputs"]["scheduler"], json!("beta"));
+    }
+
+    /// 叠加层没真机核验时退回普通组合并说明——preview 省时间是锦上添花，
+    /// 为它把整个预览阶段卡死不值得，但也不能让人以为跑的是 turbo。
+    #[test]
+    fn an_unverified_overlay_falls_back_and_says_so() {
+        let mut set = fragments();
+        let o = set.overlays.get_mut("reference").unwrap();
+        o.verified = false;
+        o.unavailable_reason = Some("没在真机上出过片".into());
+        let out =
+            assemble_as(&set, &shot("reference"), "m/S01", Combination::PreviewTurbo).unwrap();
+        assert!(out.graph.get("lora").is_none());
+        assert_eq!(out.graph["scheduler"]["inputs"]["steps"], json!(20));
+        assert_eq!(out.notes.len(), 1);
+        assert!(out.notes[0].contains("没在真机上出过片"), "{:?}", out.notes);
+    }
+
+    /// 这个 head 压根没有叠加层时同样退回，不是错误。
+    #[test]
+    fn a_head_without_an_overlay_falls_back_quietly() {
+        let mut set = fragments();
+        set.overlays.clear();
+        let out = assemble_as(&set, &shot("image"), "m/S01", Combination::PreviewTurbo).unwrap();
+        assert!(out.graph.get("lora").is_none());
+        assert_eq!(out.notes.len(), 1);
+        assert!(
+            out.notes[0].contains("没有 turbo 叠加层"),
+            "{:?}",
+            out.notes
+        );
     }
 
     /// `clip` 锚的是**帧序列**，必须走 LoadVideo + GetVideoComponents，

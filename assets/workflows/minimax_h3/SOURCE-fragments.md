@@ -63,6 +63,38 @@ AddGuide **只输出 CONDITIONING**，所以链式时只有 `positive` 串成链
 两个 `bindings_verified: false` 的片段带着 `unavailable_reason`，控制面会拒绝
 用它们渲染——跟未核验的整图基线是同一套规矩。真机跑通一整镜后改成 `true`。
 
+## turbo 叠加层：图校验通过 ≠ 画面是对的
+
+`overlay.turbo.reference` / `overlay.turbo.image` 挂官方的 turbo LoRA，
+把 `scheduler.steps` 降到 LoRA 的步数（4 / 8），preview 用。
+
+这两份的验证过程值得记一笔，因为它正好推翻了「图校验通过就算数」：
+
+1. 第一版按 `load_unet → lora → sigmashift` 接，图校验**四种组合全过**。
+2. 真机出片一看，reference + 4 步的画面是**坏的**——色带、光晕、底部有幻觉
+   出来的字形，跟 20 步基准完全不能比。
+3. 排查时试了五种变体。把 LoRA 换到 `sigmashift` 之后（B 变体），画面
+   **一模一样地坏**——所以顺序不是原因，这两个模型补丁在 ComfyUI 里可交换。
+4. 真正的原因是**调度器**：reference head 的配套档位是 `beta`，那是 20 步
+   下的搭配，步数降到 4 就不成立了。换成 `simple` 立刻正常（C 变体）；
+   保持 `beta` 但把步数提到 8 也正常（E 变体）。
+
+所以 overlay 的 `backbone_overrides` 里显式写死 `scheduler = simple`，
+盖掉 head 给的 `beta`。image 那份虽然 head 本来就是 `simple`，也照样显式写
+——低步数下这个档位是成败关键，不该靠继承碰巧对上。
+
+**真机耗时**（640×384×22 帧，同种子）：
+
+| 组合 | 步数 | 调度器 | 耗时 |
+|---|---|---|---|
+| reference 普通 | 20 | beta | 8.6 / 10.2s |
+| reference turbo | 4 | simple | 5.7 / 5.7s |
+| image 普通 | 20 | simple | 10.9 / 10.4s |
+| image turbo | 8 | simple | 8.5 / 7.8s |
+
+这个尺寸下固定开销（VAE 解码、编码封装）占比大，所以只快 1.3–1.8 倍；
+采样占比更高的真实预览尺寸上差距会拉开。
+
 ## 为什么不许按接口类型推断
 
 写真机探针时，我按「AV latent 有视频和音频两路」推断

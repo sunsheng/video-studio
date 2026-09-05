@@ -291,8 +291,19 @@ head                   原样保留（h3_ref / h3_i2v）
 - 挂 turbo LoRA（`minimax_h3_ref2v_turbo_4step` / `fl2v_turbo_8step`，两份权重
   都已在机器上）
 - 相应把 `scheduler.steps` 降到 LoRA 的步数
+- **调度器一并降档到 `simple`**
 
 **这一项做成可配置，默认开。** 因为 preview 门要看的只是构图与内容。
+
+第三条是真机验出来的，不在原规格里：reference head 的配套调度器是 `beta`，
+那是 20 步下的搭配；步数降到 4 之后 `beta` 出来的画面是坏的（色带、光晕、
+底部有幻觉出来的字形），换 `simple` 才正常。**四种组合的图校验全都通过**——
+这条只有真机出片才看得见。经过与实测记录见
+`assets/workflows/minimax_h3/SOURCE-fragments.md`。
+
+叠加层没真机核验时**自动退回普通组合并在进度里说明**，不是报错：preview
+少花点时间是锦上添花，为它把整个预览阶段卡死不值得；但也不能让人以为跑的
+是 turbo。
 
 ---
 

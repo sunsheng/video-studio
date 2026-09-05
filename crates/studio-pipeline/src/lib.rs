@@ -248,6 +248,24 @@ fn dependency_waves(shots: &[Value]) -> Vec<Vec<usize>> {
     waves
 }
 
+/// preview 要覆盖的目标尺寸；render 用提示词包原样的宽高，返回 `None`
+/// 表示「不覆盖，结果里也不需要单独报宽高」。
+fn preview_dims(shot: &Value, mode: GenerateMode) -> Option<(i64, i64)> {
+    if mode != GenerateMode::Preview {
+        return None;
+    }
+    let dim = |k: &str| {
+        shot.get(k)
+            .and_then(|v| v.as_i64())
+            .unwrap_or(PREVIEW_SHORT_EDGE)
+    };
+    Some(scale_to_short_edge(
+        dim("width"),
+        dim("height"),
+        PREVIEW_SHORT_EDGE,
+    ))
+}
+
 fn wrap(stage: StageId, v: Value) -> Outputs {
     let mut m = Outputs::new();
     m.insert(stage.output_key().to_string(), v);
@@ -412,26 +430,12 @@ impl Pipeline {
     ) -> Result<Value> {
         let shot_id = shot["shot_id"].as_str().unwrap_or("shot").to_string();
 
-        // 只有 preview 才覆盖尺寸；render 用提示词包原样的宽高，
-        // dims 留 None 表示「结果里不需要单独报宽高」。
-        let dims = if mode == GenerateMode::Preview {
-            let width = shot
-                .get("width")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(PREVIEW_SHORT_EDGE);
-            let height = shot
-                .get("height")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(PREVIEW_SHORT_EDGE);
-            Some(scale_to_short_edge(width, height, PREVIEW_SHORT_EDGE))
-        } else {
-            None
-        };
+        let dims = preview_dims(shot, mode);
 
         // 两种形状：片段化的系列写 head，现场组装；其余系列写 workflow，
         // 加载整图基线再填参数。哪一种由提示词包自己说了算。
         let graph = if shot.get("head").is_some() {
-            self.assemble_shot(ctx, comfy, resolver, &shot_id, shot, dims)?
+            self.assemble_shot(ctx, comfy, resolver, &shot_id, shot, mode)?
         } else {
             let wf_name =
                 shot["workflow"]
@@ -507,7 +511,7 @@ impl Pipeline {
         resolver: &assets::AssetResolver<'_>,
         shot_id: &str,
         shot: &Value,
-        dims: Option<(i64, i64)>,
+        mode: GenerateMode,
     ) -> Result<Value> {
         let mut decl: studio_core::ShotDeclaration =
             serde_json::from_value(shot.clone()).map_err(|e| {
@@ -515,7 +519,7 @@ impl Pipeline {
                     detail: format!("{shot_id} 的声明读不出来：{e}"),
                 }
             })?;
-        if let Some((pw, ph)) = dims {
+        if let Some((pw, ph)) = preview_dims(shot, mode) {
             decl.width = pw;
             decl.height = ph;
         }
@@ -561,18 +565,32 @@ impl Pipeline {
         decl.first_frame = decl.first_frame.as_ref().map(rename);
         decl.last_frame = decl.last_frame.as_ref().map(rename);
 
+        // preview 换一套更便宜的组合：挂 head 配套的 turbo LoRA、steps 降到
+        // LoRA 的步数。预览门要看的只是构图与内容。叠加层没核验时组装器会
+        // 自己退回普通组合，并在 notes 里说明——不会悄悄跑出不可信的东西。
+        let combination = match (mode, ctx.settings.comfy_preview_turbo()) {
+            (GenerateMode::Preview, true) => studio_core::assembly::Combination::PreviewTurbo,
+            _ => studio_core::assembly::Combination::Standard,
+        };
+
         let out = ctx
             .step("assemble")
             .shot(shot_id)
             .with("head", json!(decl.head))
-            .done(studio_core::assembly::assemble(
+            .with("combination", json!(format!("{combination:?}")))
+            .done(studio_core::assembly::assemble_as(
                 &set,
                 &decl,
                 &format!("studio/{shot_id}"),
+                combination,
             ))?;
+        for note in &out.notes {
+            ctx.say(format!("{shot_id}：{note}"));
+        }
         ctx.step("assembled")
             .shot(shot_id)
             .with("fragments", json!(out.used))
+            .with("notes", json!(out.notes))
             .done(Ok::<(), StudioError>(()))?;
         Ok(out.graph)
     }
@@ -1160,6 +1178,55 @@ mod real_baselines {
         assert!(set.guides.contains_key("image") && set.guides.contains_key("clip"));
         for medium in ["image", "video", "audio"] {
             assert!(set.inputs.contains_key(medium), "缺 {medium} 类输入片段");
+        }
+    }
+
+    /// preview 的 turbo 叠加层：**用真实的片段文件**验它挂上去之后
+    /// LoRA 与步数、调度器都对。调度器尤其要紧——真机对比里
+    /// reference head 的 beta 档在 4 步下出来的画面是坏的（见
+    /// `SOURCE-fragments.md`），overlay 必须把它盖成 simple。
+    #[test]
+    fn the_real_turbo_overlays_swap_in_the_lora_and_the_right_schedule() {
+        use studio_core::assembly::{assemble_as, Combination};
+        let caps = caps();
+        let set = caps.fragments_for("minimax_h3").unwrap();
+        for (head, steps, lora) in [
+            ("reference", 4, "ref2v_turbo_4step"),
+            ("image", 8, "fl2v_turbo_8step"),
+        ] {
+            let mut shot = studio_core::ShotDeclaration {
+                shot_id: "S01".into(),
+                head: head.into(),
+                positive: "p".into(),
+                width: 640,
+                height: 384,
+                length_frames: 22,
+                fps: 24.0,
+                seed: 1,
+                references: Vec::new(),
+                guides: Vec::new(),
+                first_frame: None,
+                last_frame: None,
+            };
+            if head == "image" {
+                shot.first_frame = Some("f.png".into());
+            }
+            let out = assemble_as(set, &shot, "t/S01", Combination::PreviewTurbo)
+                .unwrap_or_else(|e| panic!("{head} 的 turbo 组合拼不起来：{}", e.message()));
+            assert!(out.notes.is_empty(), "{head}: {:?}", out.notes);
+            let g = &out.graph;
+            assert!(g["lora"]["inputs"]["lora_name"]
+                .as_str()
+                .unwrap()
+                .contains(lora));
+            assert_eq!(g["lora"]["inputs"]["model"], json!(["load_unet", 0]));
+            assert_eq!(g["sigmashift"]["inputs"]["model"], json!(["lora", 0]));
+            assert_eq!(g["scheduler"]["inputs"]["steps"], json!(steps));
+            assert_eq!(
+                g["scheduler"]["inputs"]["scheduler"],
+                json!("simple"),
+                "{head}：低步数下调度器档位是成败关键，overlay 必须显式写死"
+            );
         }
     }
 

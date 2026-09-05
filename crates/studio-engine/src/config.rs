@@ -50,6 +50,15 @@ pub struct ComfyConfig {
     /// 排队的部分由那一侧调度，而队列太浅会让后端节点闲着。
     #[serde(default = "default_concurrency")]
     pub concurrency: usize,
+    /// preview 挂不挂 turbo LoRA。默认开——预览门要看的只是构图与内容，
+    /// 4/8 步比 20 步快得多。片段库里没有对应的叠加层、或者它还没真机核验时
+    /// 会自动退回普通组合并在进度里说明，所以开着也不会悄悄跑出不可信的东西。
+    #[serde(default = "default_preview_turbo")]
+    pub preview_turbo: bool,
+}
+
+fn default_preview_turbo() -> bool {
+    true
 }
 
 fn default_node() -> String {
@@ -73,6 +82,7 @@ impl Default for ComfyConfig {
             timeout_secs: default_timeout(),
             poll_interval_secs: default_poll(),
             concurrency: default_concurrency(),
+            preview_turbo: default_preview_turbo(),
         }
     }
 }
@@ -259,6 +269,17 @@ impl Settings {
             .and_then(|v| v.parse().ok())
             .unwrap_or(self.file.comfy.concurrency)
             .max(1)
+    }
+
+    /// preview 是否挂 turbo LoRA。`COMFY_PREVIEW_TURBO=0` 可以关掉。
+    pub fn comfy_preview_turbo(&self) -> bool {
+        match self.env.get("COMFY_PREVIEW_TURBO") {
+            Some(v) => !matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "0" | "false" | "no" | "off"
+            ),
+            None => self.file.comfy.preview_turbo,
+        }
     }
 
     pub fn comfy_poll_secs(&self) -> u64 {
