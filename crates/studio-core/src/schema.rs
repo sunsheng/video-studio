@@ -1406,6 +1406,28 @@ fn structural(stage: StageId, v: &Value, key: &str, out: &mut Vec<Violation>) {
                 .unwrap_or("")
                 .trim_start();
             let identity = identity.trim();
+            // V14：身份锁之后要写**这个视图特有的机位／取景**，不能只把视图的
+            // 英文枚举名抄上去。
+            //
+            // 枚举名是给机器看的键，不是给模型看的话。2026-09-05 的端到端里
+            // Agent 把七个视图全写成「<身份锁> face_close；中性灰底……」这种
+            // 模板，于是 face_close 出来的是一张全身正面照——跟主视图几乎一样。
+            // 4–6 张累积参考本来就在把构图往锚点上拉，视图这一侧再不给指令，
+            // 模型只会顺着最省力的方向走。
+            //
+            // V13 只管开头那段身份锁，管不到后面，所以这条要单独立。
+            if !name.is_empty() && prompt.contains(name) {
+                out.push(Violation::new(
+                    at(&format!(".views[{j}].prompt")),
+                    format!(
+                        "提示词里出现了视图的枚举名「{name}」。那是给机器看的键，\
+                         模型读不懂——身份锁之后要写这个视图**特有的机位与取景**，\
+                         例如 face_close 写成「面部特写，肩部以上入画，中性表情」，\
+                         wardrobe_detail 写成「服装材质与关键配饰的近景」。\
+                         照抄枚举名的结果是七个视图长得一模一样"
+                    ),
+                ));
+            }
             if !identity.is_empty() && !prompt.starts_with(identity) {
                 out.push(Violation::new(
                     at(&format!(".views[{j}].prompt")),
@@ -1797,6 +1819,38 @@ mod fixture_tests {
         let mut o = plan();
         o["asset_plan"]["assets"][0]["views"][1]["view"] = json!("establishing");
         refuses(&o, "不是 character_card 的视图");
+    }
+
+    /// V14：视图的枚举名是给机器看的键，不能当成给模型的取景描述抄上去。
+    ///
+    /// 2026-09-05 的端到端里 Agent 把七个视图全写成
+    /// 「<身份锁> face_close；中性灰底……」这种模板，于是 face_close 出来的是
+    /// 一张全身正面照，跟主视图几乎一样——4–6 张累积参考本来就在把构图往锚点
+    /// 上拉，视图这一侧再不给指令，模型只会顺着最省力的方向走。
+    #[test]
+    fn a_view_prompt_that_just_repeats_the_enum_name_is_refused() {
+        let mut o = plan();
+        let identity = o["asset_plan"]["assets"][0]["identity_prompt"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        o["asset_plan"]["assets"][0]["views"][4]["prompt"] =
+            json!(format!("{identity} face_close；中性灰底、均匀柔光。"));
+        refuses(&o, "出现了视图的枚举名");
+    }
+
+    /// 写成人话就放行——这条测试守着 V14 不会把正常的取景描述也拦下来。
+    #[test]
+    fn a_view_prompt_with_a_real_framing_description_passes() {
+        let mut o = plan();
+        let identity = o["asset_plan"]["assets"][0]["identity_prompt"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        o["asset_plan"]["assets"][0]["views"][4]["prompt"] = json!(format!(
+            "{identity} 面部特写，肩部以上入画，中性表情；中性灰底、均匀柔光。"
+        ));
+        assert!(validate(StageId::VisualAssets, &o).is_ok());
     }
 
     /// 删掉的那两个参照类资产不能再被提交。
