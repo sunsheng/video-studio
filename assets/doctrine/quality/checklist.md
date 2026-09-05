@@ -39,6 +39,10 @@
 
 - [ ] consistency_lock.character 是从分镜 character_lock.identity_lock 复制来的，逐字相同
 - [ ] 每个跨镜头复用的角色、场景、道具都有卡
+- [ ] 每张卡的必需视图齐全，一个不少
+- [ ] 每张卡只有一个主视图，其余视图的 derived_from 都指向它
+- [ ] 同一张卡的所有视图画幅一致
+- [ ] 每个视图的提示词都以 identity_prompt 逐字开头
 - [ ] 一致性锁定写明了外观、机位签名、环境与排版禁止项
 
 ## `prompt_pack`

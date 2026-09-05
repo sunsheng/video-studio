@@ -8,6 +8,128 @@
       "additionalProperties": true,
       "description": "角色卡、场景卡与参考资产计划",
       "properties": {
+        "assets": {
+          "description": "资产清单。**每个跨镜头复用的角色、场景、道具都要有一项**，每一项下面挂多个视图——一张大头照锁不住服装，一张全身照锁不住脸",
+          "items": {
+            "additionalProperties": true,
+            "description": "一项资产",
+            "properties": {
+              "applies_to": {
+                "description": "作用于哪些镜头",
+                "items": {
+                  "description": "shot_id",
+                  "type": "string"
+                },
+                "minItems": 0,
+                "type": "array"
+              },
+              "asset_id": {
+                "description": "稳定标识，例如 C01 / SC01 / P01",
+                "type": "string"
+              },
+              "asset_kind": {
+                "description": "资产类型",
+                "enum": [
+                  "character_card",
+                  "scene_card",
+                  "prop_card",
+                  "safety_reference",
+                  "style_reference"
+                ],
+                "type": "string"
+              },
+              "identity_prompt": {
+                "description": "这张卡的外观锁，**一次写定**：发型、脸型、肤色、瞳色、服装、体型、年龄段、标志性特征。下面每个视图的 prompt 都要逐字带上它，不复述、不改写。角色卡的这一段要与 consistency_lock.character 一致",
+                "type": "string"
+              },
+              "views": {
+                "description": "视图清单。必需视图缺一个就不放行，各类必需哪些见方法文档 consistency/character-sheet.md",
+                "items": {
+                  "additionalProperties": true,
+                  "description": "一个视图",
+                  "properties": {
+                    "aspect": {
+                      "description": "目标比例，例如 9:16 / 1:1 / 16:9。同一张卡的所有视图用同一套规格——一张竖一张方会让人误以为是不同批次生成的",
+                      "type": "string"
+                    },
+                    "derived_from": {
+                      "description": "本视图以哪个视图为参考图。**非主视图必填**，值就是那张卡的主视图 id；主视图自己不填。没有锚点就没有参考图可用，出来的是长得像但不是同一个人",
+                      "type": "string"
+                    },
+                    "is_anchor": {
+                      "description": "是不是主视图。每张卡**有且仅有一个**，且必须是该类型的固定主视图。主视图先出、单独出，其余视图都以它为参考图",
+                      "type": "boolean"
+                    },
+                    "path": {
+                      "description": "落盘位置，控制面回填。bundle 内相对路径，形如 media/assets/<asset_id>/<view>.png",
+                      "type": "string"
+                    },
+                    "prompt": {
+                      "description": "本视图的提示词：identity_prompt 逐字 + 本视图特有的机位/表情描述 + 画幅比例。统一约束：中性灰底、均匀柔光、无阴影投射、不裁切。卡片是**测量用的参考素材**，不是好看的剧照",
+                      "type": "string"
+                    },
+                    "provenance": {
+                      "description": "哪个后端、哪条基线、什么尺寸、什么种子出的。控制面回填，可审计"
+                    },
+                    "status": {
+                      "description": "状态。**提交时一律 planned**，其余取值由控制面回填",
+                      "enum": [
+                        "planned",
+                        "generating",
+                        "ready",
+                        "failed"
+                      ],
+                      "type": "string"
+                    },
+                    "view": {
+                      "description": "视图 id。取值随 asset_kind 而定：角色卡用 front_full 那一组，场景卡用 establishing 那一组，道具卡用 front 那一组",
+                      "enum": [
+                        "front_full",
+                        "three_quarter",
+                        "profile",
+                        "back",
+                        "face_close",
+                        "expressions",
+                        "hands_props",
+                        "wardrobe_detail",
+                        "establishing",
+                        "key_angle",
+                        "reverse_angle",
+                        "detail",
+                        "lighting_variants",
+                        "empty_plate",
+                        "front",
+                        "side",
+                        "in_use",
+                        "scale_reference"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "view",
+                    "is_anchor",
+                    "aspect",
+                    "prompt",
+                    "status"
+                  ],
+                  "type": "object"
+                },
+                "minItems": 1,
+                "type": "array"
+              }
+            },
+            "required": [
+              "asset_id",
+              "asset_kind",
+              "identity_prompt",
+              "views"
+            ],
+            "type": "object"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
         "backend": {
           "description": "生成后端，通常是 comfyui",
           "type": "string"
@@ -46,79 +168,6 @@
           "description": "降级策略。默认结构化阻塞，不自动换系列",
           "type": "string"
         },
-        "requests": {
-          "description": "资产请求",
-          "items": {
-            "additionalProperties": true,
-            "description": "一项资产",
-            "properties": {
-              "applies_to": {
-                "description": "作用于哪些镜头",
-                "items": {
-                  "description": "shot_id",
-                  "type": "string"
-                },
-                "minItems": 0,
-                "type": "array"
-              },
-              "asset_id": {
-                "description": "稳定标识，例如 C01 / SC01",
-                "type": "string"
-              },
-              "asset_kind": {
-                "description": "资产类型",
-                "enum": [
-                  "character_card",
-                  "scene_card",
-                  "prop_card",
-                  "safety_reference",
-                  "style_reference"
-                ],
-                "type": "string"
-              },
-              "height": {
-                "description": "高",
-                "type": "integer"
-              },
-              "prompt": {
-                "description": "生成提示词",
-                "type": "string"
-              },
-              "references": {
-                "description": "依赖的其它资产",
-                "items": {
-                  "description": "asset_id",
-                  "type": "string"
-                },
-                "minItems": 0,
-                "type": "array"
-              },
-              "status": {
-                "description": "状态",
-                "enum": [
-                  "planned",
-                  "generating",
-                  "ready",
-                  "failed"
-                ],
-                "type": "string"
-              },
-              "width": {
-                "description": "宽",
-                "type": "integer"
-              }
-            },
-            "required": [
-              "asset_id",
-              "asset_kind",
-              "prompt",
-              "status"
-            ],
-            "type": "object"
-          },
-          "minItems": 1,
-          "type": "array"
-        },
         "strategy": {
           "description": "生成策略，例如先出开发片段再抽帧",
           "type": "string"
@@ -128,7 +177,7 @@
         "backend",
         "core_model_family",
         "consistency_lock",
-        "requests"
+        "assets"
       ],
       "type": "object"
     }

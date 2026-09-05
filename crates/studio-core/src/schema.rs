@@ -271,7 +271,12 @@ pub fn validate(stage: StageId, outputs: &Outputs) -> Result<()> {
             key,
             format!("阶段 {stage} 的产物必须放在顶层键 {key} 下"),
         )),
-        Some(v) => stage_schema(stage).check(v, key, &mut violations),
+        Some(v) => {
+            stage_schema(stage).check(v, key, &mut violations);
+            // 形状之外的结构约束：schema 的 enum 表达不了「角色卡必须有
+            // 这五个视图」「非主视图必须指向锚点」这类条件依赖。
+            structural(stage, v, key, &mut violations);
+        }
     }
     if violations.is_empty() {
         Ok(())
@@ -744,40 +749,119 @@ pub fn stage_schema(stage: StageId) -> Schema {
                     ),
                 ),
                 (
-                    "requests",
+                    "assets",
                     arr(
-                        "资产请求",
+                        "资产清单。**每个跨镜头复用的角色、场景、道具都要有一项**，\
+                         每一项下面挂多个视图——一张大头照锁不住服装，\
+                         一张全身照锁不住脸",
                         obj(
                             "一项资产",
                             vec![
-                                ("asset_id", text("稳定标识，例如 C01 / SC01")),
+                                ("asset_id", text("稳定标识，例如 C01 / SC01 / P01")),
                                 (
                                     "asset_kind",
-                                    one_of(
-                                        "资产类型",
-                                        vec![
-                                            "character_card",
-                                            "scene_card",
-                                            "prop_card",
-                                            "safety_reference",
-                                            "style_reference",
-                                        ],
+                                    one_of("资产类型", lexicon::ASSET_KINDS.to_vec()),
+                                ),
+                                (
+                                    "identity_prompt",
+                                    text(
+                                        "这张卡的外观锁，**一次写定**：\
+                                         发型、脸型、肤色、瞳色、服装、体型、年龄段、\
+                                         标志性特征。下面每个视图的 prompt 都要逐字带上它，\
+                                         不复述、不改写。角色卡的这一段要与 \
+                                         consistency_lock.character 一致",
                                     ),
                                 ),
-                                ("prompt", text("生成提示词")),
-                                ("width", int("宽")),
-                                ("height", int("高")),
                                 ("applies_to", arr("作用于哪些镜头", text("shot_id"), 0)),
-                                ("references", arr("依赖的其它资产", text("asset_id"), 0)),
                                 (
-                                    "status",
-                                    one_of(
-                                        "状态",
-                                        vec!["planned", "generating", "ready", "failed"],
+                                    "views",
+                                    arr(
+                                        "视图清单。必需视图缺一个就不放行，\
+                                         各类必需哪些见方法文档 consistency/character-sheet.md",
+                                        obj(
+                                            "一个视图",
+                                            vec![
+                                                (
+                                                    "view",
+                                                    one_of(
+                                                        "视图 id。取值随 asset_kind 而定：\
+                                                         角色卡用 front_full 那一组，\
+                                                         场景卡用 establishing 那一组，\
+                                                         道具卡用 front 那一组",
+                                                        lexicon::ALL_VIEWS.to_vec(),
+                                                    ),
+                                                ),
+                                                (
+                                                    "is_anchor",
+                                                    Schema::Bool {
+                                                        desc: "是不是主视图。每张卡**有且仅有一个**，\
+                                                               且必须是该类型的固定主视图。\
+                                                               主视图先出、单独出，其余视图都以它为参考图",
+                                                    },
+                                                ),
+                                                (
+                                                    "aspect",
+                                                    text(
+                                                        "目标比例，例如 9:16 / 1:1 / 16:9。\
+                                                         同一张卡的所有视图用同一套规格——\
+                                                         一张竖一张方会让人误以为是不同批次生成的",
+                                                    ),
+                                                ),
+                                                (
+                                                    "prompt",
+                                                    text(
+                                                        "本视图的提示词：identity_prompt 逐字 + \
+                                                         本视图特有的机位/表情描述 + 画幅比例。\
+                                                         统一约束：中性灰底、均匀柔光、无阴影投射、\
+                                                         不裁切。卡片是**测量用的参考素材**，\
+                                                         不是好看的剧照",
+                                                    ),
+                                                ),
+                                                (
+                                                    "derived_from",
+                                                    text(
+                                                        "本视图以哪个视图为参考图。\
+                                                         **非主视图必填**，值就是那张卡的主视图 id；\
+                                                         主视图自己不填。没有锚点就没有参考图可用，\
+                                                         出来的是长得像但不是同一个人",
+                                                    ),
+                                                ),
+                                                (
+                                                    "status",
+                                                    one_of(
+                                                        "状态。**提交时一律 planned**，\
+                                                         其余取值由控制面回填",
+                                                        vec![
+                                                            "planned",
+                                                            "generating",
+                                                            "ready",
+                                                            "failed",
+                                                        ],
+                                                    ),
+                                                ),
+                                                (
+                                                    "path",
+                                                    text(
+                                                        "落盘位置，控制面回填。\
+                                                         bundle 内相对路径，\
+                                                         形如 media/assets/<asset_id>/<view>.png",
+                                                    ),
+                                                ),
+                                                (
+                                                    "provenance",
+                                                    any(
+                                                        "哪个后端、哪条基线、什么尺寸、什么种子出的。\
+                                                         控制面回填，可审计",
+                                                    ),
+                                                ),
+                                            ],
+                                            vec!["view", "is_anchor", "aspect", "prompt", "status"],
+                                        ),
+                                        1,
                                     ),
                                 ),
                             ],
-                            vec!["asset_id", "asset_kind", "prompt", "status"],
+                            vec!["asset_id", "asset_kind", "identity_prompt", "views"],
                         ),
                         1,
                     ),
@@ -787,7 +871,7 @@ pub fn stage_schema(stage: StageId) -> Schema {
                 "backend",
                 "core_model_family",
                 "consistency_lock",
-                "requests",
+                "assets",
             ],
         ),
 
@@ -1057,6 +1141,161 @@ pub fn stage_schema(stage: StageId) -> Schema {
     }
 }
 
+/// 条件依赖类的结构约束。JSON Schema 的子集表达不了它们，但它们和字段
+/// 缺失一样是硬错误——放过去，下游拿到的就是一份看起来完整、实际锁不住
+/// 任何东西的资产计划。
+fn structural(stage: StageId, v: &Value, key: &str, out: &mut Vec<Violation>) {
+    if stage != StageId::VisualAssets {
+        return;
+    }
+    let Some(assets) = v.get("assets").and_then(|a| a.as_array()) else {
+        return;
+    };
+    let lock = v
+        .get("consistency_lock")
+        .and_then(|c| c.get("character"))
+        .and_then(|c| c.as_str())
+        .unwrap_or_default();
+    for (i, asset) in assets.iter().enumerate() {
+        let at = |suffix: &str| format!("{key}.assets[{i}]{suffix}");
+        let kind = asset
+            .get("asset_kind")
+            .and_then(|k| k.as_str())
+            .unwrap_or_default();
+        let identity = asset
+            .get("identity_prompt")
+            .and_then(|p| p.as_str())
+            .unwrap_or_default();
+        // 角色卡的身份锁必须**逐字包含**视频那段身份锁。卡片可以更细
+        // （脸型、肤色、瞳色是出图才需要的），但不能是另一段近义改写——
+        // 那样卡片上的人和成片里的人就不是同一个人了。
+        if kind == "character_card" && !lock.is_empty() && !identity.contains(lock) {
+            out.push(Violation::new(
+                at(".identity_prompt"),
+                format!(
+                    "没有逐字包含 consistency_lock.character。\
+                     卡片可以写得更细，但那段身份锁要原样在里面：「{lock}」"
+                ),
+            ));
+        }
+
+        let allowed = lexicon::views_for(kind);
+        if allowed.is_empty() {
+            // 参照类资产（safety_reference / style_reference）不强制多视图。
+            continue;
+        }
+        let views = asset
+            .get("views")
+            .and_then(|x| x.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let names: Vec<&str> = views
+            .iter()
+            .filter_map(|x| x.get("view").and_then(|n| n.as_str()))
+            .collect();
+
+        for want in lexicon::required_views(kind) {
+            if !names.contains(want) {
+                out.push(Violation::new(
+                    at(".views"),
+                    format!(
+                        "{kind} 缺必需视图 {want}。多角度不是形容词：\
+                         少一个角度就少一处可比对的参照，下游只能靠猜"
+                    ),
+                ));
+            }
+        }
+        for (j, name) in names.iter().enumerate() {
+            if !allowed.contains(name) {
+                out.push(Violation::new(
+                    at(&format!(".views[{j}].view")),
+                    format!(
+                        "{name} 不是 {kind} 的视图。合法取值：{}",
+                        allowed.join("、")
+                    ),
+                ));
+            }
+        }
+
+        let anchor_name = lexicon::anchor_view(kind).unwrap_or_default();
+        let anchors: Vec<usize> = views
+            .iter()
+            .enumerate()
+            .filter(|(_, x)| x.get("is_anchor").and_then(|b| b.as_bool()) == Some(true))
+            .map(|(j, _)| j)
+            .collect();
+        match anchors.len() {
+            1 => {
+                let j = anchors[0];
+                let got = views[j].get("view").and_then(|n| n.as_str()).unwrap_or("");
+                if got != anchor_name {
+                    out.push(Violation::new(
+                        at(&format!(".views[{j}].is_anchor")),
+                        format!("{kind} 的主视图必须是 {anchor_name}，不是 {got}"),
+                    ));
+                }
+            }
+            0 => out.push(Violation::new(
+                at(".views"),
+                format!(
+                    "没有主视图。{kind} 的主视图是 {anchor_name}，\
+                     它先出、单独出，其余视图都以它为参考图"
+                ),
+            )),
+            n => out.push(Violation::new(
+                at(".views"),
+                format!(
+                    "有 {n} 个主视图。每张卡有且仅有一个——\
+                     并行出多个「主」视图，出来的是几个长得像但不是同一个人的角色"
+                ),
+            )),
+        }
+
+        let mut aspects = std::collections::BTreeSet::new();
+        for (j, view) in views.iter().enumerate() {
+            let name = view.get("view").and_then(|n| n.as_str()).unwrap_or("");
+            let is_anchor = view.get("is_anchor").and_then(|b| b.as_bool()) == Some(true);
+            let derived = view.get("derived_from").and_then(|d| d.as_str());
+            if let Some(a) = view.get("aspect").and_then(|a| a.as_str()) {
+                aspects.insert(a.to_string());
+            }
+            if is_anchor {
+                if derived.is_some_and(|d| !d.is_empty()) {
+                    out.push(Violation::new(
+                        at(&format!(".views[{j}].derived_from")),
+                        "主视图自己不参考任何视图，这里不要填",
+                    ));
+                }
+                continue;
+            }
+            match derived {
+                None => out.push(Violation::new(
+                    at(&format!(".views[{j}].derived_from")),
+                    format!(
+                        "非主视图必须指向锚点视图（{anchor_name}）。\
+                         没有锚点就没有参考图可用，出来的是长得像但不是同一个人"
+                    ),
+                )),
+                Some(d) if d != anchor_name => out.push(Violation::new(
+                    at(&format!(".views[{j}].derived_from")),
+                    format!("{name} 应当以 {anchor_name} 为参考图，写的却是 {d}"),
+                )),
+                Some(_) => {}
+            }
+        }
+        if aspects.len() > 1 {
+            out.push(Violation::new(
+                at(".views"),
+                format!(
+                    "同一张卡出现了多种画幅（{}）。一张竖一张方会让人\
+                     误以为是不同批次生成的",
+                    aspects.into_iter().collect::<Vec<_>>().join("、")
+                ),
+            ));
+        }
+    }
+}
+
 /// 完整的 JSON Schema 文档，`emit-assets` 写进 `assets/schema/<stage>.json`。
 pub fn stage_schema_document(stage: StageId) -> Value {
     let key = stage.output_key();
@@ -1216,6 +1455,85 @@ mod fixture_tests {
             let outputs = fixtures::outputs(stage);
             validate(stage, &outputs).unwrap_or_else(|e| panic!("阶段 {stage} 的样例不合规：{e}"));
         }
+    }
+
+    fn plan() -> Outputs {
+        fixtures::outputs(StageId::VisualAssets)
+    }
+
+    fn refuses(o: &Outputs, needle: &str) {
+        let e = validate(StageId::VisualAssets, o)
+            .expect_err(&format!("这份计划应当被挡下（{needle}）"));
+        assert!(
+            e.message().contains(needle),
+            "错误没说到点子上（要找 {needle}）：{}",
+            e.message()
+        );
+    }
+
+    /// 少一个角度就少一处可比对的参照——这是「多角度」这个要求的全部意义。
+    #[test]
+    fn a_character_card_missing_a_required_view_is_refused() {
+        let mut o = plan();
+        o["asset_plan"]["assets"][0]["views"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|v| v["view"] != "back");
+        refuses(&o, "缺必需视图 back");
+    }
+
+    /// 并行出多个「主」视图，出来的是几个长得像但不是同一个人的角色。
+    #[test]
+    fn two_anchors_on_one_card_is_refused() {
+        let mut o = plan();
+        o["asset_plan"]["assets"][0]["views"][1]["is_anchor"] = json!(true);
+        refuses(&o, "有 2 个主视图");
+    }
+
+    #[test]
+    fn a_non_anchor_view_without_an_anchor_to_derive_from_is_refused() {
+        let mut o = plan();
+        o["asset_plan"]["assets"][0]["views"][2]
+            .as_object_mut()
+            .unwrap()
+            .remove("derived_from");
+        refuses(&o, "非主视图必须指向锚点视图");
+    }
+
+    #[test]
+    fn mixing_aspects_within_one_card_is_refused() {
+        let mut o = plan();
+        o["asset_plan"]["assets"][0]["views"][4]["aspect"] = json!("1:1");
+        refuses(&o, "多种画幅");
+    }
+
+    /// 卡片可以写得更细，但不能是另一段近义改写——那样卡上的人和成片里
+    /// 的人就不是同一个人了。
+    #[test]
+    fn a_card_identity_that_paraphrases_the_lock_is_refused() {
+        let mut o = plan();
+        o["asset_plan"]["assets"][0]["identity_prompt"] =
+            json!("20岁女生，黑长发，白裙子，白板鞋，小挎包，鹅蛋脸");
+        refuses(&o, "没有逐字包含 consistency_lock.character");
+    }
+
+    #[test]
+    fn a_scene_view_on_a_character_card_is_refused() {
+        let mut o = plan();
+        o["asset_plan"]["assets"][0]["views"][1]["view"] = json!("establishing");
+        refuses(&o, "不是 character_card 的视图");
+    }
+
+    /// 参照类资产不强制多视图——它们本来就只有一张图。
+    #[test]
+    fn a_style_reference_needs_no_views() {
+        let mut o = plan();
+        o["asset_plan"]["assets"][0]["asset_kind"] = json!("style_reference");
+        o["asset_plan"]["assets"][0]["views"] = json!([
+            { "view": "front_full", "is_anchor": true, "aspect": "9:16",
+              "prompt": "一张色调参照", "status": "planned" }
+        ]);
+        assert!(validate(StageId::VisualAssets, &o).is_ok());
     }
 
     /// 剧本各拍时长必须真的合计 10 秒——样例本身就该是一份说得通的作品。

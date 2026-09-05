@@ -174,6 +174,129 @@ pub const BEAT_TYPE_LABELS: [(&str, &str); 6] = [
     ("resolve", "收束：给一个能停住的画面"),
 ];
 
+/// 角色卡的视图。前五个是**必需**的，见 [`required_views`]。
+///
+/// 「多角度」不是形容词：一张大头照锁不住服装，一张全身照锁不住脸。
+/// 转身图（turnaround）是这一行的标准做法，缺一个角度就少一处可比对的
+/// 参照，下游只能靠猜。
+pub const CHARACTER_VIEWS: [&str; 8] = [
+    "front_full",
+    "three_quarter",
+    "profile",
+    "back",
+    "face_close",
+    "expressions",
+    "hands_props",
+    "wardrobe_detail",
+];
+
+pub const CHARACTER_VIEW_LABELS: [(&str, &str); 8] = [
+    ("front_full", "正面全身，自然站姿，中性表情（主视图）"),
+    ("three_quarter", "四分之三侧身全身"),
+    ("profile", "正侧面全身"),
+    ("back", "背面全身：发型与服装背面"),
+    ("face_close", "面部特写，中性表情"),
+    ("expressions", "表情组：本片主导情绪 2–3 种"),
+    ("hands_props", "手部与关键道具的持握关系"),
+    ("wardrobe_detail", "服装材质与关键配饰特写"),
+];
+
+/// 场景卡的视图。前四个必需。
+pub const SCENE_VIEWS: [&str; 6] = [
+    "establishing",
+    "key_angle",
+    "reverse_angle",
+    "detail",
+    "lighting_variants",
+    "empty_plate",
+];
+
+pub const SCENE_VIEW_LABELS: [(&str, &str); 6] = [
+    ("establishing", "建立镜头广角，交代空间全貌（主视图）"),
+    ("key_angle", "主机位角度：分镜里用得最多的那个"),
+    ("reverse_angle", "反打角度，保证轴线两侧都成立"),
+    ("detail", "材质、纹理或标志性局部"),
+    (
+        "lighting_variants",
+        "剧本要求的时间光线变体：日 / 黄昏 / 夜",
+    ),
+    ("empty_plate", "空景，无人物，便于人物合成与对位"),
+];
+
+/// 道具卡的视图。四个都必需——道具少一个面，持握关系就对不上。
+pub const PROP_VIEWS: [&str; 4] = ["front", "side", "in_use", "scale_reference"];
+
+pub const PROP_VIEW_LABELS: [(&str, &str); 4] = [
+    ("front", "正面（主视图）"),
+    ("side", "侧面"),
+    ("in_use", "使用状态：谁怎么拿着它"),
+    ("scale_reference", "比例参照：与手或人体的相对大小"),
+];
+
+/// 资产类型。
+pub const ASSET_KINDS: [&str; 5] = [
+    "character_card",
+    "scene_card",
+    "prop_card",
+    "safety_reference",
+    "style_reference",
+];
+
+/// 某类资产的全部合法视图。参照类资产不强制多视图，返回空。
+pub fn views_for(asset_kind: &str) -> &'static [&'static str] {
+    match asset_kind {
+        "character_card" => &CHARACTER_VIEWS,
+        "scene_card" => &SCENE_VIEWS,
+        "prop_card" => &PROP_VIEWS,
+        _ => &[],
+    }
+}
+
+/// 某类资产**必须**齐全的视图。缺一个就不放行。
+pub fn required_views(asset_kind: &str) -> &'static [&'static str] {
+    match asset_kind {
+        "character_card" => &CHARACTER_VIEWS[..5],
+        "scene_card" => &SCENE_VIEWS[..4],
+        "prop_card" => &PROP_VIEWS,
+        _ => &[],
+    }
+}
+
+/// 主视图：先出、单独出的那一个。
+///
+/// 并行生成八个视图，出来的是八个长得像但不是同一个人的角色——
+/// 这与后端无关，是生成模型的固有性质。其余视图一律以它为参考图。
+pub fn anchor_view(asset_kind: &str) -> Option<&'static str> {
+    match asset_kind {
+        "character_card" => Some("front_full"),
+        "scene_card" => Some("establishing"),
+        "prop_card" => Some("front"),
+        _ => None,
+    }
+}
+
+/// 全部视图取值的并集，schema 的 enum 用它。
+pub const ALL_VIEWS: [&str; 18] = [
+    "front_full",
+    "three_quarter",
+    "profile",
+    "back",
+    "face_close",
+    "expressions",
+    "hands_props",
+    "wardrobe_detail",
+    "establishing",
+    "key_angle",
+    "reverse_angle",
+    "detail",
+    "lighting_variants",
+    "empty_plate",
+    "front",
+    "side",
+    "in_use",
+    "scale_reference",
+];
+
 /// `camera_motion` 的中文说法，写给人看的那一列。
 pub const CAMERA_MOTION_LABELS: [(&str, &str); 15] = [
     ("static", "固定机位"),
@@ -274,6 +397,9 @@ pub fn vocabulary(name: &str) -> Option<&'static [(&'static str, &'static str)]>
         "lighting_key" => &LIGHTING_KEY_LABELS,
         "shot_function" => &SHOT_FUNCTION_LABELS,
         "beat_type" => &BEAT_TYPE_LABELS,
+        "character_view" => &CHARACTER_VIEW_LABELS,
+        "scene_view" => &SCENE_VIEW_LABELS,
+        "prop_view" => &PROP_VIEW_LABELS,
         _ => return None,
     })
 }
@@ -288,12 +414,15 @@ pub fn values(name: &str) -> Option<&'static [&'static str]> {
         "lighting_key" => &LIGHTING_KEYS,
         "shot_function" => &SHOT_FUNCTIONS,
         "beat_type" => &BEAT_TYPES,
+        "character_view" => &CHARACTER_VIEWS,
+        "scene_view" => &SCENE_VIEWS,
+        "prop_view" => &PROP_VIEWS,
         _ => return None,
     })
 }
 
 /// 有中文说法的词表名。
-pub const VOCABULARIES: [&str; 7] = [
+pub const VOCABULARIES: [&str; 10] = [
     "shot_size",
     "angle",
     "camera_motion",
@@ -301,6 +430,9 @@ pub const VOCABULARIES: [&str; 7] = [
     "lighting_key",
     "shot_function",
     "beat_type",
+    "character_view",
+    "scene_view",
+    "prop_view",
 ];
 
 #[cfg(test)]

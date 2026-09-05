@@ -31,3 +31,20 @@ i2v_high     = "wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors"
 i2v_low      = "wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors"
 text_encoder = "umt5_xxl_fp8_e4m3fn_scaled.safetensors"
 vae          = "wan_2.1_vae.safetensors"
+
+# 图像系列。视觉资产阶段（角色卡 / 场景卡 / 道具卡）用它出图，
+# 与视频系列是两套模型，不共用。
+#
+# 这一段的文件名**还没确定**：本仓库的开发环境没有 GPU、没有 ComfyUI，
+# 填不出真机验证过的名字。填一串看起来像模像样的名字是这份契约最危险的
+# 用法——它能通过所有静态检查，然后在生产机上安静地加载错东西。
+#
+# 在装了 ComfyUI 的机器上确认之后，把下面几行的注释去掉并填真名，
+# 同时按 assets/workflows/z_image/README.md 导出两条基线。
+# 两件事都做完之前，视觉资产阶段只能提交计划、生不出图。
+[z_image]
+description = "卡片生成。t2i 出主视图，edit 以主视图为参考图出其余视图。待生产机确认。"
+verified    = false
+# diffusion    = ""
+# text_encoder = ""
+# vae          = ""

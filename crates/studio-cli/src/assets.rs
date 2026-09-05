@@ -20,7 +20,7 @@ use studio_mcp::TOOLS;
 ///
 /// 全部按需加载：SKILL.md 只给索引，Agent 用到哪份读哪份。默认一份都不进
 /// 上下文——前身项目把 30 行模型文件名塞进每个会话的教训在这里同样适用。
-const DOCTRINE: [(&str, &str); 13] = [
+const DOCTRINE: [(&str, &str); 14] = [
     ("README.md", include_str!("../assets/doctrine/README.md")),
     (
         "story/structure.md",
@@ -53,6 +53,10 @@ const DOCTRINE: [(&str, &str); 13] = [
     (
         "consistency/bible.md",
         include_str!("../assets/doctrine/consistency/bible.md"),
+    ),
+    (
+        "consistency/character-sheet.md",
+        include_str!("../assets/doctrine/consistency/character-sheet.md"),
     ),
     (
         "audio/design.md",
@@ -229,7 +233,10 @@ fn doctrine_for(skill: &str) -> &'static [&'static str] {
             ".agents/doctrine/audio/design.md",
             ".agents/doctrine/exemplars/storyboard.md",
         ],
-        "visual" => &[".agents/doctrine/consistency/bible.md"],
+        "visual" => &[
+            ".agents/doctrine/consistency/character-sheet.md",
+            ".agents/doctrine/consistency/bible.md",
+        ],
         // 能力卡是这个阶段最要紧的一份：写了基线没绑定的参数会被静默丢弃。
         // 目录会在生成时展开成逐个文件，只读要用的那个系列即可。
         "prompt" => &[
@@ -283,6 +290,10 @@ fn checklist(stage: StageId) -> &'static [&'static str] {
         StageId::VisualAssets => &[
             "consistency_lock.character 是从分镜 character_lock.identity_lock 复制来的，逐字相同",
             "每个跨镜头复用的角色、场景、道具都有卡",
+            "每张卡的必需视图齐全，一个不少",
+            "每张卡只有一个主视图，其余视图的 derived_from 都指向它",
+            "同一张卡的所有视图画幅一致",
+            "每个视图的提示词都以 identity_prompt 逐字开头",
             "一致性锁定写明了外观、机位签名、环境与排版禁止项",
         ],
         StageId::PromptPack => &[
@@ -399,11 +410,25 @@ const SKILLS: [SkillDoc; 10] = [
         not_trigger: "逐镜头的提示词；那是 prompt 的事。",
         duties: &[
             "为跨镜头复用的角色、场景、道具各建一张卡，给稳定的 asset_id。",
+            "**每张卡出多个视图**，不是一张大头照：角色走转身图五视图，\
+             场景走建立/主机位/反打/细节，道具走正/侧/使用/比例。\
+             必需视图缺一个提交就会被挡下，各类必需哪些见 \
+             consistency/character-sheet.md。",
+            "每张卡写一段 identity_prompt，**一次写定**，所有视图逐字复用。\
+             角色卡这一段要逐字包含分镜定下的身份锁。",
+            "标出主视图（每张卡有且仅有一个），其余视图的 derived_from 指向它——\
+             主视图先出、单独出，其余以它为参考图。并行出八张，\
+             出来的是八个长得像但不是同一个人的角色。",
             "写明一致性锁定：角色外观、机位签名、环境、排版禁止项。",
-            "核心系列没有独立静态图 workflow 时，先生成开发片段再抽帧，并保留抽帧参数。",
             "降级策略写死：核心系列不可用就结构化阻塞，不自动换系列。",
         ],
-        notes: &["这是 hybrid 阶段：你定资产计划，确认之后由控制面执行生成。"],
+        notes: &[
+            "这是 hybrid 阶段：你定资产计划，确认之后由控制面执行生成。",
+            "status 一律写 planned，path 与 provenance 留空——\
+             那两个字段由控制面回填，不是你写的。",
+            "卡片是**测量用的参考素材**，不是好看的剧照：中性灰底、均匀柔光、\
+             无阴影投射。戏剧性打光留给成片。",
+        ],
     },
     SkillDoc {
         name: "prompt",

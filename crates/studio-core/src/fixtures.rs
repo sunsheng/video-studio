@@ -16,6 +16,57 @@ pub const CONCEPT: &str =
     "10秒5个镜头的千岛湖游玩vlog；主角20岁女性，长发、黑发、白裙、板鞋；欢乐；以30度侧脸为主要机位";
 pub const TITLE: &str = "千岛湖，把快乐装进十秒";
 
+/// 角色卡的身份锁：视频用的那段身份锁**逐字包含在内**，再补上视频提示词
+/// 用不到、但出图必须锁死的东西（脸型、肤色、瞳色）。
+///
+/// 前半段必须与 [`IDENTITY_LOCK`] 逐字相同——校验会查这一条。
+const CHARACTER_IDENTITY: &str = "20岁东亚女性，长黑发及胸，白色无袖连衣裙，低帮白色板鞋，奶油色小斜挎包，鹅蛋脸，浅麦色皮肤，深棕色瞳孔，左眉尾有一颗小痣";
+
+/// 所有卡片视图共享的拍摄约束。卡片是**测量用的参考素材**，不是好看的剧照——
+/// 戏剧性打光留给成片。
+const CARD_CONSTRAINTS: &str =
+    "中性灰底，均匀柔光，无阴影投射，主体完整入画不裁切，画面中不出现任何文字、标志或水印";
+
+/// 组装一张多视图卡片。
+///
+/// `views` 的第一项是主视图：它先出、单独出，其余视图都以它为参考图。
+/// 每个视图的提示词都以同一段 `identity` **逐字**开头——一致性靠复制，
+/// 不靠每个视图重新描述一遍。
+fn card(
+    asset_id: &str,
+    asset_kind: &str,
+    identity: &str,
+    aspect: &str,
+    applies_to: &[&str],
+    views: &[(&str, &str)],
+) -> serde_json::Value {
+    let anchor = views[0].0;
+    let items: Vec<serde_json::Value> = views
+        .iter()
+        .enumerate()
+        .map(|(i, (view, angle))| {
+            let mut v = json!({
+                "view": view,
+                "is_anchor": i == 0,
+                "aspect": aspect,
+                "prompt": format!("{identity}。{angle}。{CARD_CONSTRAINTS}。画幅 {aspect}。"),
+                "status": "planned",
+            });
+            if i > 0 {
+                v["derived_from"] = json!(anchor);
+            }
+            v
+        })
+        .collect();
+    json!({
+        "asset_id": asset_id,
+        "asset_kind": asset_kind,
+        "identity_prompt": identity,
+        "applies_to": applies_to,
+        "views": items,
+    })
+}
+
 fn wrap(stage: StageId, v: serde_json::Value) -> Outputs {
     let mut m = Outputs::new();
     m.insert(stage.output_key().to_string(), v);
@@ -309,22 +360,58 @@ pub fn outputs(stage: StageId) -> Outputs {
                     "environment": "千岛湖清透湖面、层叠群岛、远山",
                     "typography": "禁止字幕、Logo、水印和可读文字"
                 },
-                "requests": [
-                    { "asset_id": "C01", "asset_kind": "character_card", "status": "planned", "width": 1024, "height": 1536,
-                      "prompt": "20岁东亚女性，长黑发，白色连衣裙，低帮白色板鞋，奶油色小斜挎包，自然妆容，明亮笑容，约30度侧脸，真实自然光，干净背景，多角度一致性参考，无文字水印",
-                      "applies_to": ["sh01", "sh02", "sh03", "sh04", "sh05"], "references": [] },
-                    { "asset_id": "SC01", "asset_kind": "scene_card", "status": "planned", "width": 1024, "height": 1536,
-                      "prompt": "千岛湖清透湖面与游船船头，层叠群岛与远山，上午冷白自然光，竖构图，无文字水印",
-                      "applies_to": ["sh01"], "references": [] },
-                    { "asset_id": "SC02", "asset_kind": "scene_card", "status": "planned", "width": 1024, "height": 1536,
-                      "prompt": "湖边安全木质步道与护栏，两侧绿植，湖面在侧，顺光明亮，竖构图，无文字水印",
-                      "applies_to": ["sh02"], "references": [] },
-                    { "asset_id": "SC03", "asset_kind": "scene_card", "status": "planned", "width": 1024, "height": 1536,
-                      "prompt": "千岛湖观景台俯瞰群岛，开阔天空，下午暖光，竖构图，无文字水印",
-                      "applies_to": ["sh03", "sh04", "sh05"], "references": [] },
-                    { "asset_id": "P01", "asset_kind": "prop_card", "status": "planned", "width": 1024, "height": 1024,
-                      "prompt": "无品牌透明冷饮杯与无品牌手机，单物体参考图，自然光，无文字水印",
-                      "applies_to": ["sh03", "sh04"], "references": ["C01"] }
+                "assets": [
+                    card(
+                        "C01", "character_card", CHARACTER_IDENTITY, "9:16",
+                        &["sh01", "sh02", "sh03", "sh04", "sh05"],
+                        &[
+                            ("front_full", "正面全身，自然站姿，双手自然垂放，中性表情，双脚完整入画"),
+                            ("three_quarter", "四分之三侧身全身，身体转约30度，脸朝镜头，全身入画"),
+                            ("profile", "正侧面全身，鼻尖朝画左，全身入画"),
+                            ("back", "背面全身，可见发尾长度与连衣裙背面剪裁、挎包背带走向"),
+                            ("face_close", "面部特写，中性表情，双眼平视镜头，可见发际线与耳廓"),
+                        ],
+                    ),
+                    card(
+                        "SC01", "scene_card", "千岛湖清透湖面与游船船头，层叠群岛与远山，上午冷白自然光", "9:16",
+                        &["sh01"],
+                        &[
+                            ("establishing", "广角建立镜头，船头与湖面各占一半，群岛在远景"),
+                            ("key_angle", "船头栏杆后方的主机位，视线越过栏杆看向湖面"),
+                            ("reverse_angle", "反打：从船头朝船舱方向，湖面退到画外"),
+                            ("detail", "船头切开水面的浪线与栏杆金属表面的水痕特写"),
+                        ],
+                    ),
+                    card(
+                        "SC02", "scene_card", "湖边木质步道与护栏，两侧绿植，湖面在侧，顺光明亮", "9:16",
+                        &["sh02"],
+                        &[
+                            ("establishing", "广角建立镜头，步道从画面下方延伸到远处"),
+                            ("key_angle", "与步道同向的跟拍机位，护栏在画左"),
+                            ("reverse_angle", "反打：从步道尽头回看来路"),
+                            ("detail", "木板拼缝、护栏立柱与脚下青苔的特写"),
+                        ],
+                    ),
+                    card(
+                        "SC03", "scene_card", "千岛湖观景台，俯瞰层叠群岛与开阔天空，下午暖光", "9:16",
+                        &["sh03", "sh04", "sh05"],
+                        &[
+                            ("establishing", "广角建立镜头，观景台护栏在前景，群岛铺满中远景"),
+                            ("key_angle", "站在护栏内侧朝群岛的主机位"),
+                            ("reverse_angle", "反打：从群岛方向回看观景台与台阶"),
+                            ("detail", "护栏石材纹理与远处水面反光的特写"),
+                        ],
+                    ),
+                    card(
+                        "P01", "prop_card", "无品牌透明冷饮杯，杯壁带冷凝水，无任何文字与标志", "1:1",
+                        &["sh03", "sh04"],
+                        &[
+                            ("front", "正面单物体，杯身完整入画"),
+                            ("side", "侧面，可见杯壁厚度与杯底"),
+                            ("in_use", "一只手握住杯身中段，拇指压在杯壁，可见握持角度"),
+                            ("scale_reference", "与成年人手掌并排，交代相对大小"),
+                        ],
+                    )
                 ]
             }),
         ),
