@@ -170,21 +170,18 @@ impl Workflow {
         Ok(graph)
     }
 
+    /// 路径怎么拆由 [`studio_core::assembly::split_target`] 说了算——
+    /// 片段库和整图基线共用同一条规则，包括「输入名本身可以带点」
+    /// （动态组合框的 `resize_type.width` 就是这样）。
     fn write_at(&self, graph: &mut Value, path: &str, value: Value) -> Result<()> {
-        let mut parts = path.split('.');
-        let (Some(node), Some("inputs"), Some(input)) = (parts.next(), parts.next(), parts.next())
-        else {
-            return Err(self.broken(format!("路径 {path} 应当形如 <节点id>.inputs.<输入名>")));
-        };
-        if parts.next().is_some() {
-            return Err(self.broken(format!("路径 {path} 层级过深")));
-        }
+        let (node, input) = studio_core::assembly::split_target(path)
+            .map_err(|e| self.broken(e.message().to_string()))?;
         let target = graph
-            .get_mut(node)
+            .get_mut(&node)
             .and_then(|n| n.get_mut("inputs"))
             .and_then(|i| i.as_object_mut())
             .ok_or_else(|| self.broken(format!("基线里没有节点 {node} 或它没有 inputs")))?;
-        target.insert(input.to_string(), value);
+        target.insert(input, value);
         Ok(())
     }
 
@@ -273,6 +270,48 @@ mod tests {
         let w = Workflow::parse(&v.to_string(), "minimax_h3/t2v").unwrap();
         assert!(w.is_verified());
         w.require_verified().unwrap();
+    }
+
+    /// 动态组合框的输入名本身带点（`resize_type.width`）。判成「层级过深」
+    /// 的话 SeedVR2 基线的宽高根本写不进去。
+    #[test]
+    fn a_dotted_input_name_is_an_input_name_not_a_deeper_path() {
+        let b = json!({
+            "_studio": { "bindings": {
+                "width":  ["resize.inputs.resize_type.width"],
+                "height": ["resize.inputs.resize_type.height"]
+            }},
+            "resize": { "class_type": "ResizeImageMaskNode", "inputs": {
+                "resize_type": "scale dimensions"
+            }}
+        })
+        .to_string();
+        let w = Workflow::parse(&b, "seedvr2/upscale").unwrap();
+        let mut p = Map::new();
+        p.insert("width".into(), json!(1080));
+        p.insert("height".into(), json!(1920));
+        let g = w.apply(&p).unwrap();
+        assert_eq!(g["resize"]["inputs"]["resize_type.width"], json!(1080));
+        assert_eq!(g["resize"]["inputs"]["resize_type.height"], json!(1920));
+        assert_eq!(
+            g["resize"]["inputs"]["resize_type"],
+            json!("scale dimensions"),
+            "组合键本身不能被覆盖掉"
+        );
+    }
+
+    #[test]
+    fn a_path_without_the_inputs_segment_is_still_rejected() {
+        let b = json!({
+            "_studio": { "bindings": { "seed": ["a.b"] } },
+            "a": { "class_type": "X", "inputs": {} }
+        })
+        .to_string();
+        let w = Workflow::parse(&b, "b").unwrap();
+        let mut p = Map::new();
+        p.insert("seed".into(), json!(1));
+        let e = w.apply(&p).unwrap_err();
+        assert!(e.message().contains("应当形如"), "{}", e.message());
     }
 
     #[test]

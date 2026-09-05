@@ -100,6 +100,31 @@ fn fragments() -> Option<FragmentSet> {
     Some(set)
 }
 
+/// 数一段视频有几帧。用 `nb_read_packets` 而不是 `nb_frames`——后者对某些
+/// 封装是空的，而这里恰恰要靠帧数把成片和锚点素材分开，读不到就等于没验。
+fn probe_frames(path: &std::path::Path) -> i64 {
+    let out = std::process::Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-count_packets",
+            "-show_entries",
+            "stream=nb_read_packets",
+            "-of",
+            "csv=p=0",
+        ])
+        .arg(path)
+        .output()
+        .expect("ffprobe 起不来");
+    String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .trim_end_matches(',')
+        .parse()
+        .unwrap_or_else(|_| panic!("ffprobe 读不出帧数：{}", path.display()))
+}
+
 /// 现造一张纯色参考图并传上去，返回 ComfyUI 那侧的文件名。
 fn upload_swatch(env: &Env, name: &str, color: &str) -> String {
     let local = env.bundle.resolve(&format!("media/{name}.png")).unwrap();
@@ -396,7 +421,30 @@ fn the_video_input_channel_renders_on_a_real_comfyui() {
             .wait(&sub)
             .unwrap_or_else(|e| panic!("{name}执行失败：{}", e.message()));
         assert!(!files.is_empty(), "{name}跑完却没有产出文件");
-        eprintln!("✅ {name}（{}）：{} 个产物", sub.prompt_id, files.len());
+
+        // **必须下载下来核对。** `LoadVideo` 会把输入素材回显进 history 的
+        // outputs，节点 id 排序下它还排在 `save_video` 前面；只断言「有产物」
+        // 的话，拿到锚点素材当成成片也照样绿。核对帧数就能分开——锚点 5 帧，
+        // 镜头 39 帧。
+        let dest = env
+            .bundle
+            .resolve(&format!("media/out_{}.mp4", shot.shot_id))
+            .unwrap();
+        env.comfy
+            .download(&files[0], &dest)
+            .unwrap_or_else(|e| panic!("{name}的产物下不下来：{}", e.message()));
+        let frames = probe_frames(&dest);
+        assert_eq!(
+            frames, shot.length_frames,
+            "{name}拿到的不是这一镜的成片（{frames} 帧，应当是 {} 帧）——\
+             多半是把 LoadVideo 回显的输入素材当成产物了（锚点只有 {ANCHOR_FRAMES} 帧）",
+            shot.length_frames
+        );
+        eprintln!(
+            "✅ {name}（{}）：{} 个产物，成片 {frames} 帧",
+            sub.prompt_id,
+            files.len()
+        );
     }
 
     if !already {

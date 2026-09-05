@@ -344,6 +344,23 @@ fn queue_depth(v: &Value) -> usize {
     running + pending
 }
 
+/// 从 history 的 `outputs` 里挑出**产物**。
+///
+/// **只认 `type == "output"`。** 加载类节点会把自己的输入原样回显进
+/// `outputs`——`LoadVideo` 就是这样，history 里长这个样子：
+///
+/// ```jsonc
+/// "guide1_src_load": { "images": [{ "filename": "anchor.mp4", "type": "input" }] },
+/// "save_video":      { "images": [{ "filename": "sh01_00001_.mp4", "type": "output" }] }
+/// ```
+///
+/// 节点 id 是排序遍历的，`guide1_src_load` / `ref1_load` 都排在 `save_video`
+/// 前面，而调用方取的是第一个。不过滤的话，**带 clip 锚点或 video 参考的镜头
+/// 会把锚点素材当成渲染结果登记下来**——图能跑、有文件、下载得到，一路绿到
+/// 交付才看得出不对。
+///
+/// 缺 `type` 的按 `output` 算（见 [`default_type`]）：老的 fixture 和某些
+/// 节点不写这个字段，把它们判成非产物才是新的错。
 fn collect_files(outputs: &Value) -> Vec<RemoteFile> {
     let mut files = Vec::new();
     let Some(map) = outputs.as_object() else {
@@ -364,7 +381,9 @@ fn collect_files(outputs: &Value) -> Vec<RemoteFile> {
             let Some(arr) = list.as_array() else { continue };
             for item in arr {
                 if let Ok(f) = serde_json::from_value::<RemoteFile>(item.clone()) {
-                    files.push(f);
+                    if f.r#type == "output" {
+                        files.push(f);
+                    }
                 }
             }
         }
@@ -779,6 +798,33 @@ mod tests {
         });
         let files = collect_files(&outputs);
         assert_eq!(files.len(), 3);
+    }
+
+    /// 加载类节点会把输入回显进 outputs。收下它的后果是把锚点素材当成
+    /// 渲染结果登记下来——图能跑、有文件、下载得到，一路绿到交付。
+    #[test]
+    fn an_echoed_input_file_is_not_a_product() {
+        // 键名有意让 load 排在 save 前面：调用方取的是第一个。
+        let outputs = json!({
+            "guide1_src_load": {
+                "images": [{ "filename": "anchor.mp4", "subfolder": "", "type": "input" }]
+            },
+            "save_video": {
+                "images": [{ "filename": "sh01_00001_.mp4", "subfolder": "", "type": "output" }]
+            }
+        });
+        let files = collect_files(&outputs);
+        assert_eq!(files.len(), 1, "输入回显不算产物");
+        assert_eq!(files[0].filename, "sh01_00001_.mp4");
+    }
+
+    /// 缺 `type` 的按 output 算——把它们判成非产物才是新的错。
+    #[test]
+    fn a_file_without_a_type_still_counts_as_a_product() {
+        let outputs = json!({ "9": { "videos": [{ "filename": "sh01.mp4" }] } });
+        let files = collect_files(&outputs);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].r#type, "output");
     }
 
     #[test]
