@@ -185,6 +185,36 @@ cargo test -p studio-skill-eval
 的等价物——同样的调用序列，换成跑真实二进制的 Rust 集成测试，不用额外装
 Python，也不用手动导出 fixtures、手动 init 一个作品目录。
 
+## 组装出来的图，要在真机上验
+
+`studio-pipeline` 的 `tests/real_comfy.rs` 是片段组装（[ADR-0005]）的真机验收。
+它**不在 CI 里跑**：`COMFY_NODE` 没配就跳过并打印理由——不满足前置条件时
+假装通过比红更糟，但把它变成红也不对，那不是代码的问题。
+
+```bash
+COMFY_NODE=<入口> COMFY_TOKEN=<token> cargo test -p studio-pipeline --test real_comfy -- --nocapture
+```
+
+前置条件：可达的 ComfyUI 入口、上面装着 `minimax_h3` 的权重、本机有 ffmpeg
+（用来现造参考图）。验的是五件事：
+
+1. 三种典型镜头（空镜 / 接续镜 / 群戏）组装出的图 ComfyUI 认，而且**真跑得出片**
+2. preview 的 turbo 组合跑得通，步数与调度器都换对了
+3. 未核验的输入通道（`clip` 要的帧序列）被**结构化阻塞**，不是静默降级成静帧
+4. 同一份声明组装两次逐字节相同
+5. 每份片段读得出来、元数据完整，没核验的都写了原因
+
+**为什么非要真机。** `node_errors` 为空只证明图是合法的，证明不了画面是对的。
+turbo 叠加层就栽在这儿：四种组合图校验全过，真机出片一看 reference + 4 步
+是坏的——色带、光晕、底部有幻觉出来的字形。原因是调度器档位在低步数下不成立，
+跟接线顺序无关。全过程记在
+[`assets/workflows/minimax_h3/SOURCE-fragments.md`](../assets/workflows/minimax_h3/SOURCE-fragments.md)。
+
+所以这组测试断言的是**下限**（跑完了、有产出、参数换对了），不是上限。
+「画面好不好」仍然要人眼看，机器验不了。
+
+[ADR-0005]: decisions/ADR-0005-workflow-fragments.md
+
 ## 报告说未过之后
 
 拿着 `report.json` 回开发环境。常见几种形状：
