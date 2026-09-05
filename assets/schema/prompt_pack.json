@@ -12,6 +12,28 @@
           "description": "核心模型系列",
           "type": "string"
         },
+        "identity_lock": {
+          "additionalProperties": true,
+          "description": "身份锁。从视觉资产的 consistency_lock **原样复制**——提交时会逐字比对，也会逐镜检查每条 positive 是不是真的带上了它",
+          "properties": {
+            "character": {
+              "description": "与分镜 character_lock.identity_lock、视觉资产 consistency_lock.character 逐字相同的那段外观描述。每一镜的 positive 里必须原样出现",
+              "type": "string"
+            },
+            "environment": {
+              "description": "环境锁定，同样逐字复用",
+              "type": "string"
+            },
+            "typography": {
+              "description": "排版禁止项",
+              "type": "string"
+            }
+          },
+          "required": [
+            "character"
+          ],
+          "type": "object"
+        },
         "shots": {
           "description": "逐镜头参数",
           "items": {
@@ -90,6 +112,7 @@
       },
       "required": [
         "core_model_family",
+        "identity_lock",
         "shots"
       ],
       "type": "object"

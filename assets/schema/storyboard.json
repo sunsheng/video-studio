@@ -19,7 +19,26 @@
           "type": "string"
         },
         "character_lock": {
-          "description": "角色连续性锁定：外观、服装、机位签名、安全约束"
+          "additionalProperties": true,
+          "description": "角色连续性锁定。**这里定的字符串是后面两个阶段的唯一来源**：视觉资产的 consistency_lock.character 和提示词包的 identity_lock.character 必须与它逐字相同",
+          "properties": {
+            "camera_signature": {
+              "description": "机位签名：这个角色主要以什么角度出现，全片保持一致",
+              "type": "string"
+            },
+            "identity_lock": {
+              "description": "身份锁：一次写定、后续逐字复制的那段外观描述。年龄、性别、发型发长、上衣、下装、鞋、随身物，一句话写完。写「同一位女孩」这类指代等于没锁——模型看不到上一镜",
+              "type": "string"
+            },
+            "safety": {
+              "description": "安全约束：不做什么动作、不靠近什么位置",
+              "type": "string"
+            }
+          },
+          "required": [
+            "identity_lock"
+          ],
+          "type": "object"
         },
         "shot_count": {
           "description": "镜头数",

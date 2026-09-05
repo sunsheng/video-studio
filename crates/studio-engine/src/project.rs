@@ -339,6 +339,11 @@ impl Project {
                 caps.check_prompt_pack(&outputs)?;
             }
         }
+        // 形状对、参数对，内容仍然可以是空的：`three_facts: ["好看","很美","有感觉"]`
+        // 完全合规。质量闸挡的是这一类——只挡机械可判的，人的判断留给确认门。
+        studio_core::quality::gate(stage, &outputs)?;
+        // 身份锁要跨阶段比对，得先把已通过的阶段捞出来。
+        self.check_identity_lock_across_stages(stage, &outputs)?;
         // 先校验再压栈：没通过校验的调用不该占掉一层撤销。
         self.store.take_snapshot(&format!("提交 {stage} 之前"))?;
         let submitted = draft.submit(outputs, confirmation)?;
@@ -372,6 +377,50 @@ impl Project {
                 .append_event(stage, "gate_opened", &q.prompt, None)?;
         }
         self.status()
+    }
+
+    /// 身份锁必须在分镜、视觉资产、提示词包三处逐字相同。
+    ///
+    /// 单看一个阶段是查不出漂移的——三处各写各的，每一处单独看都合规。
+    /// 所以这一条要把已通过的阶段捞出来一起比。
+    fn check_identity_lock_across_stages(&self, stage: StageId, outputs: &Outputs) -> Result<()> {
+        const LOCKED: [StageId; 3] = [
+            StageId::Storyboard,
+            StageId::VisualAssets,
+            StageId::PromptPack,
+        ];
+        if !LOCKED.contains(&stage) {
+            return Ok(());
+        }
+        let mut all = Vec::new();
+        for s in LOCKED {
+            if s == stage {
+                all.push((s, outputs.clone()));
+                continue;
+            }
+            let loaded = self.store.load_stage(s)?;
+            if loaded.state() != StageState::Approved {
+                continue;
+            }
+            if let Some(o) = loaded_outputs(&loaded) {
+                all.push((s, o.clone()));
+            }
+        }
+        let findings = studio_core::quality::check_across_stages(&all);
+        let blocking: Vec<studio_core::Violation> = findings
+            .iter()
+            .filter(|f| f.severity == studio_core::Severity::Blocking)
+            .map(|f| {
+                studio_core::Violation::new(f.path.clone(), format!("[{}] {}", f.rule, f.message))
+            })
+            .collect();
+        if blocking.is_empty() {
+            return Ok(());
+        }
+        Err(StudioError::QualityViolation {
+            stage,
+            findings: blocking,
+        })
     }
 
     /// 应答确认门。

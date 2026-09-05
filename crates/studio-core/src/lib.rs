@@ -12,6 +12,7 @@ pub mod error;
 #[cfg(any(test, feature = "fixtures"))]
 pub mod fixtures;
 pub mod lexicon;
+pub mod quality;
 pub mod schema;
 pub mod stage;
 pub mod state;
@@ -22,6 +23,7 @@ pub use contract::{
     Progress, ProjectInfo, ProjectStatus, Question, SelectionType, WaitingOn,
 };
 pub use error::{Result, StudioError, Violation};
+pub use quality::{Finding, Metric, Severity};
 pub use stage::{Capability, StageId, StageKind, StageSpec, STAGE_GRAPH};
 pub use state::{Approved, AwaitingConfirmation, Draft, LoadedStage, Stage, StageState, Submitted};
 

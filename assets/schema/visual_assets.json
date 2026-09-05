@@ -13,7 +13,30 @@
           "type": "string"
         },
         "consistency_lock": {
-          "description": "一致性锁定：角色、机位、环境、安全、排版"
+          "additionalProperties": true,
+          "description": "一致性锁定。`character` 从分镜的 character_lock.identity_lock **原样复制**，不要在这里重写一遍",
+          "properties": {
+            "camera": {
+              "description": "机位签名",
+              "type": "string"
+            },
+            "character": {
+              "description": "身份锁，与分镜的 character_lock.identity_lock 逐字相同",
+              "type": "string"
+            },
+            "environment": {
+              "description": "环境锁定：地点、天气、时段",
+              "type": "string"
+            },
+            "typography": {
+              "description": "排版禁止项：字幕、Logo、水印、可读文字",
+              "type": "string"
+            }
+          },
+          "required": [
+            "character"
+          ],
+          "type": "object"
         },
         "core_model_family": {
           "description": "核心模型系列，例如 minimax_h3",

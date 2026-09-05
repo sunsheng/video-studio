@@ -44,6 +44,11 @@ pub enum StudioError {
         stage: StageId,
         violations: Vec<Violation>,
     },
+    /// 产物形状合规，但内容达不到质量线。
+    QualityViolation {
+        stage: StageId,
+        findings: Vec<Violation>,
+    },
     /// 状态机不允许这个动作。
     InvalidTransition {
         stage: StageId,
@@ -101,6 +106,7 @@ impl StudioError {
     pub fn code(&self) -> &'static str {
         match self {
             StudioError::SchemaViolation { .. } => "schema_violation",
+            StudioError::QualityViolation { .. } => "quality_violation",
             StudioError::InvalidTransition { .. } => "invalid_transition",
             StudioError::ConfirmationRequired { .. } => "confirmation_required",
             StudioError::GatePending { .. } => "gate_pending",
@@ -125,6 +131,11 @@ impl StudioError {
         match self {
             StudioError::SchemaViolation { stage, .. } => format!(
                 "调 studio.schema(\"{stage}\") 取回该阶段的输出契约，按上面列出的路径修正后重新 studio.submit_stage。"
+            ),
+            StudioError::QualityViolation { stage, .. } => format!(
+                "形状是对的，内容不达标。按上面每条括号里的规则名，去 .agents/doctrine/quality/checklist.md \
+                 找对应的写法，改完重新 studio.submit_stage。\
+                 别绕过——{stage} 这一层放过去的东西，后面每一镜都会照抄。"
             ),
             StudioError::InvalidTransition { allowed, .. } => {
                 if allowed.is_empty() {
@@ -228,6 +239,14 @@ impl StudioError {
                     .join("; ");
                 format!("阶段 {stage} 的产物不符合契约：{list}")
             }
+            StudioError::QualityViolation { stage, findings } => {
+                let list = findings
+                    .iter()
+                    .map(|v| v.to_string())
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                format!("阶段 {stage} 的产物没过质量闸：{list}")
+            }
             StudioError::InvalidTransition {
                 stage,
                 current,
@@ -285,8 +304,12 @@ impl fmt::Display for StudioError {
 impl std::error::Error for StudioError {}
 
 /// 全部错误码 —— `emit-assets` 用它生成文档里的错误表。
-pub const ERROR_CODES: [(&str, &str); 17] = [
+pub const ERROR_CODES: [(&str, &str); 18] = [
     ("schema_violation", "产物不符合阶段 schema，附字段路径"),
+    (
+        "quality_violation",
+        "形状合规但内容不达标（禁用词、身份锁不一致等），附规则名与路径",
+    ),
     ("invalid_transition", "状态机不允许，附当前状态与合法动作"),
     ("confirmation_required", "有门的阶段提交时没带确认问题"),
     ("gate_pending", "确认门还挂着，不能推进"),
@@ -320,6 +343,13 @@ mod tests {
             StudioError::SchemaViolation {
                 stage: StageId::Script,
                 violations: vec![Violation::new("script.title", "缺失")],
+            },
+            StudioError::QualityViolation {
+                stage: StageId::Storyboard,
+                findings: vec![Violation::new(
+                    "storyboard.shots[0].three_facts[0]",
+                    "[thin_fact] 太短",
+                )],
             },
             StudioError::InvalidTransition {
                 stage: StageId::Script,

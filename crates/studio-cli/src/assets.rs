@@ -269,17 +269,21 @@ fn checklist(stage: StageId) -> &'static [&'static str] {
             "每镜三条物理事实齐全，且都是拍得出来的",
             "每镜只有一个主运镜，且落在受控词表里",
             "镜头时长与剧本各拍对齐，总和一致",
+            "character_lock.identity_lock 一次写定：年龄、发型、上衣、下装、鞋、随身物都在里面",
             "角色外观串逐镜逐字相同（复制粘贴，不要复述）",
             "每镜的 audio 都写了，没有留空",
         ],
         StageId::VisualAssets => &[
+            "consistency_lock.character 是从分镜 character_lock.identity_lock 复制来的，逐字相同",
             "每个跨镜头复用的角色、场景、道具都有卡",
             "一致性锁定写明了外观、机位签名、环境与排版禁止项",
         ],
         StageId::PromptPack => &[
             "逐项对照能力卡：写的每个参数这条基线都吃",
             "不支持负向提示词的系列，约束改写成了正向的完整句子",
+            "identity_lock.character 从上一阶段复制而来，一个字没改",
             "身份锁在每一镜里逐字出现，没有写成「同一位…」",
+            "运镜按能力卡译成了该系列吃的指令，没有只留中文散文",
             "没有禁用词（cinematic / 电影感 / 唯美这类）",
             "种子固定并记录，尺寸与帧数按各镜时长算准",
             "audio 写了三层，没有放弃原生音频",
@@ -589,7 +593,34 @@ fn checklist_md() -> String {
         "## 所有创作阶段通用\n\n\
          - [ ] 没有不可拍的描述（情绪、氛围、「很美」）\n\
          - [ ] 没有 Tier 1 禁用词\n\
-         - [ ] 换一个题材就不成立——如果换了还成立，说明写得太空\n",
+         - [ ] 换一个题材就不成立——如果换了还成立，说明写得太空\n\n",
+    );
+    s.push_str(
+        "## 自动检查的那几条\n\n\
+         上面大部分要靠自己过，下面这几条**提交时会自动查**。\
+         报 `quality_violation` 时，方括号里就是这里的规则名。\n\n\
+         schema 管形状、这里管内容：字段齐全但写的是\
+         `three_facts: [\"好看\", \"很美\", \"有感觉\"]`，schema 会放行，这里不会。\n\n\
+         | 规则 | 后果 | 说的是什么 |\n|---|---|---|\n",
+    );
+    for (rule, severity, desc) in studio_core::quality::RULES {
+        let effect = match severity {
+            studio_core::Severity::Blocking => "挡提交",
+            studio_core::Severity::Advisory => "只提醒",
+        };
+        s.push_str(&format!("| `{rule}` | {effect} | {desc} |\n"));
+    }
+    s.push_str(
+        "\n### 身份锁那三条要一起看\n\n\
+         `identity_lock_missing` 和 `identity_lock_drift` 查的是同一件事的两半：\n\n\
+         - **同一个字符串**：分镜的 `character_lock.identity_lock`、\
+           视觉资产的 `consistency_lock.character`、\
+           提示词包的 `identity_lock.character`，三处逐字相同。\
+           后两处是**复制**前一处，不是重新描述。\n\
+         - **每一镜都带上它**：每条 `positive` 里必须原样出现这个字符串。\
+           写「同一位女孩」「她」这类指代等于没锁——每一镜对模型来说都是\
+           **第一镜**，它看不到上一镜生成了什么。\n\n\
+         这两条挡的不是措辞，是**同一个人在第三镜变成另一个人**。\n",
     );
     s
 }

@@ -9,9 +9,8 @@
     "aspect_ratio": "9:16",
     "character_lock": {
       "camera_signature": "主要使用约30度侧脸，面部可读",
-      "safety": "不靠近水边危险边缘，不翻越护栏",
-      "subject": "20岁女性，长黑发",
-      "wardrobe": "白裙、低帮板鞋、奶油色小斜挎包"
+      "identity_lock": "20岁东亚女性，长黑发及胸，白色无袖连衣裙，低帮白色板鞋，奶油色小斜挎包",
+      "safety": "不靠近水边危险边缘，不翻越护栏"
     },
     "shot_count": 5,
     "shots": [

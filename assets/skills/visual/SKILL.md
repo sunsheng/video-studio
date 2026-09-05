@@ -51,6 +51,7 @@ description: 规划并生成一致的角色卡、场景卡与参考资产。
 
 逐条过。过不了就别提交——退回来重做比往下走便宜得多。
 
+- [ ] consistency_lock.character 是从分镜 character_lock.identity_lock 复制来的，逐字相同
 - [ ] 每个跨镜头复用的角色、场景、道具都有卡
 - [ ] 一致性锁定写明了外观、机位签名、环境与排版禁止项
 

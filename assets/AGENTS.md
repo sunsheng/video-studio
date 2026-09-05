@@ -95,6 +95,7 @@
 | 错误码 | 含义 |
 |---|---|
 | `schema_violation` | 产物不符合阶段 schema，附字段路径 |
+| `quality_violation` | 形状合规但内容不达标（禁用词、身份锁不一致等），附规则名与路径 |
 | `invalid_transition` | 状态机不允许，附当前状态与合法动作 |
 | `confirmation_required` | 有门的阶段提交时没带确认问题 |
 | `gate_pending` | 确认门还挂着，不能推进 |

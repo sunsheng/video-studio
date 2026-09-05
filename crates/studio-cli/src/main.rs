@@ -8,7 +8,7 @@
 use clap::{Parser, Subcommand};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use studio_cli::{assets, doctor, e2e, exec_report, html, list, pack, rollout};
+use studio_cli::{assets, doctor, e2e, exec_report, html, list, pack, quality, rollout};
 
 #[derive(Parser)]
 #[command(
@@ -73,6 +73,17 @@ enum Command {
         archive: PathBuf,
         #[arg(long)]
         into: PathBuf,
+    },
+    /// 对一部作品跑质量闸：禁用词、物理事实、身份锁一致性
+    Quality {
+        /// 作品目录，默认当前目录
+        #[arg(long)]
+        bundle: Option<PathBuf>,
+        /// 只看一个阶段。跨阶段的身份锁检查照跑
+        #[arg(long)]
+        stage: Option<String>,
+        #[arg(long)]
+        json: bool,
     },
     /// Agent 侧的端到端留痕
     #[command(subcommand)]
@@ -179,6 +190,11 @@ fn run(cli: Cli) -> Result<(), String> {
         Command::List { paths, depth, json } => cmd_list(paths, depth, json),
         Command::Pack { bundle, out, media } => cmd_pack(&bundle, &out, media),
         Command::Unpack { archive, into } => cmd_unpack(&archive, &into),
+        Command::Quality {
+            bundle,
+            stage,
+            json,
+        } => cmd_quality(bundle, stage, json),
         Command::E2e(E2eCommand::Report {
             bundle,
             out,
@@ -317,6 +333,31 @@ fn cmd_exec(
     }
     print!("{}", exec_report::render(&report));
     if report.passed || !report.has_data {
+        Ok(())
+    } else {
+        Err(String::new())
+    }
+}
+
+fn cmd_quality(bundle: Option<PathBuf>, stage: Option<String>, json: bool) -> Result<(), String> {
+    let root = resolve_bundle(bundle)?;
+    let only =
+        match &stage {
+            None => None,
+            Some(s) => Some(studio_core::StageId::parse(s).ok_or_else(|| {
+                format!("没有叫 {s} 的阶段。阶段名见 assets/AGENTS.md 的阶段表。")
+            })?),
+        };
+    let report = quality::build(&root, only);
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?
+        );
+    } else {
+        print!("{}", quality::render(&report));
+    }
+    if report.passed {
         Ok(())
     } else {
         Err(String::new())

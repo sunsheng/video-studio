@@ -565,7 +565,28 @@ pub fn stage_schema(stage: StageId) -> Schema {
                 ("timing_basis", text("时长依据。不平均切分时说明为什么")),
                 (
                     "character_lock",
-                    any("角色连续性锁定：外观、服装、机位签名、安全约束"),
+                    obj(
+                        "角色连续性锁定。**这里定的字符串是后面两个阶段的唯一来源**：\
+                         视觉资产的 consistency_lock.character 和提示词包的 \
+                         identity_lock.character 必须与它逐字相同",
+                        vec![
+                            (
+                                "identity_lock",
+                                text(
+                                    "身份锁：一次写定、后续逐字复制的那段外观描述。\
+                                     年龄、性别、发型发长、上衣、下装、鞋、随身物，\
+                                     一句话写完。写「同一位女孩」这类指代等于没锁——\
+                                     模型看不到上一镜",
+                                ),
+                            ),
+                            (
+                                "camera_signature",
+                                text("机位签名：这个角色主要以什么角度出现，全片保持一致"),
+                            ),
+                            ("safety", text("安全约束：不做什么动作、不靠近什么位置")),
+                        ],
+                        vec!["identity_lock"],
+                    ),
                 ),
                 (
                     "shots",
@@ -707,7 +728,20 @@ pub fn stage_schema(stage: StageId) -> Schema {
                 ),
                 (
                     "consistency_lock",
-                    any("一致性锁定：角色、机位、环境、安全、排版"),
+                    obj(
+                        "一致性锁定。`character` 从分镜的 character_lock.identity_lock \
+                         **原样复制**，不要在这里重写一遍",
+                        vec![
+                            (
+                                "character",
+                                text("身份锁，与分镜的 character_lock.identity_lock 逐字相同"),
+                            ),
+                            ("camera", text("机位签名")),
+                            ("environment", text("环境锁定：地点、天气、时段")),
+                            ("typography", text("排版禁止项：字幕、Logo、水印、可读文字")),
+                        ],
+                        vec!["character"],
+                    ),
                 ),
                 (
                     "requests",
@@ -761,6 +795,26 @@ pub fn stage_schema(stage: StageId) -> Schema {
             "逐镜头 prompt 与 ComfyUI workflow 参数",
             vec![
                 ("core_model_family", text("核心模型系列")),
+                (
+                    "identity_lock",
+                    obj(
+                        "身份锁。从视觉资产的 consistency_lock **原样复制**——\
+                         提交时会逐字比对，也会逐镜检查每条 positive 是不是真的带上了它",
+                        vec![
+                            (
+                                "character",
+                                text(
+                                    "与分镜 character_lock.identity_lock、\
+                                     视觉资产 consistency_lock.character 逐字相同的那段外观描述。\
+                                     每一镜的 positive 里必须原样出现",
+                                ),
+                            ),
+                            ("environment", text("环境锁定，同样逐字复用")),
+                            ("typography", text("排版禁止项")),
+                        ],
+                        vec!["character"],
+                    ),
+                ),
                 (
                     "shots",
                     arr(
@@ -844,7 +898,7 @@ pub fn stage_schema(stage: StageId) -> Schema {
                     ),
                 ),
             ],
-            vec!["core_model_family", "shots"],
+            vec!["core_model_family", "identity_lock", "shots"],
         ),
 
         StageId::Preview => obj(

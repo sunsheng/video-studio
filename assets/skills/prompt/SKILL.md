@@ -36,6 +36,7 @@ description: 把已确认分镜与视觉资产编译成逐镜头 prompt 和 work
 本阶段的产物放在 `outputs` 的顶层键 `prompt_pack` 下。**提交前先调 `studio.schema("prompt_pack")`** 取回完整契约，不要凭印象填字段。必填项是：
 
 - `prompt_pack.core_model_family`
+- `prompt_pack.identity_lock`
 - `prompt_pack.shots`
 
 上游产物由 `studio.status` 的 `next_action.inputs` 给出，不需要你去别处找。
@@ -56,7 +57,9 @@ description: 把已确认分镜与视觉资产编译成逐镜头 prompt 和 work
 
 - [ ] 逐项对照能力卡：写的每个参数这条基线都吃
 - [ ] 不支持负向提示词的系列，约束改写成了正向的完整句子
+- [ ] identity_lock.character 从上一阶段复制而来，一个字没改
 - [ ] 身份锁在每一镜里逐字出现，没有写成「同一位…」
+- [ ] 运镜按能力卡译成了该系列吃的指令，没有只留中文散文
 - [ ] 没有禁用词（cinematic / 电影感 / 唯美这类）
 - [ ] 种子固定并记录，尺寸与帧数按各镜时长算准
 - [ ] audio 写了三层，没有放弃原生音频
