@@ -49,13 +49,59 @@
                 "minimum": 0.1,
                 "type": "number"
               },
+              "first_frame": {
+                "description": "首帧的 asset_id。**只有 head: image 用**",
+                "type": "string"
+              },
               "fps": {
                 "description": "帧率",
                 "type": "integer"
               },
+              "guides": {
+                "description": "把某个素材锚在某一帧上。**镜头之间接不接得住靠它**——把上一镜的尾段锚在本镜第 0 帧，模型生成的是两条流的续接，比只在提示词里说「接上一镜」有效。head: image 只能锚首帧（0）或尾帧（-1）",
+                "items": {
+                  "additionalProperties": true,
+                  "description": "一个锚点",
+                  "properties": {
+                    "asset_id": {
+                      "description": "visual_assets 登记过的产物 id",
+                      "type": "string"
+                    },
+                    "at_frame": {
+                      "description": "锚在第几帧。负数从末尾倒数，-1 是最后一帧",
+                      "type": "integer"
+                    },
+                    "kind": {
+                      "description": "锚什么。clip 是视频片段，长度吃 17k+5 网格",
+                      "enum": [
+                        "image",
+                        "clip",
+                        "audio"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "at_frame",
+                    "asset_id"
+                  ],
+                  "type": "object"
+                },
+                "minItems": 0,
+                "type": "array"
+              },
+              "head": {
+                "description": "这一镜用哪种生成方式。**片段化的系列用它代替 workflow**：reference（挂参考，锁身份/风格，起幅由模型定）、image（给首尾帧，锁构图与运动轨迹）。取值由 studio.schema 按这台机器的片段库给出",
+                "type": "string"
+              },
               "height": {
                 "description": "高",
                 "type": "integer"
+              },
+              "last_frame": {
+                "description": "尾帧的 asset_id。**只有 head: image 用**，可不给",
+                "type": "string"
               },
               "length_frames": {
                 "description": "帧数。有的基线按秒收时长，用 duration_seconds",
@@ -70,10 +116,34 @@
                 "type": "string"
               },
               "references": {
-                "description": "引用的视觉资产。可以照常写——它声明这一镜用到哪些资产，基线补上图片输入绑定后会自动生效。但**当前所有基线都还没绑图片输入**，写在这里的 asset_id 暂时进不了渲染请求，一致性目前只能靠 positive 里逐字复用同一段外观描述",
+                "description": "挂给这一镜的视觉资产。**只有 head: reference 吃它**——身份、空间、运动各挂一路，比在 positive 里反复描述外观有效得多。上限按介质分：图 9、视频 3、音频 3",
                 "items": {
-                  "description": "asset_id",
-                  "type": "string"
+                  "additionalProperties": true,
+                  "description": "一条参考",
+                  "properties": {
+                    "asset_id": {
+                      "description": "visual_assets 登记过的产物 id。写不存在的会被挡下并列出可用的",
+                      "type": "string"
+                    },
+                    "kind": {
+                      "description": "介质",
+                      "enum": [
+                        "image",
+                        "video",
+                        "audio"
+                      ],
+                      "type": "string"
+                    },
+                    "with_audio": {
+                      "description": "视频参考是否连音轨一起挂。只有 kind: video 能用",
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "asset_id"
+                  ],
+                  "type": "object"
                 },
                 "minItems": 0,
                 "type": "array"
@@ -91,13 +161,12 @@
                 "type": "integer"
               },
               "workflow": {
-                "description": "使用的已验证 workflow 名，例如 minimax_h3/t2v。每条基线吃的参数不同，写之前先看这个系列的能力卡——提交时会按这台机器上基线的能力面逐项对账，多写、少写、用未核验的基线都会被挡下",
+                "description": "整图基线名，例如 ltx2_5/t2v。**只有走整图基线的系列用它**（ltx2_5 / wan2_2 等）。片段化的系列改用 head + references + guides，写 workflow 会被挡下。调 studio.schema 看这台机器给的是哪一种",
                 "type": "string"
               }
             },
             "required": [
               "shot_id",
-              "workflow",
               "positive",
               "width",
               "height",

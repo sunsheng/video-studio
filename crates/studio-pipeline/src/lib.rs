@@ -7,12 +7,14 @@ pub mod subtitles;
 pub mod workflow;
 
 use serde_json::{json, Map, Value};
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use studio_comfy::Comfy;
 use studio_core::contract::{AnswerOption, Confirmation, SelectionType};
-use studio_core::{CapabilitySet, Outputs, Result, StageId, StudioError, WorkflowCapability};
+use studio_core::{
+    CapabilitySet, Fragment, FragmentSet, Outputs, Result, StageId, StudioError, WorkflowCapability,
+};
 use studio_engine::executor::{ExecContext, StageExecutor};
 use studio_media::Media;
 use workflow::Workflow;
@@ -125,19 +127,24 @@ impl StageExecutor for Pipeline {
         }
     }
 
-    /// 扫一遍基线目录，把每条基线的 `_studio.bindings` 投影成能力面。
+    /// 扫一遍基线目录，把每条基线的 `_studio.bindings` 投影成能力面，
+    /// 顺带把有 `fragments/` 子目录的系列读成片段库。
     ///
     /// 引擎拿它在提交 `prompt_pack` 时对账。读不出来的基线直接跳过——
     /// 目录本身缺失或损坏是部署问题，会在渲染时以
     /// `model_contract_violation` 报出来，不该在提交阶段变成一堆噪声。
     fn capabilities(&self) -> Option<CapabilitySet> {
         let mut out = Vec::new();
+        let mut fragments: BTreeMap<String, FragmentSet> = BTreeMap::new();
         let families = std::fs::read_dir(&self.baselines).ok()?;
         for family in families.flatten() {
             if !family.file_type().is_ok_and(|t| t.is_dir()) {
                 continue;
             }
             let family_name = family.file_name().to_string_lossy().to_string();
+            if let Some(set) = load_fragment_set(&family.path().join("fragments")) {
+                fragments.insert(family_name.clone(), set);
+            }
             let Ok(modes) = std::fs::read_dir(family.path()) else {
                 continue;
             };
@@ -168,12 +175,35 @@ impl StageExecutor for Pipeline {
                 });
             }
         }
-        if out.is_empty() {
+        if out.is_empty() && fragments.is_empty() {
             return None;
         }
         out.sort_by(|a, b| a.name.cmp(&b.name));
-        Some(CapabilitySet::new(out))
+        Some(CapabilitySet::new(out).with_fragments(fragments))
     }
+}
+
+/// 读一个系列的 `fragments/` 目录。目录不存在说明这个系列走整图基线，
+/// 不是错误。单份片段读不出来就跳过——半份片段库会被
+/// [`CapabilitySet::with_fragments`] 挡在门外，不会悄悄生效。
+fn load_fragment_set(dir: &std::path::Path) -> Option<FragmentSet> {
+    let entries = std::fs::read_dir(dir).ok()?;
+    let mut set = FragmentSet::default();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let where_ = path.file_name().map(|n| n.to_string_lossy().to_string());
+        let Ok((kind, frag)) = Fragment::parse(&text, where_.as_deref().unwrap_or("?")) else {
+            continue;
+        };
+        set.insert(kind, frag);
+    }
+    Some(set)
 }
 
 fn wrap(stage: StageId, v: Value) -> Outputs {
@@ -837,22 +867,117 @@ mod real_baselines {
             .expect("仓库里应当有基线可读")
     }
 
+    /// 默认核心系列走片段组装，不走整图基线。
     #[test]
-    fn minimax_takes_no_negative_and_no_references() {
+    fn minimax_is_a_fragment_family() {
         let caps = caps();
-        let t2v = caps
-            .get("minimax_h3/t2v")
-            .expect("默认核心系列的 t2v 应当在");
-        assert!(t2v.verified, "minimax_h3/t2v 应当是已核验的");
-        assert!(t2v.accepts("positive") && t2v.accepts("length_frames"));
+        assert_eq!(caps.fragment_families(), vec!["minimax_h3".to_string()]);
+        let set = caps
+            .fragments_for("minimax_h3")
+            .expect("片段库应当读得出来");
+        assert!(set.backbone.is_some(), "缺骨架的片段库拼不出图");
+        assert_eq!(set.verified_heads(), vec!["image", "reference"]);
+        // 参考、锚点、素材三类片段各自齐全。
+        assert!(set.guides.contains_key("image") && set.guides.contains_key("clip"));
+        for medium in ["image", "video", "audio"] {
+            assert!(set.inputs.contains_key(medium), "缺 {medium} 类输入片段");
+        }
+    }
+
+    /// 能力面对账的数据源换了，规则没换：这个系列一样不吃 negative。
+    #[test]
+    fn the_fragment_family_still_takes_no_negative() {
+        let caps = caps();
+        let params = caps.fragments_for("minimax_h3").unwrap().shot_params();
+        for want in [
+            "positive",
+            "width",
+            "height",
+            "length_frames",
+            "fps",
+            "seed",
+        ] {
+            assert!(params.contains(&want.to_string()), "缺 {want} 绑定");
+        }
         assert!(
-            !t2v.accepts("negative"),
-            "这条基线没有 negative 绑定——写了会被静默丢弃，能力面必须如实反映"
+            !params.contains(&"negative".to_string()),
+            "片段库没有 negative 绑定——写了会被静默丢弃，能力面必须如实反映"
         );
         assert!(
-            !t2v.accepts("references"),
-            "还没有图片输入通道，能力面不能假装有"
+            !params.contains(&"output_prefix".to_string()),
+            "产物落在哪是控制面决定的，不该出现在 Agent 要写的参数里"
         );
+    }
+
+    /// 三种典型镜头都能从**真实的片段文件**拼回一张完整的图。
+    /// 这一条守的是片段库本身：切错了、元数据缺了，这里立刻红。
+    #[test]
+    fn the_three_typical_shots_assemble_from_the_real_fragments() {
+        let caps = caps();
+        let set = caps.fragments_for("minimax_h3").unwrap();
+        let base = studio_core::ShotDeclaration {
+            shot_id: "S01".into(),
+            head: "reference".into(),
+            positive: "她走上球场".into(),
+            width: 640,
+            height: 384,
+            length_frames: 22,
+            fps: 24.0,
+            seed: 1,
+            references: Vec::new(),
+            guides: Vec::new(),
+            first_frame: None,
+            last_frame: None,
+        };
+        let img_ref = |id: &str| studio_core::assembly::Reference {
+            kind: studio_core::assembly::Medium::Image,
+            asset_id: id.into(),
+            with_audio: false,
+        };
+
+        // 1 秒空镜：image head，给首帧。
+        let mut empty = base.clone();
+        empty.head = "image".into();
+        empty.first_frame = Some("scene_wide.png".into());
+        // 接续镜：reference head + 两条参考 + 两个链式 guide。
+        let mut continued = base.clone();
+        continued.references = vec![img_ref("char_front.png"), img_ref("scene_wide.png")];
+        continued.guides = vec![
+            studio_core::assembly::Guide {
+                kind: studio_core::assembly::GuideKind::Image,
+                at_frame: 0,
+                asset_id: "char_front.png".into(),
+            },
+            studio_core::assembly::Guide {
+                kind: studio_core::assembly::GuideKind::Image,
+                at_frame: -1,
+                asset_id: "scene_wide.png".into(),
+            },
+        ];
+        // 群戏：五条参考。
+        let mut crowd = base.clone();
+        crowd.references = (0..5).map(|_| img_ref("char_front.png")).collect();
+
+        for (name, shot) in [("空镜", empty), ("接续镜", continued), ("群戏", crowd)] {
+            let out = studio_core::assembly::assemble(set, &shot, "test/S01")
+                .unwrap_or_else(|e| panic!("{name}组装失败：{}", e.message()));
+            let graph = out.graph.as_object().unwrap();
+            // 骨架留空的三处必须都被填上，否则提交给 ComfyUI 会被判非法。
+            for path in [
+                "guider.inputs.conditioning",
+                "sampler.inputs.latent_image",
+                "save_video.inputs.filename_prefix",
+            ] {
+                let (node, field) = path.split_once(".inputs.").unwrap();
+                assert!(
+                    graph[node]["inputs"].get(field).is_some(),
+                    "{name}：{path} 没填上"
+                );
+            }
+            // 确定性：同一份声明拼两次逐字节相同。
+            let again = studio_core::assembly::assemble(set, &shot, "test/S01").unwrap();
+            assert_eq!(out.graph, again.graph, "{name}的组装结果不确定");
+        }
     }
 
     #[test]
@@ -871,7 +996,7 @@ mod real_baselines {
     fn unverified_baselines_are_excluded_from_the_choices() {
         let caps = caps();
         let names = caps.verified_names();
-        assert!(names.contains(&"minimax_h3/t2v".to_string()));
+        assert!(names.contains(&"ltx2_5/t2v".to_string()));
         for unverified in ["wan2_2/i2v", "wan2_2/flf2v", "wan_animate2/i2v"] {
             assert!(
                 !names.contains(&unverified.to_string()),
@@ -882,12 +1007,22 @@ mod real_baselines {
     }
 
     /// 随包分发的黄金样例必须过得了自己这一关——它是 Agent 照着抄的范文。
+    fn exemplar_assets() -> Vec<String> {
+        studio_core::fixtures::outputs(StageId::VisualAssets)[StageId::VisualAssets.output_key()]
+            ["assets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|a| a["asset_id"].as_str().map(String::from))
+            .collect()
+    }
+
     #[test]
     fn the_golden_exemplar_passes_the_real_capability_check() {
         let outputs = studio_core::fixtures::outputs(StageId::PromptPack);
         caps()
-            .check_prompt_pack(&outputs)
-            .expect("黄金样例应当与真实基线的能力面对得上");
+            .check_prompt_pack(&outputs, &exemplar_assets())
+            .expect("黄金样例应当与真实片段库对得上");
     }
 
     /// 反过来验一次：给样例加一条 negative，就该被挡下。
@@ -895,8 +1030,21 @@ mod real_baselines {
     fn adding_a_negative_to_the_exemplar_is_rejected() {
         let mut outputs = studio_core::fixtures::outputs(StageId::PromptPack);
         outputs["prompt_pack"]["shots"][0]["negative"] = json!("文字, 水印");
-        let e = caps().check_prompt_pack(&outputs).unwrap_err();
+        let e = caps()
+            .check_prompt_pack(&outputs, &exemplar_assets())
+            .unwrap_err();
         assert_eq!(e.code(), "schema_violation");
         assert!(e.message().contains("negative"), "{}", e.message());
+    }
+
+    /// 样例是片段化系列的，写 workflow 就是形状用错。
+    #[test]
+    fn adding_a_workflow_to_the_exemplar_is_rejected() {
+        let mut outputs = studio_core::fixtures::outputs(StageId::PromptPack);
+        outputs["prompt_pack"]["shots"][0]["workflow"] = json!("minimax_h3/t2v");
+        let e = caps()
+            .check_prompt_pack(&outputs, &exemplar_assets())
+            .unwrap_err();
+        assert!(e.message().contains("现场组装"), "{}", e.message());
     }
 }

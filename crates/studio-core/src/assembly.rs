@@ -165,10 +165,164 @@ impl Fragment {
             must_be_filled: Vec::new(),
         }
     }
+
+    /// 从落盘的片段文件解析。**纯数据变换，不碰文件系统**——读文件是上层的事，
+    /// 这样「这个格式怎么解析」在没有 GPU、没有片段目录的机器上也能单测。
+    ///
+    /// 形状：顶层是节点图的一部分，外加一个 `_studio` 元数据块。
+    /// `where_` 只用在报错消息里，指出是哪份文件。
+    pub fn parse(text: &str, where_: &str) -> Result<(FragmentKind, Fragment)> {
+        let bad = |detail: String| StudioError::ModelContractViolation { detail };
+        let doc: Value = serde_json::from_str(text)
+            .map_err(|e| bad(format!("片段 {where_} 不是合法 JSON：{e}")))?;
+        let obj = doc
+            .as_object()
+            .ok_or_else(|| bad(format!("片段 {where_} 顶层必须是对象")))?;
+        let meta = obj
+            .get("_studio")
+            .and_then(|m| m.as_object())
+            .ok_or_else(|| bad(format!("片段 {where_} 缺 _studio 元数据块")))?;
+
+        let kind = meta
+            .get("kind")
+            .and_then(|k| k.as_str())
+            .and_then(FragmentKind::parse)
+            .ok_or_else(|| {
+                bad(format!(
+                    "片段 {where_} 的 _studio.kind 缺失或不认识，\
+                     只接受 backbone / head / guide / input"
+                ))
+            })?;
+        let id = meta
+            .get("id")
+            .and_then(|i| i.as_str())
+            .ok_or_else(|| bad(format!("片段 {where_} 缺 _studio.id")))?;
+
+        let nodes: Map<String, Value> = obj
+            .iter()
+            .filter(|(k, _)| k.as_str() != "_studio")
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        if nodes.is_empty() {
+            return Err(bad(format!("片段 {where_} 一个节点都没有")));
+        }
+
+        let mut frag = Fragment::new(id, nodes);
+        frag.verified = meta
+            .get("bindings_verified")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        frag.unavailable_reason = meta
+            .get("unavailable_reason")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        frag.bindings = string_lists(meta.get("bindings"));
+        frag.backbone_overrides = value_map(meta.get("backbone_overrides"));
+        frag.wires_from_backbone = value_map(meta.get("wires_from_backbone"));
+        frag.chain = value_map(meta.get("chain"));
+        frag.media_input = meta
+            .get("media_input")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        frag.frames = meta
+            .get("frames")
+            .and_then(|f| f.as_object())
+            .map(|o| {
+                o.iter()
+                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                    .collect()
+            })
+            .unwrap_or_default();
+        frag.must_be_filled = meta
+            .get("must_be_filled")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        frag.autogrow = meta
+            .get("autogrow")
+            .and_then(|a| a.as_object())
+            .map(|o| {
+                o.iter()
+                    .filter_map(|(k, v)| {
+                        Some((
+                            k.clone(),
+                            AutogrowSlot {
+                                target: v.get("target")?.as_str()?.to_string(),
+                                prefix: v.get("prefix")?.as_str()?.to_string(),
+                                max: v.get("max")?.as_u64()? as usize,
+                            },
+                        ))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // `outputs` 在 head 和 input 上含义不同：head 给的是喂给骨架的
+        // conditioning / latent，input 给的是素材的 IMAGE / AUDIO。
+        let outputs = value_map(meta.get("outputs"));
+        match kind {
+            FragmentKind::Input => frag.input_outputs = outputs,
+            _ => frag.outputs = outputs,
+        }
+
+        // 声明的端口必须指向片段内真实存在的节点，否则要等到组装时才炸。
+        let node_exists = |port: &Value| -> bool {
+            port.as_array()
+                .and_then(|a| a.first())
+                .and_then(|f| f.as_str())
+                .is_some_and(|n| frag.nodes.contains_key(n))
+        };
+        for (name, port) in frag.outputs.iter().chain(frag.input_outputs.iter()) {
+            if !node_exists(port) {
+                return Err(bad(format!(
+                    "片段 {where_} 的 outputs.{name} 指向的节点不在这份片段里"
+                )));
+            }
+        }
+        if let Some(port) = frag.chain.get("positive_out") {
+            if !node_exists(port) {
+                return Err(bad(format!(
+                    "片段 {where_} 的 chain.positive_out 指向的节点不在这份片段里"
+                )));
+            }
+        }
+
+        Ok((kind, frag))
+    }
+}
+
+fn string_lists(v: Option<&Value>) -> BTreeMap<String, Vec<String>> {
+    v.and_then(|v| v.as_object())
+        .map(|o| {
+            o.iter()
+                .map(|(k, v)| {
+                    let list = v
+                        .as_array()
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|s| s.as_str().map(String::from))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    (k.clone(), list)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn value_map(v: Option<&Value>) -> BTreeMap<String, Value> {
+    v.and_then(|v| v.as_object())
+        .map(|o| o.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+        .unwrap_or_default()
 }
 
 /// 一个模型系列的全部片段。上层负责把它填出来（读文件或测试里手写）。
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct FragmentSet {
     pub backbone: Option<Fragment>,
     /// head id → 片段。
@@ -191,6 +345,67 @@ impl FragmentSet {
             .collect();
         v.sort();
         v
+    }
+
+    /// 把一份解析好的片段放进对应的格子里。
+    pub fn insert(&mut self, kind: FragmentKind, frag: Fragment) {
+        match kind {
+            FragmentKind::Backbone => self.backbone = Some(frag),
+            FragmentKind::Head => {
+                self.heads.insert(frag.id.clone(), frag);
+            }
+            FragmentKind::Guide => {
+                self.guides.insert(frag.id.clone(), frag);
+            }
+            FragmentKind::Input => {
+                self.inputs.insert(frag.id.clone(), frag);
+            }
+        }
+    }
+
+    /// 这个片段库能接受的逐镜头参数名，取自骨架与各 head 的 `bindings` 键集合。
+    ///
+    /// 这是 [`crate::CapabilitySet`] 对账「写了会被静默丢弃」的数据源：
+    /// 整图基线看基线自己的 `_studio.bindings`，片段化的系列看这里。
+    /// `output_prefix` 不算——那是控制面决定产物落在哪，不是 Agent 写的。
+    pub fn shot_params(&self) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .backbone
+            .iter()
+            .chain(self.heads.values())
+            .flat_map(|f| f.bindings.keys())
+            .filter(|k| k.as_str() != "output_prefix")
+            .cloned()
+            .collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// 至少有骨架和一个已核验的 head，才算这个系列真的能跑。
+    pub fn is_usable(&self) -> bool {
+        self.backbone.is_some() && !self.verified_heads().is_empty()
+    }
+}
+
+/// 片段在组装里扮演的角色，取自 `_studio.kind`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum FragmentKind {
+    Backbone,
+    Head,
+    Guide,
+    Input,
+}
+
+impl FragmentKind {
+    fn parse(s: &str) -> Option<Self> {
+        match s {
+            "backbone" => Some(FragmentKind::Backbone),
+            "head" => Some(FragmentKind::Head),
+            "guide" => Some(FragmentKind::Guide),
+            "input" => Some(FragmentKind::Input),
+            _ => None,
+        }
     }
 }
 
@@ -703,6 +918,12 @@ pub(crate) mod tests_support {
         head_ref
             .bindings
             .insert("width".into(), vec!["h3_ref.inputs.width".into()]);
+        head_ref
+            .bindings
+            .insert("height".into(), vec!["h3_ref.inputs.height".into()]);
+        head_ref
+            .bindings
+            .insert("length_frames".into(), vec!["h3_ref.inputs.length".into()]);
         head_ref.autogrow.insert(
             "image".into(),
             AutogrowSlot {
@@ -748,6 +969,15 @@ pub(crate) mod tests_support {
         head_img
             .bindings
             .insert("positive".into(), vec!["h3_i2v.inputs.prompt".into()]);
+        head_img
+            .bindings
+            .insert("width".into(), vec!["h3_i2v.inputs.width".into()]);
+        head_img
+            .bindings
+            .insert("height".into(), vec!["h3_i2v.inputs.height".into()]);
+        head_img
+            .bindings
+            .insert("length_frames".into(), vec!["h3_i2v.inputs.length".into()]);
         head_img
             .frames
             .insert("first".into(), "h3_i2v.inputs.first_frame".into());
@@ -802,10 +1032,15 @@ pub(crate) mod tests_support {
             .input_outputs
             .insert("audio".into(), json!(["split", 1]));
 
+        // clip 类 guide 跟 image 类共用 AddGuide 节点，区别只在素材是帧序列
+        // 而不是单张图——`ref_videos` 的元素类型本来就是 IMAGE。
+        let mut guide_clip = guide_img.clone();
+        guide_clip.id = "clip".into();
+
         FragmentSet {
             backbone: Some(backbone),
             heads: BTreeMap::from([("reference".into(), head_ref), ("image".into(), head_img)]),
-            guides: BTreeMap::from([("image".into(), guide_img)]),
+            guides: BTreeMap::from([("image".into(), guide_img), ("clip".into(), guide_clip)]),
             inputs: BTreeMap::from([("image".into(), input_img), ("video".into(), input_video)]),
         }
     }
@@ -1063,14 +1298,50 @@ fn nearest_grid(frames: i64) -> (i64, i64) {
 ///
 /// `known_assets` 是 `visual_assets` 登记过的产物 id。传空切片表示跳过 V7
 /// （上游阶段还没产出时不该拿这条卡住）。
+///
+/// `prior_shots` 是本包里排在这一镜**前面**的 shot_id。镜头之间接续靠的是
+/// 引用上一镜的尾段（`sh01.tail`），那东西不可能出现在 `visual_assets` 里
+/// ——它要等 sh01 渲染完才存在。所以引用有两个来源，V7 查前者，V9 查后者。
 pub fn validate_shot(
     set: &FragmentSet,
     shot: &ShotDeclaration,
     known_assets: &[String],
+    prior_shots: &[String],
     index: usize,
 ) -> Vec<Violation> {
     let at = |field: &str| format!("prompt_pack.shots[{index}].{field}");
     let mut v = Vec::new();
+    let check_asset = |v: &mut Vec<Violation>, path: String, asset_id: &str| {
+        // V9：镜间引用（`sh01.tail`）只能指向本包里更靠前的镜头。
+        if let Some(shot_id) = shot_segment_of(asset_id) {
+            if prior_shots.iter().any(|s| s == shot_id) {
+                return;
+            }
+            v.push(Violation::new(
+                path,
+                format!(
+                    "「{asset_id}」指的是 {shot_id} 的片段，而 {shot_id} 不排在这一镜前面\
+                     ——它还没渲出来，接不上。镜间引用只能指向本包里更靠前的镜头。"
+                ),
+            ));
+            return;
+        }
+        // V7：其余的必须是 visual_assets 登记过的产物。
+        // 上游还没产出时传空切片，这条跳过，不拿它卡人。
+        if known_assets.is_empty() {
+            return;
+        }
+        if let AssetRef::Unknown = classify_asset(asset_id, known_assets) {
+            v.push(Violation::new(
+                path,
+                format!(
+                    "visual_assets 里没有「{asset_id}」。可用的：{}。\
+                     要接上一镜就写 <上一镜的 shot_id>.tail",
+                    preview_list(known_assets)
+                ),
+            ));
+        }
+    };
 
     let Some(head) = set.heads.get(&shot.head) else {
         v.push(Violation::new(
@@ -1152,17 +1423,12 @@ pub fn validate_shot(
                 "只有 video 类参考能带音轨——它占用同号的 ref_video_audio 槽位。",
             ));
         }
-        // V7：引用的资产必须真的存在
-        if !known_assets.is_empty() && !known_assets.iter().any(|a| a == &r.asset_id) {
-            v.push(Violation::new(
-                at(&format!("references[{i}].asset_id")),
-                format!(
-                    "visual_assets 里没有「{}」。可用的：{}",
-                    r.asset_id,
-                    preview_list(known_assets)
-                ),
-            ));
-        }
+        // V7 / V9：引用的资产必须真的存在，或者是更靠前那一镜的片段
+        check_asset(
+            &mut v,
+            at(&format!("references[{i}].asset_id")),
+            &r.asset_id,
+        );
     }
 
     // V2：image head 的 guide 只能是首尾两帧
@@ -1200,19 +1466,36 @@ pub fn validate_shot(
                 ),
             ));
         }
-        if !known_assets.is_empty() && !known_assets.iter().any(|a| a == &g.asset_id) {
-            v.push(Violation::new(
-                at(&format!("guides[{j}].asset_id")),
-                format!(
-                    "visual_assets 里没有「{}」。可用的：{}",
-                    g.asset_id,
-                    preview_list(known_assets)
-                ),
-            ));
-        }
+        check_asset(&mut v, at(&format!("guides[{j}].asset_id")), &g.asset_id);
     }
 
     v
+}
+
+/// 一条资产引用在 `visual_assets` 里认不认得出来。
+enum AssetRef {
+    Registered,
+    Unknown,
+}
+
+/// 镜间引用写成 `<shot_id>.tail` / `<shot_id>.head`（可带帧数，如 `.tail22`）。
+/// 它们不在 `visual_assets` 里，也不可能在——上一镜的尾段要等那一镜渲完
+/// 才存在。所以先按这个形状认，认不出来再回落到登记过的资产。
+///
+/// 登记过的资产 id 里也可能有点（`C01.front` 这样的视角），但后缀不是
+/// tail/head，认不成镜间引用，会正常落到第二条路上。
+fn classify_asset(asset_id: &str, known_assets: &[String]) -> AssetRef {
+    if known_assets.iter().any(|a| a == asset_id) {
+        return AssetRef::Registered;
+    }
+    AssetRef::Unknown
+}
+
+/// 这条引用是不是「上一镜的某一段」，是的话指的是哪一镜。
+fn shot_segment_of(asset_id: &str) -> Option<&str> {
+    let (shot_id, segment) = asset_id.split_once('.')?;
+    let word = segment.trim_end_matches(|c: char| c.is_ascii_digit());
+    (word.eq_ignore_ascii_case("tail") || word.eq_ignore_ascii_case("head")).then_some(shot_id)
 }
 
 fn preview_list(items: &[String]) -> String {
@@ -1247,7 +1530,7 @@ mod validation_tests {
 
         let mut s = shot("reference");
         s.length_frames = 50;
-        let v = validate_shot(&fragments(), &s, &[], 0);
+        let v = validate_shot(&fragments(), &s, &[], &[], 0);
         let hit = find(&v, "帧数网格").expect("应当报帧数网格");
         assert!(
             hit.message.contains("39") && hit.message.contains("56"),
@@ -1262,7 +1545,7 @@ mod validation_tests {
         let mut s = shot("reference");
         s.width = 1000;
         s.height = 900;
-        let v = validate_shot(&fragments(), &s, &[], 0);
+        let v = validate_shot(&fragments(), &s, &[], &[], 0);
         assert!(find(&v, "32 的倍数").is_some(), "{v:?}");
         assert!(
             find(&v, "原生画布").is_some(),
@@ -1275,7 +1558,7 @@ mod validation_tests {
     fn v1_too_many_references_are_caught_at_submit_time() {
         let mut s = shot("reference");
         s.references = (0..10).map(|i| img_ref(&format!("A{i}"))).collect();
-        let v = validate_shot(&fragments(), &s, &[], 0);
+        let v = validate_shot(&fragments(), &s, &[], &[], 0);
         assert!(find(&v, "最多 9 个").is_some(), "{v:?}");
     }
 
@@ -1289,7 +1572,7 @@ mod validation_tests {
             at_frame: 30,
             asset_id: "S02.tail".into(),
         }];
-        let v = validate_shot(&fragments(), &s, &[], 0);
+        let v = validate_shot(&fragments(), &s, &[], &[], 0);
         assert!(find(&v, "不接参考").is_some(), "{v:?}");
         assert!(find(&v, "只能锚首帧").is_some(), "{v:?}");
     }
@@ -1311,7 +1594,7 @@ mod validation_tests {
                 asset_id: "S02.tail".into(),
             },
         ];
-        let v = validate_shot(&fragments(), &s, &[], 0);
+        let v = validate_shot(&fragments(), &s, &[], &["S02".into()], 0);
         assert_eq!(v.len(), 1, "只有第一个越界：{v:?}");
         assert!(v[0].message.contains("[-22, 22)"), "{}", v[0].message);
     }
@@ -1325,7 +1608,7 @@ mod validation_tests {
             asset_id: "C01.front".into(),
             with_audio: true,
         }];
-        let v = validate_shot(&fragments(), &s, &[], 0);
+        let v = validate_shot(&fragments(), &s, &[], &[], 0);
         assert!(find(&v, "只有 video").is_some(), "{v:?}");
     }
 
@@ -1334,7 +1617,7 @@ mod validation_tests {
     fn v7_an_unknown_asset_id_lists_what_is_available() {
         let mut s = shot("reference");
         s.references = vec![img_ref("C99.nope")];
-        let v = validate_shot(&fragments(), &s, &assets(), 0);
+        let v = validate_shot(&fragments(), &s, &assets(), &[], 0);
         let hit = find(&v, "C99.nope").expect("{v:?}");
         assert!(
             hit.message.contains("C01.front"),
@@ -1343,12 +1626,55 @@ mod validation_tests {
         );
     }
 
+    /// V9：接上一镜的尾段是镜头之间接得住的主要手段，而那东西不可能在
+    /// `visual_assets` 里——它要等上一镜渲完才存在。所以 `sh01.tail`
+    /// 这类引用走另一条路：只要 sh01 排在前面就认。
+    #[test]
+    fn v9_a_prior_shots_tail_is_a_legal_reference() {
+        let mut s = shot("reference");
+        s.shot_id = "S03".into();
+        s.guides = vec![Guide {
+            kind: GuideKind::Clip,
+            at_frame: 0,
+            asset_id: "S02.tail22".into(),
+        }];
+        let prior = vec!["S01".to_string(), "S02".to_string()];
+        assert_eq!(
+            validate_shot(&fragments(), &s, &assets(), &prior, 2),
+            vec![]
+        );
+    }
+
+    /// 反过来：引用还没渲的镜头就是接不上，得当场挡下。
+    #[test]
+    fn v9_referring_to_a_later_shot_is_rejected() {
+        let mut s = shot("reference");
+        s.shot_id = "S01".into();
+        s.guides = vec![Guide {
+            kind: GuideKind::Clip,
+            at_frame: 0,
+            asset_id: "S05.tail".into(),
+        }];
+        let v = validate_shot(&fragments(), &s, &assets(), &[], 0);
+        let hit = find(&v, "S05").expect("{v:?}");
+        assert!(hit.message.contains("还没渲出来"), "{}", hit.message);
+        assert!(hit.message.contains("更靠前"), "{}", hit.message);
+    }
+
+    /// 资产 id 里带点的（`C01.front` 这种视角）不该被误认成镜间引用。
+    #[test]
+    fn v9_does_not_swallow_asset_ids_that_merely_contain_a_dot() {
+        let mut s = shot("reference");
+        s.references = vec![img_ref("C01.front")];
+        assert_eq!(validate_shot(&fragments(), &s, &assets(), &[], 0), vec![]);
+    }
+
     /// 上游还没产出时传空清单，V7 不该拿这条卡住。
     #[test]
     fn v7_is_skipped_when_the_asset_list_is_not_available_yet() {
         let mut s = shot("reference");
         s.references = vec![img_ref("C99.nope")];
-        assert!(validate_shot(&fragments(), &s, &[], 0).is_empty());
+        assert!(validate_shot(&fragments(), &s, &[], &[], 0).is_empty());
     }
 
     /// 一份完全合规的声明不该报任何东西。
@@ -1364,7 +1690,10 @@ mod validation_tests {
             at_frame: 0,
             asset_id: "S02.tail".into(),
         }];
-        assert_eq!(validate_shot(&fragments(), &s, &assets(), 0), vec![]);
+        assert_eq!(
+            validate_shot(&fragments(), &s, &assets(), &["S02".into()], 0),
+            vec![]
+        );
     }
 
     /// 每条违规都要有可定位的路径，否则 Agent 不知道改哪。
@@ -1378,7 +1707,7 @@ mod validation_tests {
             asset_id: "nope".into(),
             with_audio: true,
         }];
-        let v = validate_shot(&fragments(), &s, &assets(), 3);
+        let v = validate_shot(&fragments(), &s, &assets(), &[], 3);
         assert!(v.len() >= 3, "{v:?}");
         for one in &v {
             assert!(
@@ -1386,6 +1715,65 @@ mod validation_tests {
                 "路径要能定位到具体镜头与字段：{}",
                 one.path
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod golden_sample_tests {
+    use super::*;
+    use crate::{fixtures, StageId};
+
+    /// 黄金样例是给 Agent 看的范本——它自己必须是一份合规的声明。
+    /// 样例违规而校验不报，等于教 Agent 写错的东西。
+    #[test]
+    fn the_golden_prompt_pack_satisfies_every_validator() {
+        let pack = fixtures::outputs(StageId::PromptPack);
+        let shots = pack["prompt_pack"]["shots"].as_array().unwrap();
+        assert_eq!(shots.len(), 5);
+
+        let set = tests_support::fragments();
+        for (i, raw) in shots.iter().enumerate() {
+            let shot: ShotDeclaration = serde_json::from_value(raw.clone())
+                .unwrap_or_else(|e| panic!("样例第 {i} 镜不是合法声明：{e}\n{raw}"));
+
+            // 帧数必须落在 17k+5 网格上，否则模型 snap 之后时长跟声明对不上，
+            // 而 post 拼接按声明算——这种错会一路错到交付。
+            assert!(
+                is_on_frame_grid(shot.length_frames),
+                "样例 {} 的 {} 帧不在网格上",
+                shot.shot_id,
+                shot.length_frames
+            );
+
+            let assets: Vec<String> = shot
+                .references
+                .iter()
+                .map(|r| r.asset_id.clone())
+                .chain(shot.guides.iter().map(|g| g.asset_id.clone()))
+                .collect();
+            let prior: Vec<String> = shots[..i]
+                .iter()
+                .map(|s| s["shot_id"].as_str().unwrap().to_string())
+                .collect();
+            let v = validate_shot(&set, &shot, &assets, &prior, i);
+            assert_eq!(v, vec![], "样例 {} 不合规", shot.shot_id);
+        }
+    }
+
+    /// 样例得真的能组装出图，否则它示范的是一份拼不起来的声明。
+    #[test]
+    fn every_golden_shot_assembles_into_a_graph() {
+        let pack = fixtures::outputs(StageId::PromptPack);
+        let set = tests_support::fragments();
+        for raw in pack["prompt_pack"]["shots"].as_array().unwrap() {
+            let shot: ShotDeclaration = serde_json::from_value(raw.clone()).unwrap();
+            let out = assemble(&set, &shot, &format!("media/{}", shot.shot_id))
+                .unwrap_or_else(|e| panic!("样例 {} 组装失败：{}", shot.shot_id, e.message()));
+            // 三处必填的位置都得填上
+            for path in ["guider", "sampler", "save_video"] {
+                assert!(out.graph.get(path).is_some(), "组装结果缺 {path}");
+            }
         }
     }
 }

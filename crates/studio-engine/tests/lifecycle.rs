@@ -398,9 +398,15 @@ fn the_six_stages_before_comfyui_run_end_to_end() {
     let pack = p.stage_output(StageId::PromptPack).unwrap();
     let shots = pack["prompt_pack"]["shots"].as_array().unwrap();
     assert_eq!(shots.len(), 5);
+    // 核心系列的图是渲染时按声明现场组装的，所以逐镜头写的是 head，
+    // 不是整图基线名——写 workflow 会被能力面对账挡下。
     assert!(shots
         .iter()
-        .all(|s| s["workflow"].is_string() && s["seed"].is_number()));
+        .all(|s| s["head"].is_string() && s["seed"].is_number()));
+    assert!(
+        shots.iter().all(|s| s.get("workflow").is_none()),
+        "片段化的系列没有整图基线可选"
+    );
 
     // 时间线记下了每一步
     let t = p.timeline(100).unwrap();

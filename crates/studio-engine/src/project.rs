@@ -297,14 +297,44 @@ impl Project {
 
     pub fn schema_of(&self, stage: StageId) -> Value {
         let mut doc = schema::stage_schema_document(stage);
-        // 提示词包的 workflow 取值随机器而变：只给出这台机器上真正能跑的
-        // 那几条，而不是让 Agent 写完一整包才在提交时被告知基线没核验。
+        // 提示词包的形状随机器而变：这个系列走整图基线还是片段组装、
+        // 有哪几条基线/哪几个 head 可用，都在这一刻定下来，而不是让 Agent
+        // 写完一整包才在提交时被告知形状用错了或基线没核验。
         if stage == StageId::PromptPack {
             if let Some(caps) = self.executor.capabilities() {
-                caps.narrow_schema(&mut doc);
+                let family = self.core_model_family();
+                caps.narrow_schema(&mut doc, family.as_deref());
             }
         }
         doc
+    }
+
+    /// 上游 `visual_assets` 定下的核心模型系列。它决定提示词包用哪一种形状。
+    /// 那个阶段还没过就返回 `None`——这时候两种形状都还摆着。
+    fn core_model_family(&self) -> Option<String> {
+        let loaded = self.store.load_stage(StageId::VisualAssets).ok()?;
+        loaded_outputs(&loaded)?
+            .get(StageId::VisualAssets.output_key())?
+            .get("core_model_family")?
+            .as_str()
+            .map(String::from)
+    }
+
+    /// `visual_assets` 登记过的产物 id，用来查参考与锚点引用的资产在不在。
+    fn known_asset_ids(&self) -> Vec<String> {
+        let Ok(loaded) = self.store.load_stage(StageId::VisualAssets) else {
+            return Vec::new();
+        };
+        loaded_outputs(&loaded)
+            .and_then(|o| o.get(StageId::VisualAssets.output_key()).cloned())
+            .and_then(|v| v.get("assets").cloned())
+            .and_then(|a| a.as_array().cloned())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.get("asset_id")?.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     pub fn stage_output(&self, stage: StageId) -> Result<Value> {
@@ -363,7 +393,7 @@ impl Project {
         // 这道关必须在 prompt_pack 那道门之前，因为门一过就开始烧 GPU。
         if stage == StageId::PromptPack {
             if let Some(caps) = self.executor.capabilities() {
-                caps.check_prompt_pack(&outputs)?;
+                caps.check_prompt_pack(&outputs, &self.known_asset_ids())?;
             }
         }
         // 形状对、参数对，内容仍然可以是空的：`three_facts: ["好看","很美","有感觉"]`

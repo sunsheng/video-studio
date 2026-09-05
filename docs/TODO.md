@@ -81,18 +81,21 @@ MiniMax H3 的原生画布是短边 768（16:9 即 1344×768），而交付要 1
    **它吃 3 张参考图，不是单参考**。issue #12 里「Z-Image 是单参考」的说法
    是错的，那条论据不成立（累积锁定的对比结论仍待实测）。
 
-### 要下载的权重
+### 权重已全部到位（2026-09-05 核对）
 
-| 用途 | 文件 | 放到 |
+| 用途 | 文件 | 状态 |
 |---|---|---|
-| 成片超分（#13） | `seedvr2_7b_int8_convrot.safetensors` | `models/diffusion_models/` |
-| 成片超分（#13） | `seedvr2_ema_vae_fp16.safetensors` | `models/vae/` |
-| 卡片 10 参考（#12，可选） | `flux2_dev_fp8mixed.safetensors` | `models/diffusion_models/` |
-| 卡片 10 参考（#12，可选） | `mistral_3_small_flux2_bf16.safetensors` | `models/text_encoders/` |
-| 卡片 10 参考（#12，可选） | `flux2-vae.safetensors` | `models/vae/` |
+| 成片超分（#13） | `seedvr2_7b_int8_convrot` / `seedvr2_3b_int8_convrot` / `seedvr2_ema_vae_fp16` | ✅ |
+| 卡片累积锁定（#12） | `flux2_dev_fp8mixed` / `mistral_3_small_flux2_bf16` / `flux2-vae` | ✅ |
+| 卡片草稿 / 已验证 | `z_image_turbo_bf16` + `qwen_3_4b` + `ae` | ✅ |
 
-SeedVR2 走 **ComfyUI 原生节点**，不要装第三方 custom node。FLUX.2 那三份
-等 Z-Image 3 参考的累积锁定实测出结果再决定要不要下。
+SeedVR2 走 **ComfyUI 原生节点**（`SeedVR2Preprocess` / `SeedVR2Conditioning` /
+`SeedVR2TemporalChunk` 都在），不要装第三方 custom node。
+
+**这意味着 #12 与 #13 不再被权重卡住**：#12 的累积锁定实测（卡片路线唯一
+剩下的支点）现在可以直接跑 FLUX.2 的 10 参考，不必退而求其次用 Z-Image 的
+3 参考；#13 的超分链路可以真机验证。两者仍排在 #14 之后——#12 依赖 #14 的
+可变槽位，#13 独立但优先级低于地基。
 
 ### 装 ffmpeg
 
