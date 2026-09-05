@@ -20,7 +20,7 @@ use studio_mcp::TOOLS;
 ///
 /// 全部按需加载：SKILL.md 只给索引，Agent 用到哪份读哪份。默认一份都不进
 /// 上下文——前身项目把 30 行模型文件名塞进每个会话的教训在这里同样适用。
-const DOCTRINE: [(&str, &str); 14] = [
+const DOCTRINE: [(&str, &str); 15] = [
     ("README.md", include_str!("../assets/doctrine/README.md")),
     (
         "story/structure.md",
@@ -71,6 +71,10 @@ const DOCTRINE: [(&str, &str); 14] = [
         include_str!("../assets/doctrine/quality/rubric.md"),
     ),
     (
+        "assembly/shots.md",
+        include_str!("../assets/doctrine/assembly/shots.md"),
+    ),
+    (
         "exemplars/script.md",
         include_str!("../assets/doctrine/exemplars/script.md"),
     ),
@@ -99,59 +103,92 @@ const EXEMPLARS: [(&str, StageId, &str); 2] = [
 struct ModelCard {
     family: &'static str,
     title: &'static str,
-    /// `(模式, 可注入参数, 是否已核验)`
-    modes: &'static [(&'static str, &'static [&'static str], bool)],
+    shape: Shape,
     prose: &'static str,
+}
+
+/// 这个系列给 Agent 的是哪一种形状。见 ADR-0005。
+enum Shape {
+    /// 整图基线：一个系列一组完整的图，镜头写 `workflow` 选一张。
+    /// `(模式, 可注入参数, 是否已核验)`
+    WholeGraph(&'static [(&'static str, &'static [&'static str], bool)]),
+    /// 片段库：图在渲染时按声明现场组装，镜头写 `head` + `references` + `guides`。
+    Fragments(FragmentCard),
+}
+
+/// 片段化系列的能力卡内容。一个测试守着它与
+/// `assets/workflows/<family>/fragments/` 里的 `_studio` 元数据一致。
+struct FragmentCard {
+    /// 逐镜头能写的参数，取自骨架与各 head 的 `bindings` 并集。
+    params: &'static [&'static str],
+    heads: &'static [HeadSpec],
+    /// `(kind, 是否已核验, 用途)`
+    guides: &'static [(&'static str, bool, &'static str)],
+}
+
+struct HeadSpec {
+    id: &'static str,
+    verified: bool,
+    what_for: &'static str,
+    /// `(介质, 上限, 这条介质的输入片段是否已核验)`。空表示这个 head 不接参考。
+    references: &'static [(&'static str, usize, bool)],
+    /// 具名的首尾帧槽位，如 `first` / `last`。
+    frames: &'static [&'static str],
+    /// preview 的 turbo 步数。None 表示这个 head 没有可用的 turbo 叠加层。
+    turbo_steps: Option<u32>,
 }
 
 const MODEL_CARDS: [ModelCard; 3] = [
     ModelCard {
         family: "minimax_h3",
         title: "MiniMax 系列（默认核心系列）",
-        modes: &[
-            (
-                "t2v",
-                &[
-                    "positive",
-                    "width",
-                    "height",
-                    "length_frames",
-                    "fps",
-                    "seed",
-                ],
-                true,
-            ),
-            (
-                "i2v",
-                &[
-                    "positive",
-                    "width",
-                    "height",
-                    "length_frames",
-                    "fps",
-                    "seed",
-                ],
-                true,
-            ),
-            (
-                "r2v",
-                &[
-                    "positive",
-                    "width",
-                    "height",
-                    "length_frames",
-                    "fps",
-                    "seed",
-                ],
-                true,
-            ),
-        ],
+        shape: Shape::Fragments(FragmentCard {
+            params: &[
+                "positive",
+                "width",
+                "height",
+                "length_frames",
+                "fps",
+                "seed",
+            ],
+            heads: &[
+                HeadSpec {
+                    id: "reference",
+                    verified: true,
+                    what_for: "挂参考锁身份与风格，起幅由模型定。绝大多数镜头用它。",
+                    references: &[("image", 9, true), ("video", 3, false), ("audio", 3, false)],
+                    frames: &[],
+                    turbo_steps: Some(4),
+                },
+                HeadSpec {
+                    id: "image",
+                    verified: true,
+                    what_for: "给首尾帧，锁构图与运动轨迹。要精确控制起幅落幅时用它。",
+                    references: &[],
+                    frames: &["first", "last"],
+                    turbo_steps: Some(8),
+                },
+            ],
+            guides: &[
+                (
+                    "image",
+                    true,
+                    "把一张图锚在某一帧。接续上一镜就用它锚 `<上一镜>.tail`（尾帧）",
+                ),
+                (
+                    "clip",
+                    false,
+                    "把一段帧序列锚在某一帧，比单帧接得更稳。写 `<上一镜>.tail22` 这种带帧数的",
+                ),
+                ("audio", false, "把一段音频锚在某一帧"),
+            ],
+        }),
         prose: include_str!("../assets/models/minimax_h3.md"),
     },
     ModelCard {
         family: "wan2_2",
         title: "Wan 系列",
-        modes: &[
+        shape: Shape::WholeGraph(&[
             (
                 "t2v",
                 &[
@@ -167,13 +204,13 @@ const MODEL_CARDS: [ModelCard; 3] = [
             ),
             ("i2v", &["seed"], false),
             ("flf2v", &["seed"], false),
-        ],
+        ]),
         prose: include_str!("../assets/models/wan2_2.md"),
     },
     ModelCard {
         family: "ltx2_5",
         title: "LTX 系列",
-        modes: &[
+        shape: Shape::WholeGraph(&[
             (
                 "t2v",
                 &[
@@ -200,7 +237,7 @@ const MODEL_CARDS: [ModelCard; 3] = [
                 ],
                 true,
             ),
-        ],
+        ]),
         prose: include_str!("../assets/models/ltx2_5.md"),
     },
 ];
@@ -241,6 +278,7 @@ fn doctrine_for(skill: &str) -> &'static [&'static str] {
         // 目录会在生成时展开成逐个文件，只读要用的那个系列即可。
         "prompt" => &[
             ".agents/models/",
+            ".agents/doctrine/assembly/shots.md",
             ".agents/doctrine/exemplars/prompt_pack.md",
             ".agents/doctrine/consistency/bible.md",
             ".agents/doctrine/quality/banned.md",
@@ -297,13 +335,18 @@ fn checklist(stage: StageId) -> &'static [&'static str] {
             "一致性锁定写明了外观、机位签名、环境与排版禁止项",
         ],
         StageId::PromptPack => &[
-            "逐项对照能力卡：写的每个参数这条基线都吃",
+            "形状对了：schema 给 head 就写 head，给 workflow 才写 workflow，没有混着写",
+            "逐项对照能力卡：写的每个参数这个系列都吃",
             "不支持负向提示词的系列，约束改写成了正向的完整句子",
             "identity_lock.character 从上一阶段复制而来，一个字没改",
             "身份锁在每一镜里逐字出现，没有写成「同一位…」",
             "运镜按能力卡译成了该系列吃的指令，没有只留中文散文",
             "没有禁用词（cinematic / 电影感 / 唯美这类）",
             "种子固定并记录，尺寸与帧数按各镜时长算准",
+            "帧数落在这个系列的网格上（能力卡里写了是哪一档）",
+            "每个 references / guides 的 asset_id 都真的存在：\
+             要么是 visual_assets 登记过的，要么是本包里**更靠前**那一镜的 .tail",
+            "该接续的镜头都挂了 guide，没有只在提示词里写「接上一镜」",
             "audio 写了三层，没有放弃原生音频",
         ],
         StageId::Review => &[
@@ -432,15 +475,19 @@ const SKILLS: [SkillDoc; 10] = [
     },
     SkillDoc {
         name: "prompt",
-        description: "把已确认分镜与视觉资产编译成逐镜头 prompt 和 workflow 参数。",
+        description: "把已确认分镜与视觉资产编译成逐镜头的声明与渲染参数。",
         stage: Some(StageId::PromptPack),
         trigger: "视觉资产已确认，准备进入渲染。",
         not_trigger: "画面内容本身还在改；那是 director 的事。",
         duties: &[
-            "逐镜头给出正向、负向提示词，以及尺寸、帧数、帧率、种子。",
+            "逐镜头给出正向提示词，以及尺寸、帧数、帧率、种子。",
             "种子必须固定并记录，否则结果不可复现。",
-            "workflow 名必须是已验证基线里的，不要临时编一个。",
+            "**先调 studio.schema('prompt_pack') 看这台机器给的是哪一种形状。**\
+             片段化的系列给 head + references + guides，没有 workflow 字段；\
+             整图基线的系列给 workflow。两种形状不会同时出现，schema 里有什么就写什么。",
             "引用视觉资产用 asset_id，不要重复描述角色外观。",
+            "要接上一镜就挂 guide 锚它的尾段（`<上一镜的 shot_id>.tail`），\
+             不要只在提示词里写「接上一镜」——模型看不到上一镜生成了什么。",
         ],
         notes: &["这道门是花 GPU 时间之前的最后一关。确认之后就开始烧显卡了，提交前自己再读一遍。"],
     },
@@ -673,14 +720,26 @@ fn checklist_md() -> String {
     s
 }
 
-/// 一个模型系列的能力卡。表格是基线的投影，散文是人写的语法要点。
+/// 一个模型系列的能力卡。表格是片段库/基线的投影，散文是人写的语法要点。
 fn model_card_md(card: &ModelCard) -> String {
-    let mut s = format!(
-        "# {}\n\n`{}`\n\n## 这条系列吃什么\n\n",
-        card.title, card.family
+    let mut s = format!("# {}\n\n`{}`\n\n", card.title, card.family);
+    match &card.shape {
+        Shape::WholeGraph(modes) => s.push_str(&whole_graph_section(card.family, modes)),
+        Shape::Fragments(f) => s.push_str(&fragments_section(f)),
+    }
+    s.push('\n');
+    s.push_str(fill_placeholders(card.prose).trim_end());
+    s.push('\n');
+    s
+}
+
+/// 整图基线的系列：一张表列出有哪几张图、各吃什么参数。
+fn whole_graph_section(family: &str, modes: &[(&str, &[&str], bool)]) -> String {
+    let mut s = String::from(
+        "## 这条系列吃什么\n\n这个系列走**整图基线**：逐镜头写 `workflow` \
+         选一张已验证的图。\n\n| 模式 | 可用 | 可注入参数 |\n|---|---|---|\n",
     );
-    s.push_str("| 模式 | 可用 | 可注入参数 |\n|---|---|---|\n");
-    for (mode, params, verified) in card.modes {
+    for (mode, params, verified) in modes {
         let params = if *verified {
             params
                 .iter()
@@ -692,7 +751,7 @@ fn model_card_md(card: &ModelCard) -> String {
         };
         s.push_str(&format!(
             "| `{}/{}` | {} | {} |\n",
-            card.family,
+            family,
             mode,
             if *verified { "是" } else { "**否**" },
             params
@@ -701,7 +760,7 @@ fn model_card_md(card: &ModelCard) -> String {
 
     // 没被任何已核验模式绑定的参数 = 写了会被静默丢弃的参数。
     let mut supported: Vec<&str> = Vec::new();
-    for (_, params, verified) in card.modes {
+    for (_, params, verified) in modes {
         if *verified {
             for p in *params {
                 if !supported.contains(p) {
@@ -710,43 +769,121 @@ fn model_card_md(card: &ModelCard) -> String {
             }
         }
     }
-    // 「写了会被挡下」的那一类：提交时按能力面对账，直接报 schema_violation。
-    let rejected: Vec<&str> = studio_core::INJECTABLE_PARAMS
-        .iter()
-        .copied()
-        .filter(|p| !supported.contains(p))
-        .collect();
-    if !rejected.is_empty() {
-        s.push_str(&format!(
-            "\n**这条系列不吃、写了会被挡下**：{}。\
-             提交提示词包时会按这张表对账，写了它不吃的参数直接报 \
-             `schema_violation`，不会等到渲染才发现。\n",
-            rejected
-                .iter()
-                .map(|p| format!("`{p}`"))
-                .collect::<Vec<_>>()
-                .join("、")
-        ));
-    }
-    // `references` 是另一类：允许提前写，但当前进不了渲染请求。
-    if !supported.contains(&"references") {
-        s.push_str(
-            "\n`references` 可以照常写——它声明的是这一镜用到哪些资产，\
-             可审计，基线补上图片输入绑定之后会自动生效。\
-             但**现在它进不了渲染请求**，所以跨镜一致性目前只能靠在每一镜的\
-             正向提示词里逐字复用同一段身份锁。\n",
-        );
-    }
-    if card.modes.iter().any(|(_, _, v)| !v) {
+    s.push_str(&rejected_note(&supported));
+    // 声明式字段在整图基线上没有落点，而且不会「以后自动生效」。
+    s.push_str(
+        "\n`head` / `references` / `guides` / `first_frame` / `last_frame` \
+         **只有片段化的系列吃**，写在这个系列的镜头上会被当场挡下。\
+         要挂参考或做镜头接续，把 `core_model_family` 换成片段化的系列；\
+         留在这个系列就只能靠在每一镜的正向提示词里逐字复用同一段身份锁。\n",
+    );
+    if modes.iter().any(|(_, _, v)| !v) {
         s.push_str(
             "\n标着「否」的模式尚未在真机上核验绑定，**不要选它们**——\
              绑错节点会静默产出错的画面，比直接报错更难查。\n",
         );
     }
-    s.push('\n');
-    s.push_str(fill_placeholders(card.prose).trim_end());
-    s.push('\n');
     s
+}
+
+/// 片段化的系列：没有整图基线可选，列的是 head / 参考槽位 / 锚点。
+fn fragments_section(f: &FragmentCard) -> String {
+    let mut s = String::from(
+        "## 这条系列怎么写\n\n这个系列**没有 `workflow` 字段**：图在渲染时按你的声明\
+         现场组装。你写的是「这一镜要什么」——选一个 `head`，配 `references` \
+         与 `guides`——不写「怎么接线」。写了 `workflow` 会被当场挡下。\n\n\
+         ### 逐镜头参数\n\n",
+    );
+    s.push_str(&format!(
+        "{}。\n",
+        f.params
+            .iter()
+            .map(|p| format!("`{p}`"))
+            .collect::<Vec<_>>()
+            .join("、")
+    ));
+    let supported: Vec<&str> = f.params.to_vec();
+    s.push_str(&rejected_note(&supported));
+
+    s.push_str("\n### head：这一镜怎么起幅\n\n| head | 可用 | 用来做什么 | 参考槽位 | 首尾帧 | preview 步数 |\n|---|---|---|---|---|---|\n");
+    for h in f.heads {
+        let refs = if h.references.is_empty() {
+            "—（不接参考）".to_string()
+        } else {
+            h.references
+                .iter()
+                .map(|(kind, max, ok)| {
+                    if *ok {
+                        format!("{kind} × {max}")
+                    } else {
+                        format!("~~{kind} × {max}~~")
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("、")
+        };
+        let frames = if h.frames.is_empty() {
+            "—".to_string()
+        } else {
+            h.frames
+                .iter()
+                .map(|x| format!("`{x}_frame`"))
+                .collect::<Vec<_>>()
+                .join("、")
+        };
+        s.push_str(&format!(
+            "| `{}` | {} | {} | {} | {} | {} |\n",
+            h.id,
+            if h.verified { "是" } else { "**否**" },
+            h.what_for,
+            refs,
+            frames,
+            h.turbo_steps
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "—".into()),
+        ));
+    }
+    s.push_str(
+        "\n划掉的介质说明那条输入通道还没在真机上跑通过一整镜，\
+         写了会被结构化阻塞——不是「以后会生效」，是现在选不了。\n",
+    );
+
+    s.push_str("\n### guides：把素材锚在某一帧\n\n| kind | 可用 | 做什么 |\n|---|---|---|\n");
+    for (kind, ok, what) in f.guides {
+        s.push_str(&format!(
+            "| `{}` | {} | {} |\n",
+            kind,
+            if *ok { "是" } else { "**否**" },
+            what
+        ));
+    }
+    s.push_str(
+        "\n`at_frame` 负数从末尾倒数，`-1` 是最后一帧。\
+         `head: image` 只有首尾两个槽位，锚不了中间帧。\n",
+    );
+    s
+}
+
+/// 「写了会被挡下」的参数——能力卡存在的主要理由。
+fn rejected_note(supported: &[&str]) -> String {
+    let rejected: Vec<&str> = studio_core::INJECTABLE_PARAMS
+        .iter()
+        .copied()
+        .filter(|p| !supported.contains(p))
+        .collect();
+    if rejected.is_empty() {
+        return String::new();
+    }
+    format!(
+        "\n**这条系列不吃、写了会被挡下**：{}。\
+         提交提示词包时会按这张表对账，写了它不吃的参数直接报 \
+         `schema_violation`，不会等到渲染才发现。\n",
+        rejected
+            .iter()
+            .map(|p| format!("`{p}`"))
+            .collect::<Vec<_>>()
+            .join("、")
+    )
 }
 
 fn stage_table() -> String {
@@ -1218,16 +1355,23 @@ mod tests {
         !checklist(stage).is_empty()
     }
 
+    fn workflows_root() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../assets/workflows")
+            .canonicalize()
+            .expect("找不到基线目录")
+    }
+
     /// 能力卡的「可注入参数」是基线的投影。两边对不上，Agent 就会照着
     /// 一张过期的表写提示词，而写错的参数是被**静默丢弃**的。
     #[test]
-    fn model_cards_match_the_verified_baselines() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../assets/workflows")
-            .canonicalize()
-            .expect("找不到基线目录");
+    fn whole_graph_cards_match_the_verified_baselines() {
+        let root = workflows_root();
         for card in MODEL_CARDS.iter() {
-            for (mode, params, verified) in card.modes {
+            let Shape::WholeGraph(modes) = &card.shape else {
+                continue;
+            };
+            for (mode, params, verified) in *modes {
                 let path = root.join(card.family).join(format!("{mode}.json"));
                 let text = std::fs::read_to_string(&path)
                     .unwrap_or_else(|e| panic!("读不到基线 {}：{e}", path.display()));
@@ -1266,10 +1410,120 @@ mod tests {
         }
     }
 
-    /// 能力卡必须把「写了会被挡下」的参数点出来——这是它存在的主要理由。
-    /// 两类要分清：negative 是硬错误，references 是允许提前写但暂不生效。
+    /// 片段化系列的能力卡同理：head、参考上限、锚点种类、核验状态，
+    /// 全都是片段库的投影。片段库一改，这里立刻红。
     #[test]
-    fn minimax_card_separates_rejected_params_from_inert_references() {
+    fn fragment_cards_match_the_real_fragment_library() {
+        let root = workflows_root();
+        for card in MODEL_CARDS.iter() {
+            let Shape::Fragments(f) = &card.shape else {
+                continue;
+            };
+            let dir = root.join(card.family).join("fragments");
+            let meta = |name: &str| -> serde_json::Value {
+                let path = dir.join(format!("{name}.json"));
+                let text = std::fs::read_to_string(&path)
+                    .unwrap_or_else(|e| panic!("读不到片段 {}：{e}", path.display()));
+                serde_json::from_str::<serde_json::Value>(&text).expect("片段不是合法 JSON")
+                    ["_studio"]
+                    .clone()
+            };
+            let verified =
+                |m: &serde_json::Value| m["bindings_verified"].as_bool().unwrap_or(false);
+
+            // 逐镜头参数 = 骨架 ∪ 各 head 的 bindings，去掉 output_prefix。
+            let mut disk_params: Vec<String> = Vec::new();
+            for name in std::iter::once("backbone".to_string())
+                .chain(f.heads.iter().map(|h| format!("head.{}", h.id)))
+            {
+                for k in meta(&name)["bindings"]
+                    .as_object()
+                    .expect("片段缺少 _studio.bindings")
+                    .keys()
+                {
+                    if k != "output_prefix" && !disk_params.contains(k) {
+                        disk_params.push(k.clone());
+                    }
+                }
+            }
+            disk_params.sort();
+            let mut card_params: Vec<String> = f.params.iter().map(|p| p.to_string()).collect();
+            card_params.sort();
+            assert_eq!(
+                card_params, disk_params,
+                "{} 的逐镜头参数与片段库的 bindings 对不上",
+                card.family
+            );
+
+            for h in f.heads {
+                let m = meta(&format!("head.{}", h.id));
+                assert_eq!(verified(&m), h.verified, "head {} 的核验状态对不上", h.id);
+
+                // 参考槽位的上限逐条对，外加「这条介质的输入片段核验了没」。
+                let slots = m["autogrow"].as_object();
+                let mut disk_kinds: Vec<String> = slots
+                    .map(|o| o.keys().filter(|k| *k != "video_audio").cloned().collect())
+                    .unwrap_or_default();
+                disk_kinds.sort();
+                let mut card_kinds: Vec<String> =
+                    h.references.iter().map(|(k, _, _)| k.to_string()).collect();
+                card_kinds.sort();
+                assert_eq!(card_kinds, disk_kinds, "head {} 的参考介质对不上", h.id);
+                for (kind, max, input_ok) in h.references {
+                    let disk_max = slots.unwrap()[*kind]["max"].as_u64().unwrap() as usize;
+                    assert_eq!(disk_max, *max, "head {} 的 {kind} 上限对不上", h.id);
+                    assert_eq!(
+                        verified(&meta(&format!("input.{kind}"))),
+                        *input_ok,
+                        "input.{kind} 的核验状态对不上"
+                    );
+                }
+
+                let mut disk_frames: Vec<String> = m["frames"]
+                    .as_object()
+                    .map(|o| o.keys().cloned().collect())
+                    .unwrap_or_default();
+                disk_frames.sort();
+                let mut card_frames: Vec<String> = h.frames.iter().map(|x| x.to_string()).collect();
+                card_frames.sort();
+                assert_eq!(card_frames, disk_frames, "head {} 的首尾帧槽位对不上", h.id);
+
+                // preview 的 turbo 步数取自叠加层，没核验的当作没有。
+                let overlay = dir.join(format!("overlay.turbo.{}.json", h.id));
+                let disk_steps = std::fs::read_to_string(&overlay).ok().and_then(|t| {
+                    let m: serde_json::Value = serde_json::from_str(&t).ok()?;
+                    let st = &m["_studio"];
+                    verified(st).then(|| {
+                        st["backbone_overrides"]["scheduler.inputs.steps"]
+                            .as_u64()
+                            .expect("叠加层没写 steps") as u32
+                    })
+                });
+                assert_eq!(
+                    disk_steps, h.turbo_steps,
+                    "head {} 的 turbo 步数对不上",
+                    h.id
+                );
+            }
+
+            // 一种锚点能不能用，取决于 AddGuide 那份**和**它要的素材通道两边
+            // 都核验过。clip 就是活例子：AddGuide 的接线验过了，但它要的
+            // 帧序列走 LoadVideo，那条通道还没跑通过一整镜。
+            for (kind, ok, _) in f.guides {
+                let medium = match *kind {
+                    "clip" => "video",
+                    other => other,
+                };
+                let usable = verified(&meta(&format!("guide.{kind}")))
+                    && verified(&meta(&format!("input.{medium}")));
+                assert_eq!(usable, *ok, "guide.{kind} 的可用状态对不上");
+            }
+        }
+    }
+
+    /// 能力卡必须把「写了会被挡下」的参数点出来——这是它存在的主要理由。
+    #[test]
+    fn the_minimax_card_names_the_rejected_params_and_the_shape() {
         let card = MODEL_CARDS
             .iter()
             .find(|c| c.family == "minimax_h3")
@@ -1279,10 +1533,26 @@ mod tests {
         assert!(md.contains("`negative`"), "没有点名 negative");
         assert!(md.contains("schema_violation"), "没说清会当场报错");
         assert!(
-            md.contains("`references` 可以照常写"),
-            "references 是另一类，不该和 negative 混为一谈"
+            md.contains("没有 `workflow` 字段"),
+            "片段化的系列要先说清没有整图基线可选"
         );
-        assert!(md.contains("进不了渲染请求"), "要说清它当前不生效");
+        assert!(
+            md.contains("`reference`") && md.contains("`image`"),
+            "要列出 head"
+        );
+        assert!(md.contains("image × 9"), "要给出参考槽位的上限");
+        assert!(md.contains("~~video × 3~~"), "未核验的介质要划掉");
+    }
+
+    /// 整图基线的系列要说清声明式字段在它上面没有落点——
+    /// 以前这里写的是「可以提前写，以后自动生效」，ADR-0005 之后不成立了。
+    #[test]
+    fn a_whole_graph_card_says_declarative_fields_are_rejected() {
+        let card = MODEL_CARDS.iter().find(|c| c.family == "wan2_2").unwrap();
+        let md = model_card_md(card);
+        assert!(md.contains("整图基线"), "要说清自己是哪一种形状");
+        assert!(md.contains("只有片段化的系列吃"), "{md}");
+        assert!(md.contains("当场挡下"), "{md}");
     }
 
     /// LTX 用的是按秒计的时长参数，写 length_frames 会被丢弃——
