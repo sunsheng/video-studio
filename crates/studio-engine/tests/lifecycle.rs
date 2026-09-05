@@ -3,9 +3,23 @@
 //! 这些用例不需要 GPU、不需要 ComfyUI、不需要 ffmpeg——
 //! 提交给 ComfyUI 之前的每一步都可以在开发环境完整验证。
 
+use studio_core::contract::Outcome;
 use studio_core::contract::{ProjectStatus, WaitingOn};
 use studio_core::{fixtures, StageId};
 use studio_engine::{init_project, Project};
+
+/// 挑这道门上第一个「通过」选项。
+///
+/// 不写死 `"approve"`：选题那道门给的是几个方案各一个通过选项
+/// （id 是 concept_id），门上的选项本来就该随阶段而变。
+fn first_approve(q: &studio_core::contract::Question) -> String {
+    q.options
+        .iter()
+        .find(|o| o.outcome == Outcome::Approve)
+        .unwrap_or_else(|| panic!("{} 的门上没有通过选项", q.stage))
+        .id
+        .clone()
+}
 
 fn new_project() -> (tempfile::TempDir, Project) {
     let dir = tempfile::tempdir().unwrap();
@@ -25,7 +39,7 @@ fn advance(p: &Project, stage: StageId) {
         )
         .unwrap_or_else(|e| panic!("提交 {stage} 失败：{e}"));
     if let Some(q) = env.pending_question {
-        p.answer(&q.question_id, "approve").unwrap();
+        p.answer(&q.question_id, &first_approve(&q)).unwrap();
     }
 }
 
@@ -170,7 +184,7 @@ fn the_revise_round_trip_takes_three_calls() {
     assert_eq!(q.question_id, "script.approval");
 
     // 用户确认，进入分镜
-    let env = p.answer(&q.question_id, "approve").unwrap();
+    let env = p.answer(&q.question_id, &first_approve(&q)).unwrap();
     assert_eq!(env.project.stage, StageId::Storyboard);
     assert_eq!(env.progress.completed, 3);
 }
@@ -271,8 +285,8 @@ fn undo_can_walk_back_past_a_revise() {
             fixtures::confirmation(StageId::Script),
         )
         .unwrap();
-    p.answer(&env.pending_question.unwrap().question_id, "approve")
-        .unwrap();
+    let q = env.pending_question.unwrap();
+    p.answer(&q.question_id, &first_approve(&q)).unwrap();
     assert_eq!(p.status().unwrap().project.stage, StageId::Storyboard);
 
     // 觉得还不如原来那版：退回确认前、提交前、修订前
@@ -402,7 +416,10 @@ fn a_second_session_on_the_same_bundle_is_refused() {
     let _first = Project::open(&root, None).unwrap();
     let e = Project::open(&root, None).unwrap_err();
     assert_eq!(e.code(), "project_busy");
-    assert!(e.remedy().contains("studiod init"));
+    // 补救路径要说清「关掉那个会话」，并把「另开一部作品」推给用户去做——
+    // 不给 Agent 一个它自己就能跑的命令。见 docs/decisions/ADR-0002。
+    assert!(e.remedy().contains("关掉那个会话"), "{}", e.remedy());
+    assert!(!e.remedy().contains("studiod"), "{}", e.remedy());
 }
 
 #[test]
@@ -428,4 +445,107 @@ fn export_refuses_before_post_is_done() {
     let (_d, p) = new_project();
     let e = p.export().unwrap_err();
     assert_eq!(e.code(), "stage_not_ready");
+}
+
+/// 用户在剧本阶段说过的话，到分镜阶段仍然拿得到。
+///
+/// 这是「越用越准」原本缺的那一环：revise 的 message 以前用完即弃，
+/// 同一句话每个阶段都要说一遍。见 `docs/decisions/ADR-0003`。
+#[test]
+fn what_the_user_said_in_one_stage_is_still_there_in_the_next() {
+    let (_d, p) = new_project();
+    advance(&p, StageId::Idea);
+    advance(&p, StageId::Selection);
+
+    // 剧本被打回一次，用户给了具体意见。
+    p.submit_stage(
+        fixtures::outputs(StageId::Script),
+        Some(fixtures::summary(StageId::Script)),
+        fixtures::confirmation(StageId::Script),
+    )
+    .unwrap();
+    p.revise(StageId::Script, "不要固定2秒，要根据镜头内容智能分配")
+        .unwrap();
+    advance(&p, StageId::Script);
+
+    // 到了分镜阶段，那句话还在 next_action 里。
+    let env = p.status().unwrap();
+    assert_eq!(env.project.stage, StageId::Storyboard);
+    let decisions = &env.next_action.as_ref().unwrap().decisions;
+    assert!(
+        decisions
+            .iter()
+            .any(|d| d.detail.contains("不要固定2秒")
+                && d.kind == studio_core::DecisionKind::Rejected),
+        "用户在剧本阶段的原话必须带到下游：{decisions:#?}"
+    );
+    // 选题门上挑的那个方案同样在档案里。
+    assert!(
+        decisions
+            .iter()
+            .any(|d| d.kind == studio_core::DecisionKind::Chose && d.stage == StageId::Selection),
+        "门上选了哪个方案也是「用户要什么」：{decisions:#?}"
+    );
+    // 新的在前。
+    let ats: Vec<&str> = decisions.iter().map(|d| d.at.as_str()).collect();
+    let mut sorted = ats.clone();
+    sorted.sort_unstable_by(|a, b| b.cmp(a));
+    assert_eq!(ats, sorted, "档案按时间倒序");
+}
+
+/// undo 恢复的是阶段产物，不是「用户没说过那句话」。
+#[test]
+fn undo_does_not_erase_what_the_user_said() {
+    let (_d, p) = new_project();
+    advance(&p, StageId::Idea);
+    p.submit_stage(
+        fixtures::outputs(StageId::Selection),
+        Some(fixtures::summary(StageId::Selection)),
+        fixtures::confirmation(StageId::Selection),
+    )
+    .unwrap();
+    p.revise(StageId::Selection, "三个方案都太温吞了，要更冒险的")
+        .unwrap();
+    p.undo().unwrap();
+
+    let before = p.store().decisions(20).unwrap();
+    assert!(
+        before.iter().any(|d| d.detail.contains("太温吞")),
+        "撤销那次修订不等于他改了口味——真要改口味他会再说一句新的：{before:#?}"
+    );
+}
+
+/// 用户在门上选了哪个方案，人可读的那份产物里也要看得见。
+///
+/// bundle 是文档即事实：数据库里记着选了 c2、`stages/selection.json`
+/// 里却什么都没有，等于文档在撒谎。
+#[test]
+fn the_gate_choice_shows_up_in_the_human_readable_stage_file() {
+    let (_d, p) = new_project();
+    advance(&p, StageId::Idea);
+
+    let env = p
+        .submit_stage(
+            fixtures::outputs(StageId::Selection),
+            Some(fixtures::summary(StageId::Selection)),
+            fixtures::confirmation(StageId::Selection),
+        )
+        .unwrap();
+    let q = env.pending_question.unwrap();
+    // 故意不选第一个通过选项：选题门给的是几个方案，用户完全可能挑推荐之外的。
+    let picked = q
+        .options
+        .iter()
+        .filter(|o| o.outcome == Outcome::Approve)
+        .nth(1)
+        .expect("选题门至少要给两个方案")
+        .clone();
+    p.answer(&q.question_id, &picked.id).unwrap();
+
+    let path = p.bundle().root().join("stages/selection.json");
+    let text = std::fs::read_to_string(&path).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let choice = &v["selection"]["_gate_choice"];
+    assert_eq!(choice["option_id"], picked.id, "落盘的那份没记下用户的选择");
+    assert_eq!(choice["label"], picked.label);
 }

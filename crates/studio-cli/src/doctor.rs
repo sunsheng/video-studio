@@ -101,6 +101,8 @@ pub fn run(program_dir: Option<&std::path::Path>, bundle: Option<&std::path::Pat
         });
     }
 
+    checks.push(check_image_baselines(program_dir));
+
     if let Some(root) = bundle {
         checks.push(check_codex_config(root));
     }
@@ -116,6 +118,62 @@ pub fn run(program_dir: Option<&std::path::Path>, bundle: Option<&std::path::Pat
     }
 }
 
+/// 卡片能不能生成，取决于 `z_image` 的两条基线在不在、核验过没有。
+///
+/// 这一项**永远不是 Fail**：视觉资产阶段可以只提交计划，前六个阶段更是
+/// 完全不受影响。它存在的意义是把「计划能提交」和「图能生出来」分开说清楚，
+/// 免得有人看着一份通过校验的资产计划，以为卡片已经有了。
+fn check_image_baselines(program_dir: Option<&std::path::Path>) -> Check {
+    let dir = program_dir
+        .map(|p| p.join("assets/workflows/z_image"))
+        .unwrap_or_else(|| std::path::PathBuf::from("assets/workflows/z_image"));
+
+    let mut missing = Vec::new();
+    let mut unverified = Vec::new();
+    for name in ["t2i", "edit"] {
+        let path = dir.join(format!("{name}.json"));
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            missing.push(name);
+            continue;
+        };
+        let verified = serde_json::from_str::<serde_json::Value>(&text)
+            .ok()
+            .and_then(|v| v.get("_studio")?.get("bindings_verified")?.as_bool())
+            .unwrap_or(false);
+        if !verified {
+            unverified.push(name);
+        }
+    }
+
+    if missing.is_empty() && unverified.is_empty() {
+        return Check {
+            name: "卡片生成基线".into(),
+            level: Level::Ok,
+            detail: "z_image 的 t2i 与 edit 都在，且已核验".into(),
+            remedy: None,
+        };
+    }
+
+    let mut detail = Vec::new();
+    if !missing.is_empty() {
+        detail.push(format!("缺 {}", missing.join(" 与 ")));
+    }
+    if !unverified.is_empty() {
+        detail.push(format!("{} 未核验", unverified.join(" 与 ")));
+    }
+    Check {
+        name: "卡片生成基线未就绪".into(),
+        level: Level::Warn,
+        detail: detail.join("；"),
+        remedy: Some(format!(
+            "角色卡/场景卡现在只能提交**计划**，生不出图——计划里的 status 会一直是 planned。\n  \
+             其余阶段完全不受影响。要真出图，在装了 ComfyUI 的机器上按\n    {}/README.md\n  \
+             导出两条基线，核验过再把 bindings_verified 改成 true。",
+            dir.display()
+        )),
+    }
+}
+
 /// 换机器或换安装位置之后，`.codex/config.toml` 里的路径会失效。
 fn check_codex_config(root: &std::path::Path) -> Check {
     let path = root.join(".codex/config.toml");
@@ -124,7 +182,7 @@ fn check_codex_config(root: &std::path::Path) -> Check {
             name: "作品的 Codex 配置缺失".into(),
             level: Level::Fail,
             detail: format!("{} 不存在", path.display()),
-            remedy: Some("跑 `studiod doctor --fix` 重新生成。".into()),
+            remedy: Some("跑 `studio-cli doctor --fix` 重新生成。".into()),
         };
     };
     // 路径可能是双引号串也可能是单引号字面量串（Windows 路径用后者）。
@@ -147,7 +205,7 @@ fn check_codex_config(root: &std::path::Path) -> Check {
             level: Level::Fail,
             detail: format!("配置里写的是 {p}"),
             remedy: Some(
-                "这部作品是在别的机器或别的安装位置建的。跑 `studiod doctor --fix` \
+                "这部作品是在别的机器或别的安装位置建的。跑 `studio-cli doctor --fix` \
                  把它改成当前程序的路径——bundle 的其它内容都是相对路径，可以照常用。"
                     .into(),
             ),
@@ -156,7 +214,7 @@ fn check_codex_config(root: &std::path::Path) -> Check {
             name: "作品的 Codex 配置不完整".into(),
             level: Level::Fail,
             detail: "找不到 command 行".into(),
-            remedy: Some("跑 `studiod doctor --fix` 重新生成。".into()),
+            remedy: Some("跑 `studio-cli doctor --fix` 重新生成。".into()),
         },
     }
 }
@@ -212,4 +270,54 @@ pub fn render(report: &Report) -> String {
         s.push_str("结论：全流程就绪。\n");
     }
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn baseline(dir: &std::path::Path, name: &str, verified: bool) {
+        std::fs::create_dir_all(dir).unwrap();
+        let mut f = std::fs::File::create(dir.join(format!("{name}.json"))).unwrap();
+        write!(
+            f,
+            r#"{{ "_studio": {{ "bindings": {{}}, "bindings_verified": {verified} }} }}"#
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_missing_image_baseline_is_a_warning_not_a_failure() {
+        let tmp = tempfile::tempdir().unwrap();
+        let c = check_image_baselines(Some(tmp.path()));
+        assert_eq!(
+            c.level,
+            Level::Warn,
+            "卡片生不出来不该挡住前六个阶段：{c:?}"
+        );
+        assert!(c.detail.contains("t2i"));
+        // 说清「计划能提交」和「图能生出来」是两回事。
+        assert!(c.remedy.unwrap().contains("planned"));
+    }
+
+    #[test]
+    fn an_unverified_baseline_still_counts_as_not_ready() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("assets/workflows/z_image");
+        baseline(&dir, "t2i", true);
+        baseline(&dir, "edit", false);
+        let c = check_image_baselines(Some(tmp.path()));
+        assert_eq!(c.level, Level::Warn);
+        assert!(c.detail.contains("edit 未核验"), "{}", c.detail);
+    }
+
+    #[test]
+    fn both_verified_baselines_report_ready() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("assets/workflows/z_image");
+        baseline(&dir, "t2i", true);
+        baseline(&dir, "edit", true);
+        assert_eq!(check_image_baselines(Some(tmp.path())).level, Level::Ok);
+    }
 }

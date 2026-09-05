@@ -6,19 +6,26 @@
 //!
 //! 上层 crate 负责把这里的决策落到 SQLite 与文件系统。
 
+pub mod capability;
 pub mod contract;
 pub mod error;
 #[cfg(any(test, feature = "fixtures"))]
 pub mod fixtures;
+pub mod lexicon;
+pub mod quality;
+pub mod rubric;
 pub mod schema;
 pub mod stage;
 pub mod state;
 
+pub use capability::{CapabilitySet, WorkflowCapability, INJECTABLE_PARAMS};
 pub use contract::{
-    ActionKind, AnswerOption, Blocked, Confirmation, Envelope, Event, NextAction, Outcome,
-    Progress, ProjectInfo, ProjectStatus, Question, SelectionType, WaitingOn,
+    ActionKind, AnswerOption, Blocked, Confirmation, Decision, DecisionKind, Envelope, Event,
+    NextAction, Outcome, Progress, ProjectInfo, ProjectStatus, Question, SelectionType, WaitingOn,
 };
 pub use error::{Result, StudioError, Violation};
+pub use quality::{Finding, Metric, Severity};
+pub use rubric::{RubricItem, SelfReview};
 pub use stage::{Capability, StageId, StageKind, StageSpec, STAGE_GRAPH};
 pub use state::{Approved, AwaitingConfirmation, Draft, LoadedStage, Stage, StageState, Submitted};
 

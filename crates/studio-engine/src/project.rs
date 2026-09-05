@@ -201,6 +201,14 @@ impl Project {
 
         let (stage, status, waiting_on, next_action) = match (&pending, current) {
             (Some(q), _) => (q.stage, ProjectStatus::Active, WaitingOn::User, None),
+            // 十个阶段都通过了，但验收只做了技术那一半：片子是完整的，
+            // 没人说过它好不好。差这份记录就不算收尾。
+            (None, None) if self.content_review_missing()? => (
+                StageId::Review,
+                ProjectStatus::Active,
+                WaitingOn::Agent,
+                Some(self.self_review_action()?),
+            ),
             (None, None) => (
                 StageId::Review,
                 ProjectStatus::Completed,
@@ -253,6 +261,29 @@ impl Project {
             inputs: self.inputs_for(stage)?,
             required_outputs: vec![stage.output_key().to_string()],
             schema_ref: stage.to_string(),
+            decisions: self.store.decisions(DECISION_LIMIT)?,
+        })
+    }
+
+    /// 内容自评要照着技术验收的实测结果写，所以输入里得带上 review 自己
+    /// 的产物——`inputs_for` 只给前置阶段，这里补一格。
+    fn self_review_action(&self) -> Result<NextAction> {
+        let mut inputs = self.inputs_for(StageId::Review)?;
+        let loaded = self.store.load_stage(StageId::Review)?;
+        if let (Some(map), Some(o)) = (inputs.as_object_mut(), loaded_outputs(&loaded)) {
+            if let Some(v) = o.get("review") {
+                map.insert("review".to_string(), v.clone());
+            }
+        }
+        Ok(NextAction {
+            kind: ActionKind::SelfReview,
+            stage: StageId::Review,
+            capability: StageId::Review.capability(),
+            gate: None,
+            inputs,
+            required_outputs: vec!["content_review".to_string()],
+            schema_ref: "review".to_string(),
+            decisions: self.store.decisions(DECISION_LIMIT)?,
         })
     }
 
@@ -265,11 +296,21 @@ impl Project {
             inputs: self.inputs_for(stage)?,
             required_outputs: vec![stage.output_key().to_string()],
             schema_ref: stage.to_string(),
+            // 等控制面跑的时候 Agent 不写东西，档案给了也没用。
+            decisions: Vec::new(),
         })
     }
 
     pub fn schema_of(&self, stage: StageId) -> Value {
-        schema::stage_schema_document(stage)
+        let mut doc = schema::stage_schema_document(stage);
+        // 提示词包的 workflow 取值随机器而变：只给出这台机器上真正能跑的
+        // 那几条，而不是让 Agent 写完一整包才在提交时被告知基线没核验。
+        if stage == StageId::PromptPack {
+            if let Some(caps) = self.executor.capabilities() {
+                caps.narrow_schema(&mut doc);
+            }
+        }
+        doc
     }
 
     pub fn stage_output(&self, stage: StageId) -> Result<Value> {
@@ -323,6 +364,19 @@ impl Project {
         };
 
         schema::validate(stage, &outputs)?;
+        // 形状对了还不够：还要对得上这台机器上基线的能力面。写了基线没有
+        // 绑定的参数会被静默跳过——不报错、不留痕，只让画面莫名其妙地不对。
+        // 这道关必须在 prompt_pack 那道门之前，因为门一过就开始烧 GPU。
+        if stage == StageId::PromptPack {
+            if let Some(caps) = self.executor.capabilities() {
+                caps.check_prompt_pack(&outputs)?;
+            }
+        }
+        // 形状对、参数对，内容仍然可以是空的：`three_facts: ["好看","很美","有感觉"]`
+        // 完全合规。质量闸挡的是这一类——只挡机械可判的，人的判断留给确认门。
+        studio_core::quality::gate(stage, &outputs)?;
+        // 身份锁要跨阶段比对，得先把已通过的阶段捞出来。
+        self.check_identity_lock_across_stages(stage, &outputs)?;
         // 先校验再压栈：没通过校验的调用不该占掉一层撤销。
         self.store.take_snapshot(&format!("提交 {stage} 之前"))?;
         let submitted = draft.submit(outputs, confirmation)?;
@@ -356,6 +410,50 @@ impl Project {
                 .append_event(stage, "gate_opened", &q.prompt, None)?;
         }
         self.status()
+    }
+
+    /// 身份锁必须在分镜、视觉资产、提示词包三处逐字相同。
+    ///
+    /// 单看一个阶段是查不出漂移的——三处各写各的，每一处单独看都合规。
+    /// 所以这一条要把已通过的阶段捞出来一起比。
+    fn check_identity_lock_across_stages(&self, stage: StageId, outputs: &Outputs) -> Result<()> {
+        const LOCKED: [StageId; 3] = [
+            StageId::Storyboard,
+            StageId::VisualAssets,
+            StageId::PromptPack,
+        ];
+        if !LOCKED.contains(&stage) {
+            return Ok(());
+        }
+        let mut all = Vec::new();
+        for s in LOCKED {
+            if s == stage {
+                all.push((s, outputs.clone()));
+                continue;
+            }
+            let loaded = self.store.load_stage(s)?;
+            if loaded.state() != StageState::Approved {
+                continue;
+            }
+            if let Some(o) = loaded_outputs(&loaded) {
+                all.push((s, o.clone()));
+            }
+        }
+        let findings = studio_core::quality::check_across_stages(&all);
+        let blocking: Vec<studio_core::Violation> = findings
+            .iter()
+            .filter(|f| f.severity == studio_core::Severity::Blocking)
+            .map(|f| {
+                studio_core::Violation::new(f.path.clone(), format!("[{}] {}", f.rule, f.message))
+            })
+            .collect();
+        if blocking.is_empty() {
+            return Ok(());
+        }
+        Err(StudioError::QualityViolation {
+            stage,
+            findings: blocking,
+        })
     }
 
     /// 应答确认门。
@@ -409,24 +507,131 @@ impl Project {
                         detail: format!("门挂在 {} 上，但该阶段并非等待确认", q.stage),
                     });
                 };
+                let label = q
+                    .options
+                    .iter()
+                    .find(|o| o.id == answer)
+                    .map(|o| o.label.clone())
+                    .unwrap_or_else(|| answer.to_string());
                 let approved = awaiting.approve(answer)?;
+                // 门上选了哪一项**是作品状态的一部分**，不只是一条日志：
+                // 一道门给出多个通过选项时（例如让用户从几个方案里挑一个），
+                // 下游必须知道用户挑的是哪个。写进产物，`next_action.inputs`
+                // 就会自动带给下游阶段，不必让 Agent 回头翻 timeline。
+                let outputs = approved.outputs().map(|o| {
+                    let mut o = o.clone();
+                    if let Some(v) = o.get_mut(q.stage.output_key()) {
+                        if let Some(obj) = v.as_object_mut() {
+                            obj.insert(
+                                "_gate_choice".to_string(),
+                                serde_json::json!({
+                                    "option_id": answer,
+                                    "label": label,
+                                    "question_id": q.question_id,
+                                }),
+                            );
+                        }
+                    }
+                    o
+                });
                 self.store.save_stage(
                     q.stage,
                     StageState::Approved,
                     approved.attempt(),
-                    approved.outputs(),
+                    outputs.as_ref(),
                     self.store.stage_summary(q.stage)?.as_deref(),
                     None,
                 )?;
+                // 产物刚被改过（多了 _gate_choice），人可读的那份也要跟上，
+                // 否则 stages/<stage>.json 里看不到用户到底选了哪个方案——
+                // bundle 是文档即事实，两份对不上就等于文档在撒谎。
+                self.mirror_stage_file(q.stage, outputs.as_ref())?;
                 self.store.append_event(
                     q.stage,
                     "approved",
-                    &format!("已确认 {}", q.question_id),
+                    &format!("已确认 {}：选择了「{label}」", q.question_id),
                     None,
                 )?;
+                // 门上选了哪一项也是「用户要什么」的一部分，进决定档案。
+                self.store
+                    .record_decision(q.stage, studio_core::DecisionKind::Chose, &label)?;
                 self.status()
             }
         }
+    }
+
+    /// 内容自评：验收的另一半。
+    ///
+    /// 技术验收由控制面做（时长、画幅、镜头数、音轨，全部 ffprobe 实测），
+    /// 它证明片子是**完整的**，不证明它**好看**。这个方法收的是后者。
+    ///
+    /// 它**不改 `review.passed`**：片子已经出来了，内容评价改变不了它是否
+    /// 完整。它改变的是这次交付有没有留下一份「照自己定的标准打了几分」
+    /// 的记录——没有这份记录，作品就不算收尾。
+    pub fn self_review(&self, review: studio_core::SelfReview) -> Result<Envelope> {
+        let loaded = self.store.load_stage(StageId::Review)?;
+        if loaded.state() != StageState::Approved {
+            return Err(StudioError::StageNotReady {
+                stage: StageId::Review,
+                blocked_on: self.current_stage()?.unwrap_or(StageId::Review),
+            });
+        }
+        let attempt = match &loaded {
+            LoadedStage::Approved(a) => a.attempt(),
+            _ => 1,
+        };
+        let mut outputs = loaded_outputs(&loaded)
+            .cloned()
+            .ok_or_else(|| StudioError::internal("验收阶段没有产物"))?;
+
+        // 时间点要落在成片里，所以得先拿到实测时长。
+        let post = self.store.load_stage(StageId::Post)?;
+        let duration = loaded_outputs(&post)
+            .and_then(|o| o["post"]["duration_seconds"].as_f64())
+            .ok_or_else(|| StudioError::internal("后期结果里没有实测时长，无法校验自评的时间点"))?;
+        studio_core::rubric::validate(&review, duration)?;
+
+        let (met, partial, not_met) = studio_core::rubric::tally(&review);
+        if let Some(v) = outputs.get_mut("review") {
+            if let Some(obj) = v.as_object_mut() {
+                obj.insert("content_review".to_string(), review.to_json());
+            }
+        }
+        // attempt 照旧：这次写的是内容自评，不是重跑一遍验收。
+        // 写死 1 会抹掉重试过几次的事实，后面的 retry / undo 还可能撞上
+        // 一个已经用过的编号。
+        self.store.save_stage(
+            StageId::Review,
+            StageState::Approved,
+            attempt,
+            Some(&outputs),
+            self.store.stage_summary(StageId::Review)?.as_deref(),
+            None,
+        )?;
+        // 人可读的那份也要跟上，否则打包出去的 bundle 里 stages/review.json
+        // 仍然没有 content_review，看的人会以为这份自评根本没交。
+        self.mirror_stage_file(StageId::Review, Some(&outputs))?;
+        self.store.append_event(
+            StageId::Review,
+            "content_reviewed",
+            &format!(
+                "内容自评：{met} 条达成、{partial} 条部分达成、{not_met} 条未达成。{}",
+                review.summary
+            ),
+            None,
+        )?;
+        self.status()
+    }
+
+    /// 内容自评还没交。作品因此还没收尾。
+    fn content_review_missing(&self) -> Result<bool> {
+        let loaded = self.store.load_stage(StageId::Review)?;
+        if loaded.state() != StageState::Approved {
+            return Ok(false);
+        }
+        Ok(loaded_outputs(&loaded)
+            .map(|o| o["review"].get("content_review").is_none())
+            .unwrap_or(false))
     }
 
     /// 修订某个阶段：回到草稿，等待重新提交。
@@ -477,6 +682,10 @@ impl Project {
             None,
         )?;
         self.store.append_event(stage, "revised", message, None)?;
+        // 用户的原话逐字进档案：他在这个阶段说过的话，到下游阶段仍然有效。
+        // 见 docs/decisions/ADR-0003。
+        self.store
+            .record_decision(stage, studio_core::DecisionKind::Rejected, message)?;
         self.rewind_after(stage)?;
         self.status()
     }
@@ -764,6 +973,10 @@ impl Project {
 }
 
 const STAGE_TOTAL: usize = 10;
+
+/// 回给 Agent 的决定档案条数上限。默认注入的东西必须有硬上限——
+/// 整套架构的原则是渐进披露，见 `docs/decisions/ADR-0003`。
+const DECISION_LIMIT: usize = 20;
 
 fn loaded_outputs(l: &LoadedStage) -> Option<&Outputs> {
     match l {

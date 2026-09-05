@@ -5,10 +5,24 @@
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use studio_core::contract::Outcome;
 use studio_core::contract::{ProjectStatus, WaitingOn};
 use studio_core::{fixtures, Outputs, Result, StageId, StudioError};
 use studio_engine::executor::{ExecContext, StageExecutor};
 use studio_engine::{init_project, Project};
+
+/// 挑这道门上第一个「通过」选项。
+///
+/// 不写死 `"approve"`：选题那道门给的是几个方案各一个通过选项
+/// （id 是 concept_id），门上的选项本来就该随阶段而变。
+fn first_approve(q: &studio_core::contract::Question) -> String {
+    q.options
+        .iter()
+        .find(|o| o.outcome == Outcome::Approve)
+        .unwrap_or_else(|| panic!("{} 的门上没有通过选项", q.stage))
+        .id
+        .clone()
+}
 
 fn submit_through_prompt_pack(p: &Project) {
     for s in [
@@ -27,7 +41,7 @@ fn submit_through_prompt_pack(p: &Project) {
             )
             .unwrap();
         if let Some(q) = env.pending_question {
-            p.answer(&q.question_id, "approve").unwrap();
+            p.answer(&q.question_id, &first_approve(&q)).unwrap();
         }
     }
 }
@@ -52,7 +66,16 @@ impl StageExecutor for Fake {
             ctx.inputs.get("prompt_pack").is_some(),
             "{stage} 应当拿得到提示词包"
         );
-        Ok(fixtures::outputs(stage))
+        let mut out = fixtures::outputs(stage);
+        // 控制面只做技术验收；内容自评是事后由 Agent 用 self_review 补的，
+        // 执行器永远不产出它。样例里带着它是因为样例描述的是**做完之后**
+        // 的验收产物。
+        if stage == StageId::Review {
+            if let Some(v) = out.get_mut("review").and_then(|v| v.as_object_mut()) {
+                v.remove("content_review");
+            }
+        }
+        Ok(out)
     }
 }
 
@@ -100,8 +123,14 @@ fn approve_preview_gate(p: &Project) {
             || e.blocked_by.is_some()
     });
     if let Some(q) = env.pending_question {
-        p.answer(&q.question_id, "approve").unwrap();
+        p.answer(&q.question_id, &first_approve(&q)).unwrap();
     }
+}
+
+/// 一份合规的内容自评：五个维度各一条，每条带时间点和证据。
+fn self_review() -> studio_core::SelfReview {
+    let review = fixtures::outputs(StageId::Review);
+    serde_json::from_value(review["review"]["content_review"].clone()).unwrap()
 }
 
 #[test]
@@ -129,7 +158,29 @@ fn the_control_plane_runs_render_post_review_on_its_own() {
         assert!(env.pending_question.is_none());
     }
 
-    let env = poll_until(&p, 10, |e| e.project.status == ProjectStatus::Completed);
+    // 十个阶段跑完之后作品还没收尾：技术验收出了，内容自评还没交。
+    let env = poll_until(&p, 10, |e| e.progress.completed == 10);
+    assert_eq!(env.progress.completed, 10);
+    assert_eq!(
+        env.next_action.as_ref().map(|a| a.kind),
+        Some(studio_core::contract::ActionKind::SelfReview),
+        "技术验收只证明片子是完整的，还差「它好不好看」那一半"
+    );
+    assert_eq!(env.waiting_on, WaitingOn::Agent);
+
+    let env = p.self_review(self_review()).unwrap();
+    // 落盘的那份也要有：打包出去的 bundle 里 stages/review.json 没有
+    // content_review，看的人会以为这份自评根本没交。
+    let text = std::fs::read_to_string(p.bundle().root().join("stages/review.json")).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert!(
+        v["review"]["content_review"]["items"]
+            .as_array()
+            .unwrap()
+            .len()
+            == 5,
+        "人可读的那份没跟上：{text}"
+    );
     assert_eq!(
         env.project.status,
         ProjectStatus::Completed,
@@ -307,7 +358,16 @@ impl StageExecutor for SlowExecutor {
             }
             std::thread::sleep(Duration::from_millis(5));
         }
-        Ok(fixtures::outputs(stage))
+        let mut out = fixtures::outputs(stage);
+        // 控制面只做技术验收；内容自评是事后由 Agent 用 self_review 补的，
+        // 执行器永远不产出它。样例里带着它是因为样例描述的是**做完之后**
+        // 的验收产物。
+        if stage == StageId::Review {
+            if let Some(v) = out.get_mut("review").and_then(|v| v.as_object_mut()) {
+                v.remove("content_review");
+            }
+        }
+        Ok(out)
     }
 }
 
@@ -401,22 +461,32 @@ fn retry_stage_stops_an_in_flight_worker_before_retrying() {
 /// 那套「退回草稿、下游全部退回未执行」的逻辑。
 #[test]
 fn retry_stage_clears_a_recorded_failure_and_reruns_it() {
-    let (_d, p, _) = project_at_render(Some(StageId::Render));
+    let (_d, p, calls) = project_at_render(Some(StageId::Render));
     let env = poll_until(&p, 10, |e| e.blocked_by.is_some());
     assert_eq!(env.blocked_by.unwrap().code, "comfy_unavailable");
+    let before = calls.load(Ordering::SeqCst);
 
-    let env = p.retry_stage(StageId::Render).unwrap();
-    assert!(env.blocked_by.is_none(), "retry_stage 之后阻塞应当先解除");
+    p.retry_stage(StageId::Render).unwrap();
 
     // 这个假执行器每次都会失败在 Render，所以会再次卡住——这里只
     // 关心「清掉了上一次记录、确实又跑了一次」，不是「这次会成功」。
-    let before = p
+    //
+    // 不断言 retry_stage 返回的那个信封 blocked_by 为空：它清完记录就把
+    // worker 拉起来了，而这个执行器是立刻失败的，新的失败完全可能在
+    // 信封读取之前就已经记上——那不是 bug，是真的又失败了一次。
+    // 可靠的证据是「执行器被再调用了一次」和时间线上的那条 retried。
+    poll_until(&p, 10, |_| calls.load(Ordering::SeqCst) > before);
+    assert!(
+        calls.load(Ordering::SeqCst) > before,
+        "retry_stage 应当让执行器再跑一次"
+    );
+    let retried = p
         .timeline(200)
         .unwrap()
         .iter()
         .filter(|e| e.kind == "retried")
         .count();
-    assert_eq!(before, 1, "retry_stage 应当留一条可审计的时间线记录");
+    assert_eq!(retried, 1, "retry_stage 应当留一条可审计的时间线记录");
 }
 
 /// `studio.comfy.exclude_node` 排除的节点必须真的从执行器看到的

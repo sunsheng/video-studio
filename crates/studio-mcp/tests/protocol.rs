@@ -66,9 +66,19 @@ impl Harness {
         assert!(!err, "提交 {stage} 失败：{env}");
         if let Some(q) = env["pending_question"].as_object() {
             let qid = q["question_id"].as_str().unwrap().to_string();
+            // 不写死 "approve"：选题那道门的通过选项是几个方案各一个（id 是 concept_id）。
+            let answer = q["options"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|o| o["outcome"] == "approve")
+                .unwrap_or_else(|| panic!("{stage} 的门上没有通过选项"))["id"]
+                .as_str()
+                .unwrap()
+                .to_string();
             let (_, err) = self.call(
                 "studio.answer",
-                json!({ "question_id": qid, "answer": "approve" }),
+                json!({ "question_id": qid, "answer": answer }),
             );
             assert!(!err, "确认 {stage} 失败");
         }
@@ -95,11 +105,11 @@ fn initialize_falls_back_for_an_unknown_version() {
 }
 
 #[test]
-fn tools_list_exposes_exactly_eleven_tools_without_run_id() {
+fn tools_list_exposes_exactly_twelve_tools_without_run_id() {
     let mut h = Harness::new();
     let resp = h.rpc("tools/list", json!({}));
     let tools = resp["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 11);
+    assert_eq!(tools.len(), 12);
     for t in tools {
         let name = t["name"].as_str().unwrap();
         assert!(name.starts_with("studio."));
@@ -251,7 +261,10 @@ fn the_revise_round_trip_over_mcp_is_three_calls() {
 fn errors_come_back_as_an_envelope_with_a_remedy() {
     let mut h = Harness::new();
     let mut bad = fixtures::outputs(StageId::Idea);
-    bad["brief"].as_object_mut().unwrap().remove("story_beats");
+    bad["brief"]["concepts"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("story_beats");
 
     let (env, err) = h.call("studio.submit_stage", json!({ "outputs": bad }));
     assert!(err, "schema 不合规必须报错");
@@ -260,7 +273,7 @@ fn errors_come_back_as_an_envelope_with_a_remedy() {
     assert!(blocked["message"]
         .as_str()
         .unwrap()
-        .contains("brief.story_beats"));
+        .contains("brief.concepts[0].story_beats"));
     let remedy = blocked["remedy"].as_str().unwrap();
     assert!(!remedy.is_empty(), "blocked_by 必须带 remedy");
     assert!(
@@ -393,5 +406,54 @@ fn a_directory_that_is_not_a_project_explains_itself() {
     assert!(v["result"]["isError"].as_bool().unwrap());
     let blocked = &v["result"]["structuredContent"]["blocked_by"];
     assert_eq!(blocked["code"], "not_a_project");
-    assert!(blocked["remedy"].as_str().unwrap().contains("studiod init"));
+    // 这条 remedy 会原样进 Agent 的上下文，所以不提二进制名，
+    // 而是把「新建作品」这个动作推给用户。见 docs/decisions/ADR-0002。
+    let remedy = blocked["remedy"].as_str().unwrap();
+    assert!(remedy.contains("用户"), "{remedy}");
+    assert!(!remedy.contains("studiod"), "{remedy}");
+}
+
+/// 内容自评走的是同一条协议，不是内部捷径。
+///
+/// 这里不跑到 review（那要 GPU 和 ffmpeg），只验协议面：工具在册、
+/// schema 把五个维度和时间点写清楚了、还没到验收就调会被结构化拒绝。
+#[test]
+fn self_review_is_on_the_tool_surface_with_the_rubric_spelled_out() {
+    let mut h = Harness::new();
+    let resp = h.rpc("tools/list", json!({}));
+    let tools = resp["result"]["tools"].as_array().unwrap();
+    let t = tools
+        .iter()
+        .find(|t| t["name"] == "studio.self_review")
+        .expect("内容自评必须在工具面上——不在工具面上的能力等于不存在");
+
+    let items = &t["inputSchema"]["properties"]["items"];
+    assert_eq!(items["minItems"], 5, "五个维度一个都不能少");
+    let criteria = items["items"]["properties"]["criterion"]["enum"]
+        .as_array()
+        .unwrap();
+    assert_eq!(criteria.len(), 5);
+    assert!(criteria.iter().any(|c| c == "hook"));
+    assert!(items["items"]["required"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|r| r == "at_seconds"));
+}
+
+#[test]
+fn self_review_before_the_film_exists_is_refused_with_a_remedy() {
+    let mut h = Harness::new();
+    let (env, err) = h.call(
+        "studio.self_review",
+        json!({
+            "items": [{ "criterion": "hook", "verdict": "met",
+                        "at_seconds": 0.6, "evidence": "还没有片子可看，这条只是占位用的文字" }],
+            "summary": "还没有片子"
+        }),
+    );
+    assert!(err, "验收还没做，内容自评无从谈起");
+    let blocked = &env["blocked_by"];
+    assert_eq!(blocked["code"], "stage_not_ready");
+    assert!(!blocked["remedy"].as_str().unwrap().is_empty());
 }

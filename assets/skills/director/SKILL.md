@@ -18,6 +18,19 @@ description: 把已确认剧本转成逐镜头分镜，定义景别、构图、�
 - 锁定角色连续性：外观、服装、机位签名，逐镜保持一致。
 - 安全约束写进分镜本身，而不是留给后面的阶段补救。
 
+## 方法
+
+职责说的是**交什么**，下面这几份说的是**怎么想**——什么算好、怎么避开已知的坑、写好的长什么样。动手之前读，别凭感觉写。
+
+- `.agents/doctrine/camera/grammar.md`
+- `.agents/doctrine/camera/blocking.md`
+- `.agents/doctrine/camera/lighting.md`
+- `.agents/doctrine/consistency/bible.md`
+- `.agents/doctrine/audio/design.md`
+- `.agents/doctrine/exemplars/storyboard.md`
+
+这些文件就在这部作品的目录里，用你的文件读取工具直接读——路径照抄，不要凭印象猜。（`.studio/` 是控制面私有的，那个不要碰。）
+
 ## 输入输出
 
 本阶段的产物放在 `outputs` 的顶层键 `storyboard` 下。**提交前先调 `studio.schema("storyboard")`** 取回完整契约，不要凭印象填字段。必填项是：
@@ -40,6 +53,18 @@ description: 把已确认剧本转成逐镜头分镜，定义景别、构图、�
 
 任何工具返回的 `blocked_by` 都带着 `remedy`，照它做。schema 不合规时 `message` 会精确指到出错的字段路径，例如 `script.story_arc[1].duration_seconds`。
 
+## 提交前自检
+
+逐条过。过不了就别提交——退回来重做比往下走便宜得多。
+
+- [ ] 每镜说得出 shot_function，说不出就删掉这一镜
+- [ ] 每镜三条物理事实齐全，且都是拍得出来的
+- [ ] 每镜只有一个主运镜，且落在受控词表里
+- [ ] 镜头时长与剧本各拍对齐，总和一致
+- [ ] character_lock.identity_lock 一次写定：年龄、发型、上衣、下装、鞋、随身物都在里面
+- [ ] 角色外观串逐镜逐字相同（复制粘贴，不要复述）
+- [ ] 每镜的 audio 都写了，没有留空
+
 ## 注意
 
 - 镜头时长必须与剧本各拍对齐；改了时长就要回到剧本阶段改。
@@ -59,3 +84,4 @@ description: 把已确认剧本转成逐镜头分镜，定义景别、构图、�
 - `studio.export`
 - `studio.comfy.exclude_node`
 - `studio.retry_stage`
+- `studio.self_review`

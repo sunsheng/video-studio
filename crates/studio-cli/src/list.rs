@@ -77,7 +77,7 @@ fn read(dir: &Path) -> Entry {
                 stage: "-".into(),
                 status: "打不开".into(),
                 completed: 0,
-                total: 9,
+                total: StageId::all().count(),
                 updated_at: None,
                 problem: Some(format!("{} —— {}", e.message(), e.remedy())),
             };
@@ -130,7 +130,7 @@ fn read(dir: &Path) -> Entry {
         },
         status,
         completed,
-        total: 9,
+        total: StageId::all().count(),
         updated_at,
         problem: None,
     }

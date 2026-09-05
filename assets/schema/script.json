@@ -11,6 +11,11 @@
         "audio_policy": {
           "description": "音频策略：原生音频优先、外部音乐是否禁用、降级条件"
         },
+        "hook_at_seconds": {
+          "description": "钩子在第几秒成立。短视频里这个数越小越好，超过 3 秒基本等于没有钩子",
+          "minimum": 0.0,
+          "type": "number"
+        },
         "language": {
           "description": "口播语言；无口播填 none",
           "type": "string"
@@ -90,6 +95,18 @@
                 "description": "稳定标识，例如 beat_01",
                 "type": "string"
               },
+              "beat_type": {
+                "description": "这一拍在结构里的位置。短视频的骨架是hook（勾住）→ setup（交代）→ develop（推进）→ turn（转折）→ payoff（兑现）→ resolve（收束），不必每种都有，但每一拍都要说清自己是哪一种",
+                "enum": [
+                  "hook",
+                  "setup",
+                  "develop",
+                  "turn",
+                  "payoff",
+                  "resolve"
+                ],
+                "type": "string"
+              },
               "duration_seconds": {
                 "description": "时长（秒）",
                 "minimum": 0.1,
@@ -116,6 +133,7 @@
             },
             "required": [
               "beat_id",
+              "beat_type",
               "start",
               "end",
               "duration_seconds",

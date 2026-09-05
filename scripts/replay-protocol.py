@@ -78,15 +78,18 @@ def main() -> int:
             if err:
                 print(f"确认 {stage} 失败：{json.dumps(env, ensure_ascii=False, indent=2)}")
                 return 1
-        print(f"  {stage:<14} 完成 -> {env['project']['stage']} ({env['progress']['completed']}/9)")
+        print(f"  {stage:<14} 完成 -> {env['project']['stage']} "
+              f"({env['progress']['completed']}/{env['progress']['total']})")
 
     env, _ = call("studio.status", {})
     proc.stdin.close()
     proc.wait()
 
-    ok = env["project"]["stage"] == "render" and env["progress"]["completed"] == 6
+    # 六个创作阶段交完，下一个就是 preview——它是确定性阶段，由控制面接手，
+    # 所以这里等的是 system。阶段总数从信封里取，别再写死。
+    ok = env["project"]["stage"] == "preview" and env["progress"]["completed"] == len(STAGES)
     print(f"\n{'通过' if ok else '未通过'}：停在 {env['project']['stage']}，"
-          f"等 {env['waiting_on']}，完成 {env['progress']['completed']}/9")
+          f"等 {env['waiting_on']}，完成 {env['progress']['completed']}/{env['progress']['total']}")
     return 0 if ok else 1
 
 
