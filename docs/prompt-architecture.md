@@ -866,6 +866,8 @@ studio-pipeline  新增 visual_assets 执行器与后端抽象：
 
 ### 批次 1：提示词层（不动状态机，风险最低）
 
+**已完成。**
+
 1. 建 `crates/studio-cli/assets/doctrine/**`，写方法层文档与黄金样例。
 2. `emit-assets` 增加 doctrine 与模型能力卡的生成；`--check` 覆盖新文件。
 3. SKILL.md 模板重写：路由 + 硬规则 + 自检清单 + doctrine 索引。
@@ -901,7 +903,15 @@ studio-pipeline  新增 visual_assets 执行器与后端抽象：
 10. `z_image` 基线（`t2i` / `edit`）+ `config/models.toml` 的 `[z_image]` 段 +
     doctor 的视觉资产体检 + `.env.example` 的 `Z_IMAGE_WORKFLOW`。
 11. `asset_plan` schema 重做成两级（identity + views + provenance），
-    视图枚举必填校验，非主视图必须有 `derived_from`。
+    视图枚举必填校验，非主视图必须有 `derived_from`。**已完成**——
+    视图词表、必需视图齐全、主视图唯一、`derived_from` 指向锚点、
+    同卡画幅一致、角色卡身份锁逐字包含，六条都在 `schema::validate` 里挡下。
+    配套的 `consistency/character-sheet.md`、`visual` skill、doctor 的
+    卡片基线体检、`config/models.toml` 的 `[z_image]` 段也都在了。
+    **`z_image` 的两条基线本身没有**：开发环境没有 GPU 也没有 ComfyUI，
+    出不了真机导出，`assets/workflows/z_image/README.md` 写的是导出要求
+    而不是节点图——一份看起来像模像样的节点图能通过所有静态检查，
+    然后在生产机上安静地画错东西。
 12. `visual_assets` 执行器：主视图先行、其余视图参考图锚定、逐视图重试、
     落盘 `media/assets/`、产物登记、门改为**看图确认**。
 13. 参考图上传到 ComfyUI 节点（`/upload/image`），按节点缓存。
@@ -914,12 +924,31 @@ studio-pipeline  新增 visual_assets 执行器与后端抽象：
 
 ### 批次 4：流程改动（价值高，改动最大）
 
-15. `idea` 多候选 + `selection` 真取舍。
-16. 首帧图控制点（依赖批次 2 第 7 项与批次 3）。
-17. 决定档案（revise 记忆）。
-18. `review` 拆技术验收 / 内容验收。
+15. `idea` 多候选 + `selection` 真取舍。**已完成**——`concepts[]`（≥2 且互斥）、
+    `candidates[]` 逐个评估、选题门变成真三选一，用户选中的选项记进
+    `_gate_choice` 带给下游。
+16. 首帧图控制点（依赖批次 2 第 7 项与批次 3）。**未做，需要 GPU。**
+17. 决定档案（revise 记忆）。**已完成**——见
+    [ADR-0003](decisions/ADR-0003-decision-archive.md)：revise 的原话与门上
+    的选择进 `decisions` 表，`next_action.decisions` 回最近 20 条，追加即历史。
+18. `review` 拆技术验收 / 内容验收。**已完成**——`checks[].kind` 分
+    technical / content，新工具 `studio.self_review` 收固定五维 rubric 的
+    自评，每条要带可指认的时间点；不改 `passed`，但不交就不算收尾。
 
-第 15、17 项要动状态机与存储，需要各自的 ADR。
+第 17 项动了状态存储，有独立 ADR；第 15、18 项没动状态机，
+只加了信封字段和一个工具，不需要 ADR。
+
+### 批次之外：质量闸
+
+说明书写作时没有单列，实现时补的一环（§2.3 说「没有质量闸，只有格式闸」，
+但落地路线里没有对应条目）。
+
+`studio-core::quality` 七条机械可判的规则：禁用词（面向模型的文本挡提交、
+上游只提醒）、物理事实太短、身份锁没逐字出现、身份锁跨阶段漂移、
+提示词过短、没译出运镜指令。加 `studio-cli quality` 对整部作品复查，
+有挡提交的条目就非零退出，可以进 CI。
+
+提交闸只在提交那一刻跑，已经躺在库里的产物没人回头看——命令补的是那一半。
 
 ### 批次之间的依赖
 
