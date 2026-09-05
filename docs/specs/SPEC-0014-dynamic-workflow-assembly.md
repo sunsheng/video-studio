@@ -315,12 +315,12 @@ head                   原样保留（h3_ref / h3_i2v）
 | # | 规则 | 依据 |
 |---|---|---|
 | V1 | `head: reference` 时参考上限 9 图 / 3 视频 / 3 音频 | §2.1 实测 |
-| V2 | `head: image` 不接 `references`，`guides` 最多 2 个且 `at_frame` 只能是 0 或 -1 | I2V 只有 first/last |
+| V2 | `head: image` 不接 `references`，`guides` 最多 2 个且 `at_frame` 只能是 0 或 -1；反过来 `first_frame` / `last_frame` 只有带帧槽位的 head 吃 | I2V 只有 first/last |
 | V3 | `guides[].at_frame ∈ [-length_frames, length_frames)` | AddGuide 语义 |
 | V4 | `length_frames` 吃 `17k+5` 网格 | MiniMax H3 帧网格，**现在完全没校验** |
 | V5 | `kind: clip` 的 guide 长度吃 `5 / 22 / 39 / …`（同 `17k+5`） | AddGuide 自动 snap，显式挡下更好排查 |
 | V6 | `with_audio: true` 只能出现在 `kind: video` 的 reference 上 | 槽位语义 |
-| V7 | 引用的 `asset_id` 必须在 `visual_assets` 的产物里存在 | 跨阶段一致性 |
+| V7 | 引用的 `asset_id` 必须在 `visual_assets` 的产物里存在（`references` / `guides` / 首尾帧三处都查） | 跨阶段一致性 |
 | V8 | `width` / `height` 是 32 的倍数，短边 ≤ 768 | MiniMax 原生画布 |
 | V9 | 镜间引用（`<shot_id>.tail` / `.head`，可带帧数）只能指向本包里**更靠前**的镜头 | 后面那一镜还没渲，接不上 |
 

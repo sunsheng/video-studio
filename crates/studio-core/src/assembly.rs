@@ -1648,7 +1648,45 @@ pub fn validate_shot(
         check_asset(&mut v, at(&format!("guides[{j}].asset_id")), &g.asset_id);
     }
 
+    // V2 的另一半：首尾帧是 `head: image` 专用的具名槽位。写在没有这两个
+    // 槽位的 head 上会一路走到渲染才炸，那时 GPU 时间已经花出去了。
+    for (field, asset) in [
+        ("first_frame", &shot.first_frame),
+        ("last_frame", &shot.last_frame),
+    ] {
+        let Some(asset_id) = asset else { continue };
+        let slot = field.trim_end_matches("_frame");
+        if !head.frames.contains_key(slot) {
+            v.push(Violation::new(
+                at(field),
+                format!(
+                    "head「{}」没有 {slot} 帧槽位，{field} 写了不会有任何效果。\
+                     要给首尾帧就换成有帧槽位的 head（{}）。",
+                    head.id,
+                    frames_heads(set)
+                ),
+            ));
+            continue;
+        }
+        check_asset(&mut v, at(field), asset_id);
+    }
+
     v
+}
+
+/// 有具名首尾帧槽位的 head，用在报错消息里给出可换的选项。
+fn frames_heads(set: &FragmentSet) -> String {
+    let ids: Vec<&str> = set
+        .heads
+        .values()
+        .filter(|h| h.verified && !h.frames.is_empty())
+        .map(|h| h.id.as_str())
+        .collect();
+    if ids.is_empty() {
+        "这台机器上没有".to_string()
+    } else {
+        ids.join("、")
+    }
 }
 
 /// 一条资产引用在 `visual_assets` 里认不认得出来。
@@ -1846,6 +1884,45 @@ mod validation_tests {
         let mut s = shot("reference");
         s.references = vec![img_ref("C01.front")];
         assert_eq!(validate_shot(&fragments(), &s, &assets(), &[], 0), vec![]);
+    }
+
+    /// 首尾帧写在没有帧槽位的 head 上要当场挡下——不挡就一路走到渲染才炸，
+    /// 那时 GPU 时间已经花出去了。
+    #[test]
+    fn v2_a_frame_slot_on_a_head_without_one_is_rejected() {
+        let mut s = shot("reference");
+        s.first_frame = Some("C01.front".into());
+        let v = validate_shot(&fragments(), &s, &assets(), &[], 0);
+        let hit = find(&v, "first_frame").expect("{v:?}");
+        assert!(hit.message.contains("没有 first 帧槽位"), "{}", hit.message);
+        assert!(
+            hit.message.contains("image"),
+            "要给出可换的 head：{}",
+            hit.message
+        );
+    }
+
+    /// 有槽位时首尾帧照样要查资产存不存在——以前这两个字段完全没走校验。
+    #[test]
+    fn v7_covers_the_frame_slots_too() {
+        let mut s = shot("image");
+        s.first_frame = Some("C99.nope".into());
+        s.last_frame = Some("C01.front".into());
+        let v = validate_shot(&fragments(), &s, &assets(), &[], 0);
+        assert_eq!(v.len(), 1, "只有 first_frame 那条不存在：{v:?}");
+        assert!(find(&v, "C99.nope").is_some(), "{v:?}");
+    }
+
+    /// 首尾帧也能接上一镜——那是 image head 做接续的方式。
+    #[test]
+    fn v9_a_frame_slot_may_point_at_a_prior_shots_tail() {
+        let mut s = shot("image");
+        s.shot_id = "S02".into();
+        s.first_frame = Some("S01.tail".into());
+        assert_eq!(
+            validate_shot(&fragments(), &s, &assets(), &["S01".into()], 1),
+            vec![]
+        );
     }
 
     /// 上游还没产出时传空清单，V7 不该拿这条卡住。
