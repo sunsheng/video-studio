@@ -203,14 +203,19 @@ Python，也不用手动导出 fixtures、手动 init 一个作品目录。
 COMFY_NODE=<入口> COMFY_TOKEN=<token> cargo test -p studio-pipeline --test real_comfy -- --nocapture
 ```
 
-前置条件：可达的 ComfyUI 入口、上面装着 `minimax_h3` 的权重、本机有 ffmpeg
-（用来现造参考图）。验的是五件事：
+前置条件：可达的 ComfyUI 入口、上面装着 `minimax_h3` 与 `seedvr2` 的权重、
+本机有 ffmpeg（用来现造参考图、核对产物）。验的是七件事：
 
 1. 三种典型镜头（空镜 / 接续镜 / 群戏）组装出的图 ComfyUI 认，而且**真跑得出片**
 2. preview 的 turbo 组合跑得通，步数与调度器都换对了
 3. 未核验的输入通道（`clip` 要的帧序列）被**结构化阻塞**，不是静默降级成静帧
 4. 同一份声明组装两次逐字节相同
 5. 每份片段读得出来、元数据完整，没核验的都写了原因
+6. video 通道（`clip` 锚点 / `kind: video` 参考）跑得出片，而且**下载下来的是
+   成片不是锚点素材**——`LoadVideo` 会把输入回显进 history 的 `outputs`，
+   只断言「有产物」的测试挡不住这一类错
+7. 成片超分落在交付规格上：一镜 768×1344 超到 1080×1920，**尺寸、帧数、音轨**
+   三样都对，而且超分后的片段拼接仍然能直接复制流
 
 **为什么非要真机。** `node_errors` 为空只证明图是合法的，证明不了画面是对的。
 turbo 叠加层就栽在这儿：四种组合图校验全过，真机出片一看 reference + 4 步

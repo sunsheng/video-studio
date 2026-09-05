@@ -304,6 +304,39 @@ reference head 在 20 步下的配套档位，步数降到 4 就不成立。
 生产环境的最终验收仍然是在宿主机跑 `scripts/smoke.sh`——那是发布前的关口，
 不因为开发环境也能跑渲染而取消。
 
+### 校验器看不见的东西，它就当没看见
+
+同一类失败还有更早的一档：**图校验通过，执行时直接抛异常**。
+`/prompt` 对认不出来的输入键是**当没看见**的，不报错。
+
+2026-09-05 的实例：`ResizeImageMaskNode.resize_type` 是动态组合框
+（`COMFY_DYNAMICCOMBO_V3`），选一个键、那个键自带一组子输入。API 格式里
+它是**平铺的点号兄弟键**：
+
+```jsonc
+"resize_type": "scale dimensions",
+"resize_type.width": 1080,
+"resize_type.height": 1920
+```
+
+试过的另外三种写法——`{"key": …, "multiplier": …}`、嵌套对象、二元组——
+**图校验全部通过**，执行时抛
+`TypeError: execute() missing 1 required positional argument: 'resize_type'`。
+唯一说出真相的是纯字符串写法的验证错误，它点名了
+`"input_name": "resize_type.multiplier"`。
+
+所以探一个没见过的节点参数形态时：**别停在「提交成功」，要真跑一次**，
+而且要核对产物（这次是输出尺寸）。「提交成功」这一档能挡住的错误比想象的少。
+
+### history 的 outputs 里不全是产物
+
+加载类节点会把自己的输入原样回显进 `outputs`，`type` 是 `"input"`。
+`LoadVideo` 就这样。挑产物时**只认 `type == "output"`**——不然带 clip 锚点
+或 video 参考的镜头会把锚点素材当成渲染结果登记下来，一路绿到交付。
+
+这条已经写进 `studio-comfy::collect_files`，测试守着。留在这里是因为它跟
+上面两条是同一类：**机器给了个「成功」，但成功的不是你要的那件事。**
+
 ## 工具链
 
 `rust-toolchain.toml` 指定具体版本（不是 `stable`）。升级时改该文件，然后验证：

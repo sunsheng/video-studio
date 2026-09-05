@@ -1116,6 +1116,14 @@ pub fn stage_schema(stage: StageId) -> Schema {
                 ("subtitles", text("字幕相对路径")),
                 ("duration_seconds", num("成片实际时长")),
                 ("aspect_ratio", text("成片实际画幅")),
+                (
+                    "upscaled",
+                    Schema::Bool {
+                        desc: "有没有做成片超分。false 表示成片停在模型的原生画布上，\
+                               交付分辨率达不到 1080——那是配置里明确关掉的结果，不是失败",
+                    },
+                ),
+                ("delivery", text("成片实际尺寸，例如 1080x1920")),
             ],
             vec!["video", "duration_seconds", "aspect_ratio"],
         ),

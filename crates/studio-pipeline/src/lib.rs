@@ -842,6 +842,7 @@ impl Pipeline {
             .done(media.probe(&final_path))?;
         out["duration_seconds"] = json!(info.duration_seconds);
         out["aspect_ratio"] = json!(info.aspect_ratio());
+        out["delivery"] = json!(format!("{}x{}", info.width, info.height));
         out["stream_copied"] = json!(stream_copy);
 
         Ok(wrap(StageId::Post, out))

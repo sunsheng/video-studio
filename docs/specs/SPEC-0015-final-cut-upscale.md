@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | 对应 issue | [#13](https://github.com/sunsheng/video-studio/issues/13) |
-| 状态 | 设计中 |
+| 状态 | 已实现；§3.1 的 `role` 是实现时才发现要做的，补写在下面 |
 | 前置 | ComfyUI 上要有 SeedVR2 原生节点与权重（本机已探到，见 §2） |
 | 顺带修 | 两个真机上才暴露出来的既有缺陷，见 §7 |
 
@@ -176,6 +176,21 @@ assets/workflows/seedvr2/SOURCE-README.md
 > `seedvr2` 是个独立的「系列」目录，跟 `core_model_family` 无关——任何系列
 > 渲出来的片子都用它超分。目录布局上跟 `ltx2_5/` 这些并列，语义上不同。
 > 这一点写进 `SOURCE-README.md`。
+
+### 3.1 `_studio.role`：不是所有基线都该让 Agent 选（实现时补的）
+
+放进 `assets/workflows/` 的东西会被 `Pipeline::capabilities()` 扫成能力面，
+于是 `seedvr2/upscale` 会出现在 `verified_names()` 里——Agent 看得见它，
+`check_prompt_pack` 也认它。可它压根不吃 `positive` 和 `length_frames`，
+真被写进某一镜只会跑出个空 `filename`。
+
+所以给 `_studio` 加一个 `role`，缺省 `"shot"`（Agent 可以点名），
+超分基线写 `"post_upscale"`，`capabilities()` 直接跳过非 `shot` 的。
+
+> `flux2_dev` 的两条卡片基线有同样的性质，但它们**今天就已经在**能力面里
+> （`narrow_schema` 在 `family` 给定时按前缀过滤，所以正常路径下漏不出去，
+> 只有上游还没定系列时才会）。那是本规格之前就有的行为，改它要单独看，
+> 这里不顺手动。
 
 ---
 
