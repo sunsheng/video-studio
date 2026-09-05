@@ -133,6 +133,18 @@ const CARD_MULTIREF: &str = "flux2_dev/multiref_edit";
 /// **不用随机数**：`retry_stage` 要能原样重跑，随机 seed 会让重跑出来的卡片
 /// 跟前面已定稿的对不上。同一张卡的不同视图 seed 不同——同一个 seed 配不同
 /// 提示词反而容易出同一个姿势。
+/// 在视图的 `provenance` 上记一条「它当不了后面的参考」。
+///
+/// **不用 `view["provenance"][k] = v` 那种下标赋值。** `provenance` 是 Agent
+/// 也能写的字段，它要是提交了个字符串上来，下标赋值会直接 panic 掉这个
+/// worker 线程——控制面不该被一份畸形的提交搞崩。这里遇到非对象就整个换掉。
+fn mark_reference_unusable(view: &mut Value, why: &str) {
+    if !view["provenance"].is_object() {
+        view["provenance"] = json!({});
+    }
+    view["provenance"]["reference_upload_error"] = json!(why);
+}
+
 fn stable_seed(card_id: &str, view: &str) -> i64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in card_id
@@ -1007,18 +1019,22 @@ impl Pipeline {
             let name = view["view"].as_str().unwrap_or("view").to_string();
             // 已经出过的不重跑——retry_stage 之后接着做剩下的。
             if view["status"].as_str() == Some("ready") {
-                if let Some(p) = view["path"].as_str().map(String::from) {
-                    match self.upload_view(ctx, comfy, &card_id, &name, &p) {
+                let why = match view["path"].as_str().map(String::from) {
+                    Some(p) => match self.upload_view(ctx, comfy, &card_id, &name, &p) {
                         Ok(remote) => {
                             uploaded.insert(name.clone(), remote);
+                            None
                         }
-                        Err(e) => {
-                            let why = format!("图在磁盘上，但传不回 ComfyUI：{}", e.message());
-                            ctx.say(format!("{card_id}.{name} {why}"));
-                            view["provenance"]["reference_upload_error"] = json!(why);
-                            unusable.insert(name.clone(), why);
-                        }
-                    }
+                        Err(e) => Some(format!("图在磁盘上，但传不回 ComfyUI：{}", e.message())),
+                    },
+                    // 标着 ready 却没有 path。控制面自己回填的一定两样都有，
+                    // 所以这是 Agent 提交时自己写了 ready——它没生成过这张图。
+                    None => Some("标着 ready 却没有 path：这张图从来没有被生成过".to_string()),
+                };
+                if let Some(why) = why {
+                    ctx.say(format!("{card_id}.{name} {why}"));
+                    mark_reference_unusable(&mut view, &why);
+                    unusable.insert(name.clone(), why);
                 }
                 out.push(view);
                 continue;
@@ -1836,6 +1852,53 @@ mod render_tests {
         assert!(
             !msg.contains("还没生成出来"),
             "锚点的图明明生成出来了，不能这么说：{msg}"
+        );
+    }
+
+    /// **Agent 自己把视图写成 `ready` 不能让控制面崩，也不能蒙混过关。**
+    ///
+    /// `status` / `path` / `provenance` 都在 Agent 能提交的那份 JSON 里。
+    /// 提一个「ready 但没有 path」的视图，再把 `provenance` 写成字符串——
+    /// 前者是谎称生成过，后者会让下标赋值 panic 掉 worker 线程。
+    /// 两样都得挡住，而且要说清楚是哪一条。
+    #[test]
+    fn a_view_the_agent_claims_is_ready_neither_panics_nor_passes() {
+        let bundle_dir = tempfile::tempdir().unwrap();
+        let baselines_dir = tempfile::tempdir().unwrap();
+        write_card_baselines(baselines_dir.path());
+        let node = healthy_node();
+        let (bundle, settings) = scaffold_with_concurrency(bundle_dir.path(), &node.url, 1);
+
+        let inputs = json!({ "asset_plan": { "assets": [{
+            "asset_id": "C01",
+            "asset_kind": "character_card",
+            "identity_prompt": "身份锁",
+            "views": [
+                // 谎称已经出过，既没有 path，provenance 还是个字符串
+                { "view": "front_full", "is_anchor": true, "aspect": "9:16",
+                  "prompt": "正面全身", "status": "ready", "provenance": "我瞎写的" },
+                { "view": "three_quarter", "is_anchor": false, "aspect": "9:16",
+                  "derived_from": ["front_full"], "prompt": "四分之三", "status": "planned" }
+            ]
+        }] }});
+
+        let pipeline = Pipeline::new(baselines_dir.path().to_path_buf());
+        let recorder = ExecRecorder::at(bundle.root());
+        let ctx = ExecContext {
+            bundle: &bundle,
+            settings: &settings,
+            inputs,
+            progress: &ProgressNote::default(),
+            recorder: &recorder,
+            cancelled: &AtomicBool::new(false),
+        };
+
+        let e = pipeline.visual_assets(&ctx).unwrap_err();
+        assert_eq!(e.code(), "comfy_failed", "不能放行：{}", e.message());
+        assert!(
+            e.message().contains("从来没有被生成过"),
+            "要点破是谎称 ready，不是别的毛病：{}",
+            e.message()
         );
     }
 
