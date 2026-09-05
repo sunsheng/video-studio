@@ -21,7 +21,8 @@ ComfyUI 之前的六阶段仍然是最贴近真实的验证），而是在它旁
 ## 决策
 
 新建独立 crate **`studio-skill-eval`**，定位与 `studio-pipeline` 同层
-（依赖 `core + engine + mcp`），只被 `studio-cli` 依赖，新增
+（依赖 `core + engine + mcp + rollout`，`rollout` 是本 ADR 同批新增的
+共享解析 crate，见下文），只被 `studio-cli` 依赖，新增
 `studio-cli skill-eval` 子命令族。**不出现在 Codex/Agent 的执行环境里**——
 和 `e2e report`/`exec report` 一样，是开发者工具，遵守 ADR-0002 的边界。
 
@@ -52,24 +53,31 @@ studio-skill-eval
 │                 Codex 连接的方式一致，脚本场景复用同一个 harness 图省事，
 │                 顺带把「协议层没坏」也验了。
 ├── user_sim.rs   虚拟用户：确认门上怎么选、修订意见怎么措辞。默认走固定
-│                 剧本（可重放、可回归）；可选让一个 LLM 用给定"人设"生成
-│                 自然语言修订意见的变体，专门用来测 skill 文档对模糊反馈
-│                 的鲁棒性——这条路径本身也是不确定的，用于 Agent 场景，
+│                 剧本（可重放、可回归）——选项本身从门返回的候选里按
+│                 `outcome` 匹配着选，不假设固定 id（`selection` 门是真
+│                 三选一，id 是 concept_id，随场景而变，跟脚本场景
+│                 `harness.rs::advance()` 的取法一致，见下方合并 main
+│                 之后的调整）；可选让一个 LLM 用给定"人设"生成自然语言
+│                 修订意见的变体，专门用来测 skill 文档对模糊反馈的
+│                 鲁棒性——这条路径本身也是不确定的，用于 Agent 场景，
 │                 不用于脚本场景。
 ├── driver/
 │   ├── mod.rs        `trait AgentDriver`：给一个 harness 和场景，跑完，
 │   │                 交回调用序列 + 产物 + （如果能拿到）token/绕行信息。
 │   ├── codex.rs      `codex exec` 子进程驱动：复用 `.codex/config.toml` 把
-│   │                 MCP 指向 harness 起的 studiod；解析 rollout 拿 token/
-│   │                 skills_read/bypasses（自成一份轻量解析，不反向依赖
-│   │                 studio-cli 的 rollout.rs）。
+│   │                 MCP 指向 harness 起的 studiod；用 `studio-rollout`
+│   │                 crate（见下方"新增 `studio-rollout` 共享 crate"）
+│   │                 解析 rollout 拿 token/skills_read/doctrine_read/
+│   │                 bypasses。
 │   └── direct_llm.rs 直连 LLM API 驱动：把 `studio.*` 工具 schema 转成目标
 │                     API 的 tool-calling 格式，系统提示词 = AGENTS.md +
 │                     对应 SKILL.md 原文（不夹带任何源码或额外提示），跑一个
 │                     标准 tool-use 循环直到停在预期阶段或达到调用上限。
 │                     不依赖 Codex CLI 是否装配，`OPENAI_API_KEY`/
 │                     `OPENAI_BASE_URL` 存在即可跑，覆盖"本机没配 Codex"
-│                     的情况。
+│                     的情况。这条驱动天然读不到 rollout（没有 Codex 会话
+│                     记录），`skills_read`/`doctrine_read`/`bypasses` 这几
+│                     列在它的报告里标"不可观测"，不强行伪造。
 ├── judge/
 │   ├── structural.rs 结构化裁判：复用 `studio-cli::e2e` 现成的四条思路
 │                     （remedy 覆盖、无 state_drift、revise 往返 ≤2、六阶段
@@ -79,17 +87,45 @@ studio-skill-eval
 │                     - 明显的反模式规则（比如 script.story_arc 每段时长
 │                       完全相等，大概率是没理解"按内容分配时长"）。
 │                     这一档不需要 LLM，纯规则，可重复。
-│   └── semantic.rs   LLM-judge：把该阶段 SKILL.md 的"职责"条款和最终产物
-│                     一起交给一个评审 LLM，逐条给 pass/fail + 理由。用于
-│                     结构化规则覆盖不到的主观质量（故事讲没讲清楚、镜头
-│                     描述是否可执行）。评审 LLM 与被测 driver 的 LLM 允许
-│                     不是同一个，避免"自己评自己"的偏置。
+│   └── semantic.rs   LLM-judge：不能只看 SKILL.md——提示词架构重构
+│                     （PR #11）之后大半指导性内容搬进了 `.agents/doctrine/`
+│                     （运镜语法、故事结构、质量清单/禁用词等）和
+│                     `.agents/models/*.md`（模型能力卡），SKILL.md 本身
+│                     只剩"什么时候用、调用形状"。按阶段维护一张"相关
+│                     doctrine 文件"映射表（比如 storyboard 阶段关联
+│                     `camera/grammar.md`、`camera/blocking.md`、
+│                     `exemplars/storyboard.md`），连同该阶段 SKILL.md 的
+│                     "职责"条款和最终产物一起交给评审 LLM，逐条给
+│                     pass/fail + 理由。同时对照 `studio-rollout` 观测到
+│                     的 `doctrine_read`：产物质量差但对应文档根本没被
+│                     读到，报告要标出这是"文档没被打开"而不是"文档写得
+│                     不好"——两者需要的修复动作不一样，混在一起会导致
+│                     改错地方。评审 LLM 与被测 driver 的 LLM 允许不是
+│                     同一个，避免"自己评自己"的偏置。
 └── report.rs     汇总成 `SkillEvalReport`（JSON），本机产物，**不进版本库**
                   （`.gitignore` 加一条）——LLM judge 的评分本身会随模型版本
                   漂移，长期存档会把"漂移"和"skill 文档真的变差了"混在一起，
                   参考价值有限。需要留痕就像 `e2e report`/`exec report` 现在
                   的做法一样，人工挑关键结果贴进 PR 描述。
 ```
+
+### 新增 `studio-rollout` 共享 crate
+
+`driver/codex.rs` 需要解析 Codex 的 rollout jsonl 拿 token/skills_read/
+doctrine_read/bypasses——`crates/studio-cli/src/rollout.rs` 已经有一份，
+而且是被真实的字段变化逼出来的三条教训：新旧 Codex 版本参数字段名不同
+（`input` vs `arguments`）、必须按工具的 `name`/`namespace` 分类而不是对
+参数做子串匹配（否则 `<作品名>.studio/` 这种路径会把读文件误判成 MCP
+调用）、`doctrine_read` 要单独于 `skills_read` 之外收集（方法层是按需
+加载的，没读到就不能把产出干巴赖到文档头上）。这些坑不该在
+`studio-skill-eval` 里用一份平行代码再踩一遍。
+
+新建 `studio-rollout`：纯解析库，不依赖 `studio-core`/`studio-engine`——
+它解析的是外部 jsonl 格式，跟本项目阶段图无关，挂在分层表最底部。
+`studio-cli` 与 `studio-skill-eval` 都依赖它，彼此不互相依赖；
+`studio-cli::rollout` 原有的公开类型/函数改为对新 crate 的 `pub use`，
+`e2e report`/`exec report` 的调用点不用改。这是这次唯一碰到 CLAUDE.md
+「分层」契约本身的改动，已在那张 crate 表里加了一行并说明理由。
 
 `studio-cli` 新增子命令：
 
@@ -145,6 +181,20 @@ Agent 场景（本机/按需跑，不进 CI，设计已定、留给 Phase C 实�
    `comfy_unavailable`，看 Agent 会不会正确选 `studio.retry_stage` 而不是
    误用 `studio.revise`（`comfyui` skill 明确写了这条区分，这个场景专门
    验证措辞有没有起作用）。
+4. `capability_boundary_probe` —— PR #11 落地的能力面双向校验
+   （`capability.rs`）之后新增。给一个会让 Agent 想加负面提示词的创意
+   方向，走到 `prompt_pack` 阶段、目标模型是 `minimax_h3` 时，检查
+   Agent 会不会遵守 `assets/models/minimax_h3.md` 里"不要写 `negative`"
+   的边界；就算没读到那张能力卡而误提交，`capability.rs` 应该在 submit
+   时就报 `schema_violation` 并给出可执行 remedy，不会等到渲染才发现。
+   同时验证文档措辞和运行时兜底两层，其中一层失守另一层也要能兜住。
+5. `decision_archive_crosses_stages` —— PR #11 落地的决定档案
+   （ADR-0003）之后新增。在某个早期阶段（比如剧本）让用户说一句
+   "不要平均切分镜头时长"触发 `studio.revise`，走到后面某个阶段时不再
+   重复这句话，检查 Agent 是否真的从 `next_action.decisions` 里读到这条
+   历史决定并遵守，而不是要用户在每个阶段重新说一遍——这是 ADR-0003
+   "决定档案"整个设计初衷的直接回归测试，不测这个，档案有没有被真正
+   用上就只能靠印象判断。
 
 ## 测试补齐同批发现的真实缺陷
 
@@ -161,9 +211,11 @@ Agent 场景（本机/按需跑，不进 CI，设计已定、留给 Phase C 实�
 
 ## 不在这次范围内
 
-- 渲染 / 后期 / 验收（`preview` 之后）的 Agent 场景——`docs/e2e.md` 已经
-  说清楚这一段只能在真实 ComfyUI + GPU 上验证，`studio-skill-eval` 不改变
-  这条边界，它跟"真实 Codex 会话"覆盖的是同一段（idea → prompt_pack）。
+- 渲染 / 后期 / 验收（`preview` 之后）的 Agent 场景，包括
+  `studio.self_review`（ADR-0003 新增的内容自评工具，要片子真的存在
+  才能调）——`docs/e2e.md` 已经说清楚这一段只能在真实 ComfyUI + GPU 上
+  验证，`studio-skill-eval` 不改变这条边界，它跟"真实 Codex 会话"覆盖
+  的是同一段（idea → prompt_pack）。
 - 场景库的全覆盖——先给起步集合把框架立住，之后照实际踩过的坑往里加，
   跟单元测试一样"发现一个问题、补一个用例"，不追求一次穷尽。
 - `direct_llm.rs` 具体接的是哪家 API——用 `OPENAI_API_KEY`/`OPENAI_BASE_URL`

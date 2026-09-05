@@ -21,8 +21,14 @@ studio-pipeline 三个确定性阶段（渲染、后期、验收）的实现：�
                 + media。被 studiod 与 studio-cli 依赖。
 studiod         MCP server 二进制。唯一职能 serve，没有子命令、不接受参数。
                 由 Codex 自动拉起，Agent 不可见其命令行。依赖 mcp + pipeline。
+studio-rollout  解析 Codex 会话记录（rollout jsonl）：token 用量、
+                skills_read/doctrine_read、疑似绕过 MCP 的动作。★ 不依赖
+                core/engine——纯外部 jsonl 格式解析，跟阶段图无关。被
+                studio-cli（e2e report/exec report）与 studio-skill-eval
+                （CodexDriver）共用，两者互不依赖。
 studio-skill-eval Skill 评估：像测代码一样测 AGENTS.md / SKILL.md。依赖
-                core + engine + mcp。只被 studio-cli 依赖，见 ADR-0003。
+                core + engine + mcp + rollout。只被 studio-cli 依赖，见
+                ADR-0004。
 studio-cli      人类操作 + 开发者工具二进制：init / doctor / pack / unpack /
                 list / emit-assets / e2e report / exec report /
                 workflows check / skill-eval。不出现在 Codex/Agent 的执行
