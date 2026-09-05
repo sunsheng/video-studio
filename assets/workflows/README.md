@@ -1,16 +1,34 @@
 # 已验证 workflow 基线
 
-这里放**真机跑通过**的 ComfyUI API 格式节点图，按 `<模型系列>/<用途>.json` 组织：
+这里放的每一份文件都必须**能追溯到一次真机跑通的记录**，按
+`<模型系列>/<用途>.json` 组织：
 
 ```
 workflows/
 ├── minimax_h3/
-│   ├── t2v.json
-│   ├── i2v.json
-│   └── r2v.json
+│   ├── t2v.json  i2v.json  r2v.json     整图基线
+│   ├── fragments/                        片段库（只有这个系列有）
+│   └── SOURCE-fragments.md               片段的血缘
 ├── ltx2_5/…
 └── wan2_2/…
 ```
+
+## 两种形式，两种追溯方式
+
+| | 整图基线 | 片段 |
+|---|---|---|
+| 是什么 | 一张完整的、能直接提交的 API 图 | 一张图的一部分，单独拿出来跑不通 |
+| 怎么追溯 | 自带 `bindings_verified` 与真机 run_id | `_studio.from` + `source_run` 指回它被切出来的那份已验证基线 |
+| 谁在用 | `ltx2_5` / `wan2_2` / `wan_animate2`，以及 `minimax_h3` 的对照 | 只有 `minimax_h3` |
+
+**规约是「血缘可追溯」，不是「每份文件都能单独跑通」**——片段本来就跑不通。
+这条在 [ADR-0005](../../docs/decisions/ADR-0005-workflow-fragments.md) 里改的，
+起因是固定基线表达不了「挂几个参考由内容决定」。验证精神没丢，只是粒度从
+「整张图」变成「片段 + 组合规则」。
+
+片段化**只对 `minimax_h3` 做**，因为只有它需要可变槽位（9 图 + 3 视频 +
+3 音频的参考、可链式的 AddGuide）。其余系列保持整图基线，**两种形式共存是
+有意的**，不是过渡态。
 
 提示词包里的 `workflow` 字段写的就是这里的相对路径（不含 `.json`），
 例如 `minimax_h3/t2v`。找不到对应文件时控制面报 `model_contract_violation`

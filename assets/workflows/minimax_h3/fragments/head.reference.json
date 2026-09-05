@@ -1,0 +1,95 @@
+{
+  "h3_ref": {
+    "class_type": "MiniMaxH3ReferenceToVideo",
+    "inputs": {
+      "clip": [
+        "load_clip",
+        0
+      ],
+      "vae": [
+        "vae_video",
+        0
+      ],
+      "audio_vae": [
+        "vae_audio",
+        0
+      ],
+      "prompt": "<Picture 1> A single continuous cinematic shot inspired by the reference image, natural motion, photorealistic, no text or logos.",
+      "width": 864,
+      "height": 480,
+      "length": 73,
+      "ref_image_size": "match"
+    }
+  },
+  "_studio": {
+    "kind": "head",
+    "id": "reference",
+    "from": "minimax_h3/r2v.json",
+    "source_run": "20260831T035154Z-29b70a",
+    "bindings_verified": true,
+    "backbone_overrides": {
+      "load_unet.inputs.unet_name": "minimax_h3_ref2va_int8_convrot.safetensors",
+      "scheduler.inputs.scheduler": "beta"
+    },
+    "outputs": {
+      "conditioning": [
+        "h3_ref",
+        0
+      ],
+      "latent": [
+        "h3_ref",
+        1
+      ]
+    },
+    "wires_from_backbone": {
+      "h3_ref.inputs.clip": [
+        "load_clip",
+        0
+      ],
+      "h3_ref.inputs.vae": [
+        "vae_video",
+        0
+      ],
+      "h3_ref.inputs.audio_vae": [
+        "vae_audio",
+        0
+      ]
+    },
+    "bindings": {
+      "positive": [
+        "h3_ref.inputs.prompt"
+      ],
+      "width": [
+        "h3_ref.inputs.width"
+      ],
+      "height": [
+        "h3_ref.inputs.height"
+      ],
+      "length_frames": [
+        "h3_ref.inputs.length"
+      ]
+    },
+    "autogrow": {
+      "image": {
+        "target": "h3_ref.inputs.ref_images",
+        "prefix": "ref_image_",
+        "max": 9
+      },
+      "video": {
+        "target": "h3_ref.inputs.ref_videos",
+        "prefix": "ref_video_",
+        "max": 3
+      },
+      "video_audio": {
+        "target": "h3_ref.inputs.ref_video_audios",
+        "prefix": "ref_video_audio_",
+        "max": 3
+      },
+      "audio": {
+        "target": "h3_ref.inputs.ref_audios",
+        "prefix": "ref_audio_",
+        "max": 3
+      }
+    }
+  }
+}

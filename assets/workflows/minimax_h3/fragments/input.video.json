@@ -1,0 +1,38 @@
+{
+  "load": {
+    "class_type": "LoadVideo",
+    "inputs": {}
+  },
+  "split": {
+    "class_type": "GetVideoComponents",
+    "inputs": {
+      "video": [
+        "load",
+        0
+      ]
+    }
+  },
+  "_studio": {
+    "kind": "input",
+    "id": "video",
+    "from": "/object_info/LoadVideo + GetVideoComponents",
+    "source_run": "wiring-probe 2026-09-05（节点存在性与输出类型已确认）",
+    "bindings_verified": false,
+    "unavailable_reason": "视频参考这条路还没在真机上跑通过一整镜。节点存在、输出类型对得上（GetVideoComponents → IMAGE + AUDIO），但没验过实际喂进 ref_videos 的效果。真机跑通一镜后把这里改成 true。",
+    "bindings": {
+      "filename": [
+        "load.inputs.file"
+      ]
+    },
+    "outputs": {
+      "image": [
+        "split",
+        0
+      ],
+      "audio": [
+        "split",
+        1
+      ]
+    }
+  }
+}

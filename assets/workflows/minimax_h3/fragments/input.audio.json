@@ -1,0 +1,25 @@
+{
+  "load": {
+    "class_type": "LoadAudio",
+    "inputs": {}
+  },
+  "_studio": {
+    "kind": "input",
+    "id": "audio",
+    "from": "/object_info/LoadAudio",
+    "source_run": "wiring-probe 2026-09-05（节点存在性已确认）",
+    "bindings_verified": false,
+    "unavailable_reason": "独立音频参考没在真机上跑通过，真机验证后改 true。",
+    "bindings": {
+      "filename": [
+        "load.inputs.audio"
+      ]
+    },
+    "outputs": {
+      "audio": [
+        "load",
+        0
+      ]
+    }
+  }
+}

@@ -9,6 +9,7 @@
 - [ADR-0002：studiod 只做 serve，其余进 studio-cli](ADR-0002-studiod-cli-split.md)——二进制拆分，消掉「Agent 拿到二进制直接绕过 MCP」的路径
 - [ADR-0003：作品级决定档案，追加即历史](ADR-0003-decision-archive.md)——把用户否决过什么、选过什么沉淀下来并回注给 Agent，消掉「同一句话每个阶段都要说一遍」
 - [ADR-0004：Skill 评估，像代码一样测试 AGENTS.md / SKILL.md](ADR-0004-skill-evaluation.md)——脚本场景 + Agent 场景的评估框架，消掉「skill 文档改得好不好全凭印象」
+- [ADR-0005：工作流验证粒度改为片段 + 组合规则](ADR-0005-workflow-fragments.md)——每一镜的节点图按声明现场组装，消掉「固定基线表达不了『挂几个由内容决定』」，同时不给静默错接留路径
 
 其余设计细节（三个平面、阶段图、工具面、错误契约等）不在这里，见
 [../design.md](../design.md) 与其链接的专题文档；这里只放**为什么选了这条
