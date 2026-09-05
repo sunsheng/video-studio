@@ -221,10 +221,17 @@ fn dependency_waves(shots: &[Value]) -> Vec<Vec<usize>> {
         let mut wave = 0usize;
         let refs = shot["references"].as_array().into_iter().flatten();
         let guides = shot["guides"].as_array().into_iter().flatten();
-        for item in refs.chain(guides) {
-            let Some(asset_id) = item["asset_id"].as_str() else {
-                continue;
-            };
+        // 首尾帧同样可能接上一镜——`head: image` 做接续就是把上一镜的尾帧
+        // 填进 first_frame。漏算它，这一镜会跟被接的那一镜排进同一波，
+        // 等到解析素材时那一镜还没出片。
+        let frames = ["first_frame", "last_frame"]
+            .into_iter()
+            .filter_map(|k| shot.get(k));
+        for asset_id in refs
+            .chain(guides)
+            .filter_map(|item| item["asset_id"].as_str())
+            .chain(frames.filter_map(|v| v.as_str()))
+        {
             let Some(seg) = assets::parse_shot_segment(asset_id) else {
                 continue;
             };
@@ -246,6 +253,11 @@ fn dependency_waves(shots: &[Value]) -> Vec<Vec<usize>> {
         waves[*w].push(idx);
     }
     waves
+}
+
+/// 取最接近的 `step` 倍数，至少一个 `step`。
+fn round_to(v: i64, step: i64) -> i64 {
+    ((v + step / 2) / step).max(1) * step
 }
 
 /// preview 要覆盖的目标尺寸；render 用提示词包原样的宽高，返回 `None`
@@ -520,8 +532,12 @@ impl Pipeline {
                 }
             })?;
         if let Some((pw, ph)) = preview_dims(shot, mode) {
-            decl.width = pw;
-            decl.height = ph;
+            // 片段化的系列要求画幅是 32 的倍数（V8）。短边缩放算出来的
+            // 长边多半不是——`768x1344` 缩到 480 得到 840，不是 32 的倍数。
+            // 不修就等于我们自己写进 remedy 的那句话：ComfyUI 会四舍五入，
+            // 实际出图尺寸跟登记的对不上。
+            decl.width = round_to(pw, 32);
+            decl.height = round_to(ph, 32);
         }
 
         let family = ctx.inputs[StageId::VisualAssets.output_key()]["core_model_family"]
@@ -1127,6 +1143,30 @@ mod render_tests {
             vec![vec![0, 3], vec![1], vec![2]],
             "一条接续链排成三波，无关的镜头留在第一波一起跑"
         );
+    }
+
+    /// image head 靠 first_frame 接上一镜，分波必须算上它。
+    /// 漏算的话这一镜会跟被接的那一镜同波跑，等解析素材时那一镜还没出片。
+    #[test]
+    fn a_frame_slot_continuation_also_creates_a_wave() {
+        let mut sh02 = shot("sh02");
+        sh02["head"] = json!("image");
+        sh02["first_frame"] = json!("sh01.tail");
+        assert_eq!(
+            dependency_waves(&[shot("sh01"), sh02]),
+            vec![vec![0], vec![1]]
+        );
+    }
+
+    /// 预览尺寸要落在 32 的网格上：768x1344 短边缩到 480 得到 840，
+    /// 不是 32 的倍数——不修就等于我们自己写进 remedy 的那句话，
+    /// ComfyUI 四舍五入之后实际尺寸跟登记的对不上。
+    #[test]
+    fn preview_dimensions_are_rounded_onto_the_grid() {
+        assert_eq!(scale_to_short_edge(768, 1344, 480), (480, 840));
+        assert_eq!(round_to(840, 32), 832);
+        assert_eq!(round_to(480, 32), 480);
+        assert_eq!(round_to(10, 32), 32, "不能round 成 0");
     }
 
     /// 引用的是登记过的资产（`C01`、`C01.front`），不是镜间片段——

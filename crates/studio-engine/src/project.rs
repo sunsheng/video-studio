@@ -321,19 +321,18 @@ impl Project {
     }
 
     /// `visual_assets` 登记过的产物 id，用来查参考与锚点引用的资产在不在。
+    ///
+    /// **卡级和视图级两种都算数**：`C01` 指这张卡的主视图，`C01.front` 指定
+    /// 某一个视图，渲染时的解析两种都认。这里只列卡级 id 的话，写
+    /// `C01.front`（方法文档里教的写法）会在提交时被判成「资产不存在」，
+    /// 而它其实是能解析的。
     fn known_asset_ids(&self) -> Vec<String> {
         let Ok(loaded) = self.store.load_stage(StageId::VisualAssets) else {
             return Vec::new();
         };
         loaded_outputs(&loaded)
-            .and_then(|o| o.get(StageId::VisualAssets.output_key()).cloned())
-            .and_then(|v| v.get("assets").cloned())
-            .and_then(|a| a.as_array().cloned())
-            .map(|a| {
-                a.iter()
-                    .filter_map(|x| x.get("asset_id")?.as_str().map(String::from))
-                    .collect()
-            })
+            .and_then(|o| o.get(StageId::VisualAssets.output_key()))
+            .map(registered_asset_ids)
             .unwrap_or_default()
     }
 
@@ -973,6 +972,27 @@ const STAGE_TOTAL: usize = 10;
 /// 整套架构的原则是渐进披露，见 `docs/decisions/ADR-0003`。
 const DECISION_LIMIT: usize = 20;
 
+/// 一份资产计划里登记过的全部 id，**卡级和视图级都算**。
+///
+/// `C01` 指这张卡的主视图，`C01.front` 指定某个视图，渲染时的解析两种都认。
+/// 只列卡级 id 的话，照方法文档写 `C01.front` 反而会在提交时被判成
+/// 「资产不存在」。
+fn registered_asset_ids(plan: &Value) -> Vec<String> {
+    let mut ids = Vec::new();
+    for card in plan["assets"].as_array().into_iter().flatten() {
+        let Some(card_id) = card["asset_id"].as_str() else {
+            continue;
+        };
+        ids.push(card_id.to_string());
+        for view in card["views"].as_array().into_iter().flatten() {
+            if let Some(name) = view["view"].as_str() {
+                ids.push(format!("{card_id}.{name}"));
+            }
+        }
+    }
+    ids
+}
+
 fn loaded_outputs(l: &LoadedStage) -> Option<&Outputs> {
     match l {
         LoadedStage::Draft(s) => s.outputs(),
@@ -1166,4 +1186,39 @@ fn collect_inputs(store: &Store, stage: StageId) -> Result<Value> {
         }
     }
     Ok(Value::Object(map))
+}
+
+#[cfg(test)]
+mod asset_id_tests {
+    use super::registered_asset_ids;
+    use studio_core::{fixtures, StageId};
+
+    /// 卡级和视图级两种写法都要认。以前只收卡级，于是照方法文档写
+    /// `C01.front` 会在提交时被判成「资产不存在」，而它其实解析得出来。
+    #[test]
+    fn both_the_card_and_its_views_are_registered() {
+        let plan = fixtures::outputs(StageId::VisualAssets);
+        let ids = registered_asset_ids(&plan[StageId::VisualAssets.output_key()]);
+        assert!(ids.contains(&"C01".to_string()), "缺卡级 id：{ids:?}");
+        assert!(
+            ids.iter().any(|i| i.starts_with("C01.")),
+            "缺视图级 id：{ids:?}"
+        );
+        // 视图级 id 必须真的对应卡上的视图，不是凭空拼的。
+        let views = plan[StageId::VisualAssets.output_key()]["assets"][0]["views"]
+            .as_array()
+            .unwrap();
+        for v in views {
+            let want = format!("C01.{}", v["view"].as_str().unwrap());
+            assert!(ids.contains(&want), "缺 {want}");
+        }
+    }
+
+    /// 形状不对的计划不该 panic，也不该凭空造出 id 来。
+    #[test]
+    fn a_malformed_plan_yields_nothing() {
+        assert!(registered_asset_ids(&serde_json::json!({})).is_empty());
+        assert!(registered_asset_ids(&serde_json::json!({ "assets": "不是数组" })).is_empty());
+        assert!(registered_asset_ids(&serde_json::json!({ "assets": [{}] })).is_empty());
+    }
 }
