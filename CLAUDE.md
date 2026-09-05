@@ -252,6 +252,34 @@ MCP 工具调用默认会卡在审批——要不要绕过、用什么方式绕�
 运行 Codex 的那台机器本身有没有更外层的沙箱防护，不要把某一次会话
 「这层已经沙箱化所以绕过审批安全」的判断当成通用结论照抄到别的机器上。
 
+**`codex exec` 默认 `approval: never`，而这个值会把 MCP 调用直接拒掉**，
+报「MCP tool call requires approval, but approval policy is never」——
+它不是「不问直接放行」，是「不问直接拒绝」。这一档下 Codex 连一次工具都
+调不出来，端到端等于没跑。判断那台机器外层确实有沙箱之后，用
+`--dangerously-bypass-approvals-and-sandbox`（`sandbox: danger-full-access`）；
+判断不了就别跑，跑出来的「零调用」不是结论。
+
+#### provider 的流式连接会偶发挂死
+
+2026-09-05 实测：`codex exec` 有时第一个 token 都不出，日志停在
+`ERROR: Reconnecting... 1/5`，之后再无输出，rollout 里最后一条是
+`token_count`。同一条命令重跑就通了。
+
+**别急着改配置**——先把这三样分开验：
+
+```bash
+# 1. 非流式：应当 200
+curl -sS -X POST "$OPENAI_BASE_URL/v1/responses" -H "Authorization: Bearer $OPENAI_API_KEY" \
+  -H "Content-Type: application/json" -d '{"model":"gpt-6-astra","input":"hi"}' -w " %{http_code}\n" -o /dev/null
+# 2. 流式：应当立刻吐 event: response.created
+curl -sS -N -X POST "$OPENAI_BASE_URL/v1/responses" ... -d '{... ,"stream":true}' | head -c 200
+# 3. 代理：recentRelayFailures 应当是空的
+curl -sS "$HTTPS_PROXY/__agentproxy/status"
+```
+
+三样都正常就说明是上游偶发，重跑一次即可；**不要因此去动 provider 配置或
+换模型**，那会把一个偶发问题变成一次没必要的降级。
+
 ### Codex 验收的真实覆盖范围
 
 **别假设这台机器有什么或没有什么——先探针，按结果决定跑到哪一步。**
