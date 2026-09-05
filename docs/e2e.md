@@ -204,7 +204,8 @@ COMFY_NODE=<入口> COMFY_TOKEN=<token> cargo test -p studio-pipeline --test rea
 ```
 
 前置条件：可达的 ComfyUI 入口、上面装着 `minimax_h3` 与 `seedvr2` 的权重、
-本机有 ffmpeg（用来现造参考图、核对产物）。验的是七件事：
+上面还要有 `flux2_dev` 的权重（卡片那条），本机有 ffmpeg（现造参考图、核对产物）。
+验的是九件事：
 
 1. 三种典型镜头（空镜 / 接续镜 / 群戏）组装出的图 ComfyUI 认，而且**真跑得出片**
 2. preview 的 turbo 组合跑得通，步数与调度器都换对了
@@ -218,6 +219,9 @@ COMFY_NODE=<入口> COMFY_TOKEN=<token> cargo test -p studio-pipeline --test rea
    三样都对，而且超分后的片段拼接仍然能直接复制流
 8. **参考真的进了模型**：同一 seed、同一提示词，只换参考图，画面必须不同；
    只换音频参考，音轨必须不同
+9. **卡片真的生成出来**：走 `StageExecutor::execute` 那条正路出一张角色卡，
+   视图 `status` 变 `ready`、`path` 指到真实文件，主视图无参考走 `t2i`、
+   派生视图挂着主视图走 `multiref_edit`，两张图不同
 
 第 8 条是整套验收里补得最晚、也最该早有的一条。AUTOGROW 槽位写成嵌套对象时
 「图合法 + 跑完了 + 有产出」**三样全都成立**，参考却一个都没进模型——

@@ -980,28 +980,49 @@ impl Pipeline {
             let name = view["view"].as_str().unwrap_or("view").to_string();
             // 已经出过的不重跑——retry_stage 之后接着做剩下的。
             if view["status"].as_str() == Some("ready") {
-                if let Some(p) = view["path"].as_str() {
-                    if let Ok(local) = ctx.bundle.resolve(p) {
-                        if let Ok(bytes) = std::fs::read(&local) {
-                            if let Ok(remote) =
-                                comfy.upload_image(&format!("{card_id}_{name}.png"), &bytes)
-                            {
-                                uploaded.insert(name.clone(), remote);
-                            }
+                if let Some(p) = view["path"].as_str().map(String::from) {
+                    match self.upload_view(ctx, comfy, &card_id, &name, &p) {
+                        Ok(remote) => {
+                            uploaded.insert(name.clone(), remote);
                         }
+                        Err(e) => ctx.say(format!(
+                            "{card_id}.{name} 已有的图传不上去（{}），                             后面引用它的视图会因此被挡下",
+                            e.message()
+                        )),
                     }
                 }
                 out.push(view);
                 continue;
             }
 
-            let refs: Vec<String> = view["derived_from"]
+            // 参考必须全都在场。**少一张就报错，不能悄悄退回无参考的那条路**——
+            // 退回去出来的是个「长得像但不是同一个人」，而且一路绿到交付。
+            let want: Vec<String> = view["derived_from"]
                 .as_array()
                 .into_iter()
                 .flatten()
                 .filter_map(|d| d.as_str())
-                .filter_map(|d| uploaded.get(d).cloned())
+                .map(String::from)
                 .collect();
+            let missing: Vec<&str> = want
+                .iter()
+                .map(|d| d.as_str())
+                .filter(|d| !uploaded.contains_key(*d))
+                .collect();
+            if !missing.is_empty() {
+                ctx.say(format!("{card_id}.{name} 缺参考图：{}", missing.join("、")));
+                view["status"] = json!("failed");
+                view["provenance"] = json!({
+                    "error": format!(
+                        "参考图 {} 还没生成出来（或者传不上去），\
+                         没有锚点就不生成——退回无参考出来的是长得像但不是同一个人",
+                        missing.join("、")
+                    ),
+                });
+                out.push(view);
+                continue;
+            }
+            let refs: Vec<String> = want.iter().map(|d| uploaded[d].clone()).collect();
             let (w, h) = card_dims(view["aspect"].as_str().unwrap_or("9:16"));
             let prompt = view["prompt"].as_str().unwrap_or(identity).to_string();
             let seed = stable_seed(&card_id, &name);
@@ -1034,14 +1055,15 @@ impl Pipeline {
             );
             match attempt {
                 Ok(rel) => {
-                    if let Ok(local) = ctx.bundle.resolve(&rel) {
-                        if let Ok(bytes) = std::fs::read(&local) {
-                            if let Ok(remote) =
-                                comfy.upload_image(&format!("{card_id}_{name}.png"), &bytes)
-                            {
-                                uploaded.insert(name.clone(), remote);
-                            }
+                    match self.upload_view(ctx, comfy, &card_id, &name, &rel) {
+                        Ok(remote) => {
+                            uploaded.insert(name.clone(), remote);
                         }
+                        Err(e) => ctx.say(format!(
+                            "{card_id}.{name} 出来了但传不回 ComfyUI（{}），\
+                             后面引用它的视图会因此被挡下",
+                            e.message()
+                        )),
                     }
                     view["status"] = json!("ready");
                     view["path"] = json!(rel);
@@ -1061,6 +1083,22 @@ impl Pipeline {
             out.push(view);
         }
         Ok(out)
+    }
+
+    /// 把生成好的视图传回 ComfyUI，好让同卡后面的视图拿它当参考。
+    fn upload_view(
+        &self,
+        ctx: &ExecContext<'_>,
+        comfy: &Comfy,
+        card_id: &str,
+        view: &str,
+        rel: &str,
+    ) -> Result<String> {
+        let local = ctx.bundle.resolve(rel)?;
+        let bytes = std::fs::read(&local).map_err(|e| StudioError::ArtifactMissing {
+            path: format!("{}（{e}）", local.display()),
+        })?;
+        comfy.upload_image(&format!("{card_id}_{view}.png"), &bytes)
     }
 
     #[allow(clippy::too_many_arguments)]

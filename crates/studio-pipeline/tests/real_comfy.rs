@@ -945,3 +945,84 @@ fn md5_of(shell: &str) -> String {
         .unwrap_or_default()
         .to_string()
 }
+
+/// SPEC-0016 §7.2：卡片真的生成出来。
+///
+/// 用**仓库里真实的资产计划样例**（裁到一张卡两个视图，省 GPU 时间），走
+/// `StageExecutor::execute` 那条正路，验三件事：
+///
+/// 1. 视图 `status` 变成 `ready`，`path` 指到真实存在的文件
+/// 2. 主视图无参考、第二个视图挂着主视图当参考——**参考链真的接上了**
+/// 3. 换参考出的图不同（AUTOGROW 那次的教训，链式槽位同样要守）
+#[test]
+fn a_character_card_is_actually_generated() {
+    let Some(env) = setup() else { return };
+    use studio_core::StageId;
+    use studio_engine::executor::{ExecContext, ExecRecorder, ProgressNote, StageExecutor};
+
+    let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/workflows");
+    let pipeline = studio_pipeline::Pipeline::new(assets);
+
+    // 真实样例裁到一张卡、两个视图：主视图 + 一个挂着它的派生视图。
+    let mut plan = studio_core::fixtures::outputs(StageId::VisualAssets);
+    let card = plan["asset_plan"]["assets"][0].clone();
+    let views: Vec<serde_json::Value> = card["views"].as_array().unwrap()[..2].to_vec();
+    assert_eq!(views[0]["is_anchor"], json!(true), "第一个必须是主视图");
+    assert!(
+        !views[1]["derived_from"].as_array().unwrap().is_empty(),
+        "第二个视图要挂参考，否则这条测试验不到链"
+    );
+    let mut card = card;
+    card["views"] = json!(views);
+    plan["asset_plan"]["assets"] = json!([card]);
+
+    let recorder = ExecRecorder::at(env.bundle.root());
+    let ctx = ExecContext {
+        bundle: &env.bundle,
+        settings: &env.settings,
+        inputs: json!({ "asset_plan": plan["asset_plan"] }),
+        progress: &ProgressNote::default(),
+        recorder: &recorder,
+        cancelled: &std::sync::atomic::AtomicBool::new(false),
+    };
+
+    let out = pipeline
+        .execute(StageId::VisualAssets, &ctx)
+        .unwrap_or_else(|e| panic!("卡片生成失败：{}", e.message()));
+
+    let done = &out["asset_plan"]["assets"][0]["views"];
+    let mut prints = Vec::new();
+    for v in done.as_array().unwrap() {
+        let name = v["view"].as_str().unwrap();
+        assert_eq!(
+            v["status"],
+            json!("ready"),
+            "{name} 没生成出来：{}",
+            v["provenance"]
+        );
+        let path = v["path"].as_str().expect("ready 的视图必须回填 path");
+        let local = env.bundle.resolve(path).unwrap();
+        assert!(
+            local.is_file(),
+            "{name} 的 path 指向一个不存在的文件：{path}"
+        );
+        let fp = md5_of(&format!("md5sum < {}", local.display()));
+        eprintln!(
+            "✅ 卡片视图 {name}：{path}（{}）参考 {} 张",
+            fp,
+            v["provenance"]["references"]
+                .as_array()
+                .map(|a| a.len())
+                .unwrap_or(0)
+        );
+        prints.push(fp);
+    }
+
+    // 主视图无参考、派生视图有参考，走的是两条不同的基线。
+    assert_eq!(done[0]["provenance"]["backend"], json!("flux2_dev/t2i"));
+    assert_eq!(
+        done[1]["provenance"]["backend"],
+        json!("flux2_dev/multiref_edit")
+    );
+    assert_ne!(prints[0], prints[1], "两个视图出的是同一张图");
+}

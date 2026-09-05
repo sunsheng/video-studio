@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | 对应 issue | [#12](https://github.com/sunsheng/video-studio/issues/12) |
-| 状态 | 设计中 |
+| 状态 | 已实现；§5 的取值形态与 §6 的失败处理是实现时收紧的，已补写 |
 | 前置 | [PR #22](https://github.com/sunsheng/video-studio/pull/22)（AUTOGROW 参考槽位修复）——参考不进模型的话，卡片生成出来也没用 |
 
 ---
@@ -186,8 +186,11 @@ Agent submit_stage(asset_plan)
 累积锁定要挂「主视图 + 已定稿的 1..N-1」，单值表达不了。
 
 ```jsonc
-"derived_from": ["C01.front_full", "C01.three_quarter"]
+"derived_from": ["front_full", "three_quarter"]
 ```
+
+> **取值是同一张卡里的裸视图名**，不带 `C01.` 前缀——反正 V11 就只允许指向
+> 同一张卡，加前缀等于每一项都重复一遍卡名。这跟原来单值时的写法一致。
 
 规矩：
 
@@ -229,6 +232,15 @@ fn visual_assets(&self, ctx: &ExecContext<'_>) -> Result<Outputs> {
 - **provenance**：`{ backend, workflow, width, height, seed, refs }`，可审计
 - **失败**：那一个视图 `status: failed` 并附原因，整卡继续；全卡失败才让阶段红
   ——一个视图没出来不该让前面几十秒白跑
+- **参考缺一张就不生成**（实现时收紧的）：`derived_from` 里有视图没出来、或者
+  出来了传不回 ComfyUI，这一张直接标 `failed`，**不许悄悄退回无参考的 t2i**。
+  退回去出来的是个「长得像但不是同一个人」，而且一路绿到交付——这正是这个
+  项目反复栽的那种失败方式。第一次真机跑就撞上了：上传偶发 404 被吞掉，
+  派生视图静默走成了 t2i
+- **没有卡片基线的机器退回「只提交计划」**（实现时补的）：`needs_execution`
+  先看两条基线在不在、核验过没有。「计划能提交」和「图能生出来」本来就是
+  两件事（`doctor` 的那一项有意不是 Fail 级）；硬要在没有后端的机器上阻塞，
+  前九个阶段就全都走不了了
 - **画幅**：`aspect` 字段解析成宽高，短边按原生画布走（`768`），
   复用 SPEC-0015 的 `delivery_dims` 思路但常量不同
 
