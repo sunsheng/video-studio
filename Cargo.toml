@@ -29,7 +29,12 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 sha2 = "0.10"
 fs2 = "0.4"
-ureq = { version = "2", features = ["json"] }
+# `native-certs`：用操作系统的信任库，而不是 ureq 内置的那份 webpki 根证书。
+# 内置那份认不了企业代理 / TLS 中间人签发的证书，而那种环境是真实存在的——
+# 本仓库的云端会话就是（出站 HTTPS 经代理重新终结 TLS，CA 装在系统信任库里，
+# 不开这个 feature 会拿到 `invalid peer certificate: UnknownIssuer`）。
+# 开了之后 `SSL_CERT_FILE` 这类标准配置也一并生效。**不要靠关掉校验来绕过。**
+ureq = { version = "2", features = ["json", "native-certs"] }
 clap = { version = "4", features = ["derive"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 walkdir = "2"

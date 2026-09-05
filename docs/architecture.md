@@ -12,12 +12,22 @@ Agent 面永远不直接接触控制面的状态存储，也不直接接触推�
 
 ## 运行本程序的机器不需要 GPU
 
-控制面与推理面之间只有 HTTP。`studio-comfy` 负责：健康检查、选择队列最短的节点、
-上传输入、提交 workflow、轮询 `/history/{prompt_id}`、下载输出。
-模型权重、custom node、CUDA 全部在 ComfyUI 那一侧，本机一概不需要。
+控制面与推理面之间只有 HTTP。`studio-comfy` 负责：探活、上传输入、提交
+workflow、轮询 `/history/{prompt_id}`、下载输出。模型权重、custom node、
+CUDA 全部在 ComfyUI 那一侧，本机一概不需要。
 
 因此控制面可以跑在一台没有显卡的小机器上，甚至和 ComfyUI 不在同一台主机——
-节点地址在 `config.toml` / `.env` 里配置即可。
+地址在 `config.toml` / `.env` 里配置即可。
+
+**入口只有一个 URL。** 早期版本让控制面维护一个节点列表、按队列深度挑最短
+的那个；现在那一侧通常是负载均衡代理，分发与故障转移都归它管，控制面既看
+不见后端有几个节点，也不该管。于是：
+
+- `COMFY_NODE` 是单个地址（`COMFY_NODES` 作为旧名仍然认，只取第一个，
+  多余的值由 `doctor` 报出来而不是静默丢弃）
+- 并发度显式配（`COMFY_CONCURRENCY`，默认 16），不再由「健康节点数」推导
+- 需要鉴权的代理配 `COMFY_TOKEN`，客户端给每个请求贴 `Authorization: Bearer`
+- 「排除某个坏节点」这个动作没有了——排除唯一的入口等于关掉渲染
 
 ## 外部程序依赖
 

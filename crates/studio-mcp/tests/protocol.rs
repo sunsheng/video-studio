@@ -105,11 +105,11 @@ fn initialize_falls_back_for_an_unknown_version() {
 }
 
 #[test]
-fn tools_list_exposes_exactly_twelve_tools_without_run_id() {
+fn tools_list_exposes_exactly_eleven_tools_without_run_id() {
     let mut h = Harness::new();
     let resp = h.rpc("tools/list", json!({}));
     let tools = resp["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 12);
+    assert_eq!(tools.len(), 11);
     for t in tools {
         let name = t["name"].as_str().unwrap();
         assert!(name.starts_with("studio."));
@@ -305,25 +305,6 @@ fn choosing_the_revise_option_over_mcp_sends_the_stage_back() {
 }
 
 #[test]
-fn exclude_node_tool_is_reachable_over_mcp() {
-    let mut h = Harness::new();
-    let (env, err) = h.call(
-        "studio.comfy.exclude_node",
-        json!({ "node": "http://127.0.0.1:9002" }),
-    );
-    assert!(!err, "排除节点不该报错：{env}");
-    assert!(env["project"].is_object(), "应当照常返回决策信封");
-}
-
-#[test]
-fn exclude_node_tool_rejects_an_empty_address() {
-    let mut h = Harness::new();
-    let (env, err) = h.call("studio.comfy.exclude_node", json!({ "node": "   " }));
-    assert!(err, "空地址不该被当成一个有效节点接受");
-    assert_eq!(env["blocked_by"]["code"], "internal");
-}
-
-#[test]
 fn retry_stage_tool_rejects_a_non_deterministic_stage_over_mcp() {
     let mut h = Harness::new();
     let (env, err) = h.call("studio.retry_stage", json!({ "stage": "idea" }));
@@ -456,4 +437,32 @@ fn self_review_before_the_film_exists_is_refused_with_a_remedy() {
     let blocked = &env["blocked_by"];
     assert_eq!(blocked["code"], "stage_not_ready");
     assert!(!blocked["remedy"].as_str().unwrap().is_empty());
+}
+
+/// 单入口之后 `studio.comfy.exclude_node` 的语义不存在了——排除唯一那个
+/// 地址等于关掉渲染。它必须从工具面上彻底消失，而不是留一个骗人的 no-op。
+#[test]
+fn the_removed_exclude_node_tool_is_gone_from_the_surface() {
+    let mut h = Harness::new();
+    let resp = h.rpc("tools/list", json!({}));
+    let names: Vec<&str> = resp["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert!(
+        !names.iter().any(|n| n.contains("exclude_node")),
+        "工具面上不该还有 exclude_node：{names:?}"
+    );
+
+    // 未知工具走 JSON-RPC 的 invalid params，不是决策信封里的 blocked_by。
+    let resp = h.rpc(
+        "tools/call",
+        json!({ "name": "studio.comfy.exclude_node", "arguments": { "node": "http://x" } }),
+    );
+    assert_eq!(
+        resp["error"]["code"], -32602,
+        "调用一个已删除的工具必须报错，不能静默成功：{resp}"
+    );
 }

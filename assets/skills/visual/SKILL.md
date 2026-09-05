@@ -81,6 +81,5 @@ description: 规划并生成一致的角色卡、场景卡与参考资产。
 - `studio.stage_output`
 - `studio.timeline`
 - `studio.export`
-- `studio.comfy.exclude_node`
 - `studio.retry_stage`
 - `studio.self_review`

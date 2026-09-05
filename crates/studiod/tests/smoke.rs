@@ -98,7 +98,7 @@ fn initialize_handshake_succeeds_when_cwd_is_a_real_bundle() {
     }));
     assert_eq!(
         list["result"]["tools"].as_array().unwrap().len(),
-        12,
+        11,
         "编译出的二进制找到的工具面应该跟 studio-mcp::TOOLS 对得上"
     );
 

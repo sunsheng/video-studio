@@ -225,7 +225,7 @@ fn a_failed_stage_becomes_a_blocked_envelope() {
     let b = env.blocked_by.expect("失败必须在信封里看得见");
     assert_eq!(b.code, "comfy_unavailable");
     assert!(!b.remedy.is_empty());
-    assert!(b.remedy.contains("COMFY_NODES"));
+    assert!(b.remedy.contains("COMFY_NODE"));
     assert_eq!(env.project.status, ProjectStatus::Blocked);
 
     // 失败挂着的时候不会闷头重试
@@ -257,32 +257,32 @@ fn a_failed_stage_becomes_a_blocked_envelope() {
 /// 编辑 `.env` 之后不该要求重启整个进程：同一个 `Project` 实例重试
 /// 确定性阶段时，应当当场重新读取 `.env`，而不是沿用打开会话那一刻
 /// 缓存的配置。这是 `comfy_unavailable` remedy 现在明确要求的行为——
-/// 配好 `COMFY_NODES` 后调 `studio.revise` 重试，不需要重开会话。
+/// 配好 `COMFY_NODE` 后调 `studio.revise` 重试，不需要重开会话。
 #[test]
-fn retrying_after_editing_env_picks_up_the_new_nodes_without_reopening() {
+fn retrying_after_editing_env_picks_up_the_new_node_without_reopening() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("千岛湖.studio");
     init_project(&root, fixtures::TITLE, "0.1.0-test", &[]).unwrap();
-    std::fs::write(root.join(".env"), "COMFY_NODES=http://before:9001\n").unwrap();
+    std::fs::write(root.join(".env"), "COMFY_NODE=http://before:9001\n").unwrap();
 
-    let attempts = Arc::new(Mutex::new(Vec::<Vec<String>>::new()));
+    let attempts = Arc::new(Mutex::new(Vec::<String>::new()));
     struct RecordingExecutor {
-        attempts: Arc<Mutex<Vec<Vec<String>>>>,
+        attempts: Arc<Mutex<Vec<String>>>,
     }
     impl StageExecutor for RecordingExecutor {
         fn execute(&self, stage: StageId, ctx: &ExecContext<'_>) -> Result<Outputs> {
-            // 只关心 render 自己的节点列表和重试次数；preview 顺带跑过去就好。
+            // 只关心 render 自己看到的入口地址和重试次数；preview 顺带跑过去就好。
             if stage != StageId::Render {
                 return Ok(fixtures::outputs(stage));
             }
-            let nodes = ctx.settings.comfy_nodes();
+            let node = ctx.settings.comfy_node();
             let is_first = {
                 let mut a = self.attempts.lock().unwrap();
-                a.push(nodes.clone());
+                a.push(node.clone());
                 a.len() == 1
             };
             if is_first {
-                return Err(StudioError::ComfyUnavailable { tried: nodes });
+                return Err(StudioError::ComfyUnavailable { tried: vec![node] });
             }
             Ok(fixtures::outputs(stage))
         }
@@ -301,15 +301,15 @@ fn retrying_after_editing_env_picks_up_the_new_nodes_without_reopening() {
     assert_eq!(env.blocked_by.unwrap().code, "comfy_unavailable");
     assert_eq!(
         attempts.lock().unwrap().last().unwrap(),
-        &vec!["http://before:9001".to_string()],
-        "第一次尝试应当看到打开会话时 .env 里的节点"
+        "http://before:9001",
+        "第一次尝试应当看到打开会话时 .env 里的地址"
     );
 
     // 相当于 Agent 照 remedy 做：编辑 .env，然后调 studio.revise 重试——
     // 全程没有重开 Project，也没有碰 studiod 的任何子命令。
-    std::fs::write(root.join(".env"), "COMFY_NODES=http://after:9002\n").unwrap();
+    std::fs::write(root.join(".env"), "COMFY_NODE=http://after:9002\n").unwrap();
     let env = p
-        .revise(StageId::Render, "已经把 COMFY_NODES 换成新节点，重试")
+        .revise(StageId::Render, "已经把 COMFY_NODE 换成新地址，重试")
         .unwrap();
     assert!(env.blocked_by.is_none(), "revise 之后阻塞应当解除");
 
@@ -317,8 +317,8 @@ fn retrying_after_editing_env_picks_up_the_new_nodes_without_reopening() {
     assert_eq!(env.project.status, ProjectStatus::Completed);
     assert_eq!(
         attempts.lock().unwrap().last().unwrap(),
-        &vec!["http://after:9002".to_string()],
-        "重试时应当当场重新读取 .env，而不是沿用打开会话时缓存的节点"
+        "http://after:9002",
+        "重试时应当当场重新读取 .env，而不是沿用打开会话时缓存的地址"
     );
 }
 
@@ -487,48 +487,4 @@ fn retry_stage_clears_a_recorded_failure_and_reruns_it() {
         .filter(|e| e.kind == "retried")
         .count();
     assert_eq!(retried, 1, "retry_stage 应当留一条可审计的时间线记录");
-}
-
-/// `studio.comfy.exclude_node` 排除的节点必须真的从执行器看到的
-/// `Settings::comfy_nodes()` 里消失——这是选节点时会跳过它的前提。
-#[test]
-fn excluded_nodes_disappear_from_the_settings_the_executor_sees() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().join("千岛湖.studio");
-    init_project(&root, fixtures::TITLE, "0.1.0-test", &[]).unwrap();
-    std::fs::write(
-        root.join(".env"),
-        "COMFY_NODES=http://a:9001,http://b:9002\n",
-    )
-    .unwrap();
-
-    let seen_nodes = Arc::new(Mutex::new(Vec::<Vec<String>>::new()));
-    struct RecordingExecutor {
-        seen: Arc<Mutex<Vec<Vec<String>>>>,
-    }
-    impl StageExecutor for RecordingExecutor {
-        fn execute(&self, stage: StageId, ctx: &ExecContext<'_>) -> Result<Outputs> {
-            if stage == StageId::Render {
-                self.seen.lock().unwrap().push(ctx.settings.comfy_nodes());
-            }
-            Ok(fixtures::outputs(stage))
-        }
-    }
-    let exec = Arc::new(RecordingExecutor {
-        seen: Arc::clone(&seen_nodes),
-    });
-    let p = Project::open_with(&root, None, exec).unwrap();
-    // 必须在触发 render 的 worker 之前排除——`ensure_worker` 在启动线程那一刻
-    // 就把当下的排除名单快照进 Settings，之后再排除对这次已经在跑的执行不生效。
-    p.exclude_comfy_node("http://a:9001/").unwrap();
-    submit_through_prompt_pack(&p);
-    approve_preview_gate(&p);
-
-    let env = poll_until(&p, 10, |e| e.project.status == ProjectStatus::Completed);
-    assert_eq!(env.project.status, ProjectStatus::Completed);
-    assert_eq!(
-        seen_nodes.lock().unwrap().last().unwrap(),
-        &vec!["http://b:9002".to_string()],
-        "被排除的节点不该出现在执行器看到的节点列表里"
-    );
 }

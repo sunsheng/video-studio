@@ -48,6 +48,5 @@ description: 解释当前作品的状态，走修订与恢复路径。
 - `studio.stage_output`
 - `studio.timeline`
 - `studio.export`
-- `studio.comfy.exclude_node`
 - `studio.retry_stage`
 - `studio.self_review`

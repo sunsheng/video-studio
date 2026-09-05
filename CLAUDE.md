@@ -157,13 +157,36 @@ MCP 工具调用默认会卡在审批——要不要绕过、用什么方式绕�
 
 ### Codex 验收的真实覆盖范围
 
-开发环境**一定没有 GPU、没有 ComfyUI**。Codex 能端到端跑通、且真能验证到
-东西的，只有 render 之前的六个阶段（idea → selection → script →
-storyboard → visual_assets → prompt_pack）——走完整 MCP 协议，含门与修订。
-`preview` / `render` / `post` / `review` 要真实 ComfyUI + GPU + ffmpeg，
-本地 Codex 跑不出真信号，顶多验证到「提交后结构化阻塞在
-`comfy_unavailable`」，**不能把这当成渲染链路已验证**。渲染链路的真实
-验收只能在装了 ComfyUI 的生产机器跑 `scripts/smoke.sh`。
+**别假设这台机器有什么或没有什么——先探针，按结果决定跑到哪一步。**
+
+以前这里写着「开发环境一定没有 GPU、没有 ComfyUI」。那句话现在是错的：
+云端会话可以配好 `COMFY_NODE` 指向一台真实的 ComfyUI（实测过 A800 80GB
+的负载均衡代理），也可以装好 Codex CLI。**能力面是探出来的，不是写死的**——
+把它写死的代价是明明能验的东西没验，或者反过来，宣称验过了其实没有。
+
+探针清单，每次开工先跑一遍（`studio-cli doctor` 覆盖前三项）：
+
+| 探什么 | 怎么探 | 探到了能多跑什么 |
+|---|---|---|
+| ComfyUI | `GET $COMFY_NODE/system_stats`（带 `Authorization: Bearer $COMFY_TOKEN`） | `preview` / `render`，以及 `studio-comfy` 的集成测试 |
+| 模型权重 | `GET $COMFY_NODE/models/<类型>` | 哪个系列能真跑——**节点在 `object_info` 里不等于权重下载了** |
+| 节点类型 | `GET $COMFY_NODE/object_info/<节点类名>` | 某个 workflow 能不能编出来 |
+| ffmpeg / ffprobe | `studio-cli doctor` | `post` / `review` |
+| Codex | `codex doctor` + 跑一次 `codex exec` 确认没有 metadata 警告 | 走真实 MCP 会话的端到端验收 |
+
+按探针结果分档：
+
+- **什么都没探到**：只有 render 之前的六个阶段（idea → selection → script →
+  storyboard → visual_assets → prompt_pack）能真跑，`preview` 往后顶多验证到
+  「提交后结构化阻塞在 `comfy_unavailable`」——**不能把这当成渲染链路已验证**。
+- **探到 ComfyUI**：`preview` / `render` 可以真跑，视觉资产可以真出图。
+- **再探到 ffmpeg**：`post` / `review` 也能跑，十个阶段可以在这台机器上走完。
+
+**不得声称集成通过而不说明当时探到了什么。** 报结论时把探针结果一起写出来
+（型号、显存、权重清单），否则下一个人无从判断那次验收覆盖了多少。
+
+生产环境的最终验收仍然是在宿主机跑 `scripts/smoke.sh`——那是发布前的关口，
+不因为开发环境也能跑渲染而取消。
 
 ## 工具链
 
@@ -182,14 +205,15 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 - `cargo test` —— 单元测试、状态机、schema 校验、MCP 一致性
 
-### 本机有条件通过（需要外部依赖）
+### 本机有条件通过（先探针，探到了才跑）
 
-- **ffmpeg / ffprobe：** 如果本机装有，可运行 `studio-media` 的集成测试
-- **ComfyUI + GPU：** 如果本机装有，可通过 HTTP 运行 `studio-comfy` 的集成测试
-- **Codex 环境（不含 render）：** 如果本机装有 Codex CLI 且已配置好可用的
-  model provider（`codex doctor` 通过），可以用真实 Codex 会话走 render
-  之前的六个阶段。装配方法和真实覆盖范围见「标准工作流程」下的
-  「本地配置 Codex」「Codex 验收的真实覆盖范围」。
+- **ffmpeg / ffprobe：** 探到就跑 `studio-media` 的集成测试
+- **ComfyUI：** 探到就通过 HTTP 跑 `studio-comfy` 的集成测试，以及真实的
+  `preview` / `render`。**接入方式是单个 URL**（`COMFY_NODE`）——那一侧通常
+  是个代理，多节点的分发由它负责；需要鉴权就配 `COMFY_TOKEN`
+- **Codex：** 探到 Codex CLI 且 `codex doctor` 通过，就用真实 Codex 会话走
+  MCP 端到端。能走到第几阶段取决于上面两项探到了什么，见「Codex 验收的
+  真实覆盖范围」
 
 ### 环境检测
 
@@ -197,9 +221,15 @@ cargo clippy --workspace --all-targets -- -D warnings
   运行时，还检查该作品 `.codex/config.toml` 指向的 `studiod` 路径是否仍然
   有效。**它不检测本机是否装有 Codex CLI 本身**——那用 `codex doctor` 查。
 - 根据检测结果，选择性运行相应的集成测试
-- **不得声称集成通过而不说明环境前置条件**
+- **不得声称集成通过而不说明环境前置条件**，报结论时附上探针结果
 - 环境变量里如果同时有 `OPENAI_API_KEY` 和 `OPENAI_BASE_URL`，就据此配置 Codex
   用于本机测试；缺一个都不算满足 Codex 部署条件，按未装处理
+- **`COMFY_NODE` 与 `COMFY_TOKEN` 同理**：探到就用，探不到就按没有 ComfyUI
+  处理，走结构化阻塞，不降级
+- 用 Python 脚本直连 ComfyUI 调试时注意：某些代理前面的 Cloudflare 按 UA
+  指纹拦 POST，`Python-urllib/*` 会拿到 403 / code 1010，同一个请求体用
+  curl 或 `ureq` 就是 200。**控制面用的是 `ureq`，不受影响**，但临时脚本
+  会撞上——加个常见 UA 即可
 - **CI 中不运行 Codex 端到端测试。** 不管上述两个环境变量是否存在，CI 只跑
   本机必能通过的 `cargo test` 和 `emit-assets --check`；Codex 端到端测试只在
   本机手动按需触发，不接入 CI 流水线

@@ -1,11 +1,15 @@
 //! ComfyUI 客户端。
 //!
 //! **运行本程序的机器不需要 GPU。** 控制面与推理面之间只有 HTTP：
-//! 健康检查、选节点、上传输入、提交 workflow、轮询 `/history/{prompt_id}`、
-//! 下载输出。模型权重、custom node、CUDA 全在 ComfyUI 那一侧。
+//! 健康检查、上传输入、提交 workflow、轮询 `/history/{prompt_id}`、下载输出。
+//! 模型权重、custom node、CUDA 全在 ComfyUI 那一侧。
 //!
 //! 因此控制面可以跑在一台没有显卡的小机器上，甚至和 ComfyUI 不在同一台主机——
-//! 节点地址在 `.env` 的 `COMFY_NODES` 里配。
+//! 地址在 `.env` 的 `COMFY_NODE` 里配。
+//!
+//! **入口只有一个 URL。** 多节点的分发与故障转移是那一侧的事（通常是个负载
+//! 均衡代理），控制面不再维护节点集合、不再挑节点。需要鉴权的代理在
+//! `COMFY_TOKEN` 里配 Bearer token，没配就不带 `Authorization` 头。
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -50,7 +54,9 @@ fn default_type() -> String {
 const MAX_CONSECUTIVE_UNREACHABLE: u32 = 5;
 
 pub struct Comfy {
-    nodes: Vec<String>,
+    node: String,
+    /// 代理的 Bearer token。None 表示对端不需要鉴权。
+    token: Option<String>,
     timeout: Duration,
     poll: Duration,
 }
@@ -68,20 +74,26 @@ enum PollOutcome {
 }
 
 impl Comfy {
-    pub fn new(nodes: Vec<String>, timeout_secs: u64, poll_secs: u64) -> Comfy {
+    pub fn new(node: String, token: Option<String>, timeout_secs: u64, poll_secs: u64) -> Comfy {
         Comfy {
-            nodes,
+            node: node.trim_end_matches('/').to_string(),
+            token,
             timeout: Duration::from_secs(timeout_secs.max(1)),
             poll: Duration::from_secs(poll_secs.clamp(1, 60)),
         }
     }
 
     pub fn from_settings(s: &studio_engine::Settings) -> Comfy {
-        Comfy::new(s.comfy_nodes(), s.comfy_timeout_secs(), s.comfy_poll_secs())
+        Comfy::new(
+            s.comfy_node(),
+            s.comfy_token(),
+            s.comfy_timeout_secs(),
+            s.comfy_poll_secs(),
+        )
     }
 
-    pub fn nodes(&self) -> &[String] {
-        &self.nodes
+    pub fn node(&self) -> &str {
+        &self.node
     }
 
     fn agent(&self) -> ureq::Agent {
@@ -91,72 +103,85 @@ impl Comfy {
             .build()
     }
 
-    /// 逐个探活。不可达的节点不是错误，只是不可用。
-    pub fn health(&self) -> Vec<NodeHealth> {
-        let agent = self.agent();
-        self.nodes
-            .iter()
-            .map(|url| match agent.get(&format!("{url}/queue")).call() {
-                Ok(resp) => match resp.into_json::<Value>() {
-                    Ok(v) => NodeHealth {
-                        url: url.clone(),
-                        reachable: true,
-                        queue_depth: queue_depth(&v),
-                        detail: None,
-                    },
-                    Err(e) => NodeHealth {
-                        url: url.clone(),
-                        reachable: false,
-                        queue_depth: usize::MAX,
-                        detail: Some(format!("返回不是 JSON：{e}")),
-                    },
-                },
-                Err(e) => NodeHealth {
-                    url: url.clone(),
-                    reachable: false,
-                    queue_depth: usize::MAX,
-                    detail: Some(short_error(&e)),
-                },
-            })
-            .collect()
+    /// 带上鉴权头。token 没配就原样返回——直连一个不设防的 ComfyUI 时
+    /// 本来就不需要这个头。
+    fn auth(&self, req: ureq::Request) -> ureq::Request {
+        match &self.token {
+            Some(t) => req.set("Authorization", &format!("Bearer {t}")),
+            None => req,
+        }
     }
 
-    /// 选一个健康且队列最短的节点。一个都没有就结构化阻塞，**不降级**。
-    pub fn pick_node(&self) -> Result<String> {
-        let mut healthy: Vec<NodeHealth> =
-            self.health().into_iter().filter(|h| h.reachable).collect();
-        healthy.sort_by_key(|h| h.queue_depth);
-        healthy
-            .first()
-            .map(|h| h.url.clone())
-            .ok_or_else(|| StudioError::ComfyUnavailable {
-                tried: self.nodes.clone(),
-            })
+    fn get(&self, url: &str) -> ureq::Request {
+        self.auth(self.agent().get(url))
+    }
+
+    fn post(&self, url: &str) -> ureq::Request {
+        self.auth(self.agent().post(url))
+    }
+
+    /// 探活。不可达不是错误，只是不可用。
+    pub fn health(&self) -> NodeHealth {
+        match self.get(&format!("{}/queue", self.node)).call() {
+            Ok(resp) => match resp.into_json::<Value>() {
+                Ok(v) => NodeHealth {
+                    url: self.node.clone(),
+                    reachable: true,
+                    queue_depth: queue_depth(&v),
+                    detail: None,
+                },
+                Err(e) => NodeHealth {
+                    url: self.node.clone(),
+                    reachable: false,
+                    queue_depth: usize::MAX,
+                    detail: Some(format!("返回不是 JSON：{e}")),
+                },
+            },
+            Err(e) => NodeHealth {
+                url: self.node.clone(),
+                reachable: false,
+                queue_depth: usize::MAX,
+                detail: Some(short_error(&e)),
+            },
+        }
+    }
+
+    /// 确认入口活着。不活就结构化阻塞，**不降级**。
+    ///
+    /// 单入口之后这里不再有「挑一个」的余地：能连上就用它，连不上就停。
+    /// 后端有几个节点、坏了哪个、怎么转移，都是代理那一侧的事。
+    pub fn ensure_reachable(&self) -> Result<()> {
+        let h = self.health();
+        if h.reachable {
+            return Ok(());
+        }
+        Err(StudioError::ComfyUnavailable {
+            tried: vec![self.node.clone()],
+        })
     }
 
     /// 提交一张 API 格式的节点图。
-    pub fn submit(&self, node: &str, api_graph: &Value, client_id: &str) -> Result<Submission> {
+    pub fn submit(&self, api_graph: &Value, client_id: &str) -> Result<Submission> {
         let body = serde_json::json!({ "prompt": api_graph, "client_id": client_id });
         let resp = self
-            .agent()
-            .post(&format!("{node}/prompt"))
+            .post(&format!("{}/prompt", self.node))
             .send_json(body)
             .map_err(|e| StudioError::ComfyFailed {
-                node: node.into(),
+                node: self.node.clone(),
                 detail: short_error(&e),
             })?;
         let v: Value = resp.into_json().map_err(|e| StudioError::ComfyFailed {
-            node: node.into(),
+            node: self.node.clone(),
             detail: format!("提交返回不是 JSON：{e}"),
         })?;
         let prompt_id = v["prompt_id"]
             .as_str()
             .ok_or_else(|| StudioError::ComfyFailed {
-                node: node.into(),
+                node: self.node.clone(),
                 detail: format!("提交返回里没有 prompt_id：{v}"),
             })?;
         Ok(Submission {
-            node: node.to_string(),
+            node: self.node.clone(),
             prompt_id: prompt_id.to_string(),
         })
     }
@@ -216,8 +241,8 @@ impl Comfy {
     }
 
     fn poll(&self, sub: &Submission) -> PollOutcome {
-        let url = format!("{}/history/{}", sub.node, sub.prompt_id);
-        let resp = match self.agent().get(&url).call() {
+        let url = format!("{}/history/{}", self.node, sub.prompt_id);
+        let resp = match self.get(&url).call() {
             Ok(r) => r,
             Err(e) => return PollOutcome::Unreachable(short_error(&e)),
         };
@@ -255,19 +280,19 @@ impl Comfy {
     }
 
     /// 把产出下载到本地。
-    pub fn download(&self, node: &str, file: &RemoteFile, dest: &std::path::Path) -> Result<u64> {
+    pub fn download(&self, file: &RemoteFile, dest: &std::path::Path) -> Result<u64> {
         let url = format!(
-            "{node}/view?filename={}&subfolder={}&type={}",
+            "{}/view?filename={}&subfolder={}&type={}",
+            self.node,
             urlencode(&file.filename),
             urlencode(&file.subfolder),
             urlencode(&file.r#type)
         );
         let resp = self
-            .agent()
             .get(&url)
             .call()
             .map_err(|e| StudioError::ComfyFailed {
-                node: node.into(),
+                node: self.node.clone(),
                 detail: short_error(&e),
             })?;
         if let Some(parent) = dest.parent() {
@@ -282,7 +307,7 @@ impl Comfy {
     }
 
     /// 上传一张参考图作为 workflow 的输入。
-    pub fn upload_image(&self, node: &str, name: &str, bytes: &[u8]) -> Result<String> {
+    pub fn upload_image(&self, name: &str, bytes: &[u8]) -> Result<String> {
         let boundary = "----videostudioboundary";
         let mut body = Vec::new();
         body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
@@ -295,19 +320,18 @@ impl Comfy {
         body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
 
         let resp = self
-            .agent()
-            .post(&format!("{node}/upload/image"))
+            .post(&format!("{}/upload/image", self.node))
             .set(
                 "Content-Type",
                 &format!("multipart/form-data; boundary={boundary}"),
             )
             .send_bytes(&body)
             .map_err(|e| StudioError::ComfyFailed {
-                node: node.into(),
+                node: self.node.clone(),
                 detail: short_error(&e),
             })?;
         let v: Value = resp.into_json().map_err(|e| StudioError::ComfyFailed {
-            node: node.into(),
+            node: self.node.clone(),
             detail: format!("上传返回不是 JSON：{e}"),
         })?;
         Ok(v["name"].as_str().unwrap_or(name).to_string())
@@ -398,7 +422,7 @@ mod tests {
     use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     /// 一个只回固定内容的假 ComfyUI，用来在没有 GPU 的机器上验证客户端逻辑。
     struct Stub {
@@ -448,6 +472,52 @@ mod tests {
         }
     }
 
+    /// 记下每个请求的 `Authorization` 头（没有就记 `(none)`），其余一律回 200。
+    /// 用来证明鉴权头真的贴在了每一类请求上，而不是只贴在提交那一个。
+    fn auth_recording_stub(seen: Arc<Mutex<Vec<String>>>) -> Stub {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = std::thread::spawn(move || {
+            for stream in listener.incoming().take(32) {
+                let Ok(mut stream) = stream else { continue };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut auth = "(none)".to_string();
+                let mut line = String::new();
+                // 读完整个头部，找 Authorization。
+                while reader.read_line(&mut line).is_ok() {
+                    let trimmed = line.trim_end();
+                    if trimmed.is_empty() {
+                        break;
+                    }
+                    if let Some(v) = trimmed
+                        .strip_prefix("Authorization: ")
+                        .or_else(|| trimmed.strip_prefix("authorization: "))
+                    {
+                        auth = v.to_string();
+                    }
+                    line.clear();
+                }
+                seen.lock().unwrap().push(auth);
+                let body = json!({
+                    "queue_running": [], "queue_pending": [],
+                    "prompt_id": "p1", "name": "ref.png"
+                })
+                .to_string();
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(resp.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+        Stub {
+            url: format!("http://127.0.0.1:{port}"),
+            _handle: handle,
+        }
+    }
+
     fn stub(routes: Vec<(&'static str, Value)>) -> Stub {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -481,15 +551,15 @@ mod tests {
     }
 
     #[test]
-    fn unreachable_nodes_block_instead_of_degrading() {
+    fn an_unreachable_entrypoint_blocks_instead_of_degrading() {
         // 端口 1 上不会有 ComfyUI。
-        let c = Comfy::new(vec!["http://127.0.0.1:1".into()], 1, 1);
-        let e = c.pick_node().unwrap_err();
+        let c = Comfy::new("http://127.0.0.1:1".into(), None, 1, 1);
+        let e = c.ensure_reachable().unwrap_err();
         assert_eq!(e.code(), "comfy_unavailable");
-        assert!(e.remedy().contains("COMFY_NODES"));
+        assert!(e.remedy().contains("COMFY_NODE"));
         assert!(
             e.remedy().contains("不要降级"),
-            "缺节点时必须明确禁止换模型：{}",
+            "连不上时必须明确禁止换模型：{}",
             e.remedy()
         );
     }
@@ -500,24 +570,53 @@ mod tests {
             "/queue",
             json!({ "queue_running": [1], "queue_pending": [1, 2] }),
         )]);
-        let c = Comfy::new(vec![s.url.clone()], 5, 1);
+        let c = Comfy::new(s.url.clone(), None, 5, 1);
         let h = c.health();
-        assert!(h[0].reachable);
-        assert_eq!(h[0].queue_depth, 3);
+        assert!(h.reachable);
+        assert_eq!(h.queue_depth, 3);
     }
 
+    /// 配了 token 就必须每个请求都带上——代理靠它放行，漏一个就是 403。
     #[test]
-    fn the_shortest_queue_wins() {
-        let busy = stub(vec![(
-            "/queue",
-            json!({ "queue_running": [1], "queue_pending": [1, 2, 3] }),
-        )]);
-        let idle = stub(vec![(
-            "/queue",
-            json!({ "queue_running": [], "queue_pending": [] }),
-        )]);
-        let c = Comfy::new(vec![busy.url.clone(), idle.url.clone()], 5, 1);
-        assert_eq!(c.pick_node().unwrap(), idle.url);
+    fn every_request_carries_the_bearer_token_when_configured() {
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let s = auth_recording_stub(Arc::clone(&seen));
+        let c = Comfy::new(s.url.clone(), Some("tok123".into()), 5, 1);
+
+        let _ = c.health();
+        let sub = c.submit(&json!({}), "test").unwrap();
+        let _ = c.try_history(&sub);
+        let dest = tempfile::tempdir().unwrap().path().join("out.bin");
+        let _ = c.download(
+            &RemoteFile {
+                filename: "out.mp4".into(),
+                subfolder: String::new(),
+                r#type: "output".into(),
+            },
+            &dest,
+        );
+        let _ = c.upload_image("ref.png", b"bytes");
+
+        let got = seen.lock().unwrap();
+        assert!(got.len() >= 5, "五类请求都该打到桩上：{got:?}");
+        assert!(
+            got.iter().all(|h| h == "Bearer tok123"),
+            "每个请求都要带 token：{got:?}"
+        );
+    }
+
+    /// 没配 token 就不该凭空造一个头出来——直连不设防的 ComfyUI 是正常用法。
+    #[test]
+    fn no_authorization_header_when_token_is_absent() {
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let s = auth_recording_stub(Arc::clone(&seen));
+        let c = Comfy::new(s.url.clone(), None, 5, 1);
+        let _ = c.health();
+        assert_eq!(
+            seen.lock().unwrap().as_slice(),
+            &["(none)".to_string()],
+            "没配 token 时不该带 Authorization"
+        );
     }
 
     #[test]
@@ -526,13 +625,9 @@ mod tests {
             "/prompt",
             json!({ "prompt_id": "abc-123", "number": 1 }),
         )]);
-        let c = Comfy::new(vec![s.url.clone()], 5, 1);
+        let c = Comfy::new(s.url.clone(), None, 5, 1);
         let sub = c
-            .submit(
-                &s.url,
-                &json!({ "1": { "class_type": "X", "inputs": {} } }),
-                "cid",
-            )
+            .submit(&json!({ "1": { "class_type": "X", "inputs": {} } }), "cid")
             .unwrap();
         assert_eq!(sub.prompt_id, "abc-123");
     }
@@ -546,7 +641,7 @@ mod tests {
                 "outputs": { "9": { "videos": [ { "filename": "sh01.mp4", "subfolder": "", "type": "output" } ] } }
             }}),
         )]);
-        let c = Comfy::new(vec![s.url.clone()], 5, 1);
+        let c = Comfy::new(s.url.clone(), None, 5, 1);
         let sub = Submission {
             node: s.url.clone(),
             prompt_id: "abc-123".into(),
@@ -559,7 +654,7 @@ mod tests {
     #[test]
     fn a_still_running_prompt_is_not_an_error() {
         let s = stub(vec![("/history/", json!({}))]);
-        let c = Comfy::new(vec![s.url.clone()], 5, 1);
+        let c = Comfy::new(s.url.clone(), None, 5, 1);
         let sub = Submission {
             node: s.url.clone(),
             prompt_id: "abc-123".into(),
@@ -571,7 +666,7 @@ mod tests {
     #[test]
     fn try_history_treats_a_connection_hiccup_as_still_pending() {
         let s = flaky_stub(1, vec![("/history/", json!({}))]);
-        let c = Comfy::new(vec![s.url.clone()], 5, 1);
+        let c = Comfy::new(s.url.clone(), None, 5, 1);
         let sub = Submission {
             node: s.url.clone(),
             prompt_id: "abc-123".into(),
@@ -596,7 +691,7 @@ mod tests {
                 }}),
             )],
         );
-        let c = Comfy::new(vec![s.url.clone()], 30, 1);
+        let c = Comfy::new(s.url.clone(), None, 30, 1);
         let sub = Submission {
             node: s.url.clone(),
             prompt_id: "abc-123".into(),
@@ -609,7 +704,7 @@ mod tests {
     #[test]
     fn wait_gives_up_after_too_many_consecutive_unreachable_polls() {
         // 端口 1 上不会有 ComfyUI；timeout 给得很宽，逼出的是连续失败阈值而不是总超时。
-        let c = Comfy::new(vec!["http://127.0.0.1:1".into()], 120, 1);
+        let c = Comfy::new("http://127.0.0.1:1".into(), None, 120, 1);
         let sub = Submission {
             node: "http://127.0.0.1:1".into(),
             prompt_id: "abc-123".into(),
@@ -633,7 +728,7 @@ mod tests {
                 "messages": [["execution_error", { "node_type": "KSampler",
                                                    "exception_message": "CUDA out of memory" }]] } }}),
         )]);
-        let c = Comfy::new(vec![s.url.clone()], 30, 1);
+        let c = Comfy::new(s.url.clone(), None, 30, 1);
         let sub = Submission {
             node: s.url.clone(),
             prompt_id: "abc-123".into(),
@@ -656,7 +751,7 @@ mod tests {
                 "messages": [["execution_error", { "node_type": "KSampler",
                                                    "exception_message": "CUDA out of memory" }]] } }}),
         )]);
-        let c = Comfy::new(vec![s.url.clone()], 5, 1);
+        let c = Comfy::new(s.url.clone(), None, 5, 1);
         let sub = Submission {
             node: s.url.clone(),
             prompt_id: "abc-123".into(),
@@ -689,7 +784,7 @@ mod tests {
     #[test]
     fn download_writes_the_response_body_to_the_destination_file() {
         let s = stub(vec![("/view", json!({ "bytes": "这是产物内容" }))]);
-        let c = Comfy::new(vec![s.url.clone()], 5, 1);
+        let c = Comfy::new(s.url.clone(), None, 5, 1);
         let dir = tempfile::tempdir().unwrap();
         let dest = dir.path().join("nested/sh01.mp4");
         let file = RemoteFile {
@@ -697,7 +792,7 @@ mod tests {
             subfolder: String::new(),
             r#type: "output".into(),
         };
-        let n = c.download(&s.url, &file, &dest).unwrap();
+        let n = c.download(&file, &dest).unwrap();
         assert!(n > 0);
         assert!(dest.is_file(), "download 应当顺带建好中间目录");
         let body = std::fs::read_to_string(&dest).unwrap();
@@ -706,18 +801,14 @@ mod tests {
 
     #[test]
     fn download_from_an_unreachable_node_fails_with_the_node_named() {
-        let c = Comfy::new(vec!["http://127.0.0.1:1".into()], 1, 1);
+        let c = Comfy::new("http://127.0.0.1:1".into(), None, 1, 1);
         let file = RemoteFile {
             filename: "sh01.mp4".into(),
             subfolder: String::new(),
             r#type: "output".into(),
         };
         let e = c
-            .download(
-                "http://127.0.0.1:1",
-                &file,
-                &std::path::PathBuf::from("/tmp/x.mp4"),
-            )
+            .download(&file, &std::path::PathBuf::from("/tmp/x.mp4"))
             .unwrap_err();
         assert_eq!(e.code(), "comfy_failed");
         assert!(e.message().contains("127.0.0.1:1"));
@@ -726,16 +817,16 @@ mod tests {
     #[test]
     fn upload_image_returns_the_name_comfyui_assigned() {
         let s = stub(vec![("/upload/image", json!({ "name": "已改名.png" }))]);
-        let c = Comfy::new(vec![s.url.clone()], 5, 1);
-        let name = c.upload_image(&s.url, "参考图.png", b"fake-bytes").unwrap();
+        let c = Comfy::new(s.url.clone(), None, 5, 1);
+        let name = c.upload_image("参考图.png", b"fake-bytes").unwrap();
         assert_eq!(name, "已改名.png");
     }
 
     #[test]
     fn upload_image_falls_back_to_the_given_name_when_the_response_omits_it() {
         let s = stub(vec![("/upload/image", json!({}))]);
-        let c = Comfy::new(vec![s.url.clone()], 5, 1);
-        let name = c.upload_image(&s.url, "参考图.png", b"fake-bytes").unwrap();
+        let c = Comfy::new(s.url.clone(), None, 5, 1);
+        let name = c.upload_image("参考图.png", b"fake-bytes").unwrap();
         assert_eq!(name, "参考图.png");
     }
 }

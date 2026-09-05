@@ -63,6 +63,9 @@ install.ps1 [-Prefix DIR] [-Version TAG] [-Init BUNDLE] [-Force]        # Window
 
 - **不需要 GPU**：推理全部经 ComfyUI HTTP API
 - 需要 ffmpeg / ffprobe，可不在 PATH，见 `.env` 的 `FFMPEG_PATH` / `FFPROBE_PATH`
-- 需要至少一个可达的 ComfyUI 节点，见 `.env` 的 `COMFY_NODES`
+- 需要一个可达的 ComfyUI 入口，见 `.env` 的 `COMFY_NODE`（单个 URL；那一侧
+  是不是代理、后面挂了几个节点，控制面不关心）
+- 入口需要鉴权就配 `COMFY_TOKEN`，客户端会给每个请求带 `Authorization: Bearer`
+- 并发度按代理后面的节点数配，见 `COMFY_CONCURRENCY`（默认 16）
 
 `studio-cli doctor` 会逐项检查并给出修复指引。

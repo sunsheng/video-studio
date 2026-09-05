@@ -290,10 +290,6 @@ impl Server {
                 to_value(p.timeline(limit)?)
             }
             "studio.export" => to_value(p.export()?),
-            "studio.comfy.exclude_node" => {
-                let node = str_arg(args, "node")?;
-                to_value(p.exclude_comfy_node(&node)?)
-            }
             "studio.retry_stage" => to_value(p.retry_stage(stage_arg(args)?)?),
             "studio.self_review" => {
                 let review: studio_core::SelfReview = serde_json::from_value(args.clone())

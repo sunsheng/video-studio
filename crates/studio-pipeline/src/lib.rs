@@ -17,8 +17,8 @@ use studio_engine::executor::{ExecContext, StageExecutor};
 use studio_media::Media;
 use workflow::Workflow;
 
-/// 单镜提交-等待-下载失败后允许重试的次数。第一次用调用方给的节点，
-/// 之后每次重试都重新调 `pick_node()`——不认定原节点还活着。
+/// 单镜提交-等待-下载失败后允许重试的次数。重试打到同一个入口——
+/// 换后端节点是代理那一侧的事，控制面只负责再试一次。
 const MAX_SHOT_ATTEMPTS: u32 = 3;
 
 /// 预览阶段的短边目标像素——只降分辨率，帧数/时长照抄提示词包，不变。
@@ -190,12 +190,7 @@ fn need<'a>(inputs: &'a Value, key: &str, stage: StageId) -> Result<&'a Value> {
 }
 
 impl Pipeline {
-    /// 按当下健康的节点数分片并发渲染：每个健康节点固定绑一个 worker 线程，
-    /// 各镜头放共享队列，谁先跑完自己手上那镜就去认领下一镜。
-    ///
-    /// 实测单镜十来分钟，串行渲染 8 镜可能超过一个半小时；8 个健康节点并发
-    /// 理论上十几分钟就能全部跑完。产出仍按镜头在提示词包里的原始顺序落回
-    /// `shots` 数组——`post` 阶段拼接靠的是这个顺序，不是谁先完工。
+    /// 按配置的并发度分片渲染，详见 [`Pipeline::generate`]。
     fn render(&self, ctx: &ExecContext<'_>) -> Result<Outputs> {
         let results = self.generate(ctx, StageId::Render, GenerateMode::Render)?;
         Ok(wrap(StageId::Render, json!({ "shots": results })))
@@ -209,11 +204,14 @@ impl Pipeline {
         Ok(wrap(StageId::Preview, json!({ "shots": results })))
     }
 
-    /// 按当下健康的节点数分片并发生成：每个健康节点固定绑一个 worker 线程，
-    /// 各镜头放共享队列，谁先跑完自己手上那镜就去认领下一镜。
+    /// 按配置的并发度分片生成：起 `comfy.concurrency` 个 worker 线程，
+    /// 各镜头放共享队列，谁先跑完手上那镜就去认领下一镜。
     ///
-    /// 实测单镜十来分钟，串行渲染 8 镜可能超过一个半小时；8 个健康节点并发
-    /// 理论上十几分钟就能全部跑完。产出仍按镜头在提示词包里的原始顺序落回
+    /// 入口只有一个 URL，**具体落到哪个后端节点由代理决定**——控制面既看不见
+    /// 也不该管。并发度按代理后面实际的节点数配（`COMFY_CONCURRENCY`）。
+    ///
+    /// 实测单镜十来分钟，串行渲染 8 镜可能超过一个半小时；8 路并发理论上
+    /// 十几分钟就能全部跑完。产出仍按镜头在提示词包里的原始顺序落回
     /// `shots` 数组——`post` 阶段拼接靠的是这个顺序，不是谁先完工。
     fn generate(
         &self,
@@ -227,31 +225,20 @@ impl Pipeline {
             .ok_or_else(|| StudioError::internal("提示词包里没有 shots"))?;
 
         let comfy = Comfy::from_settings(ctx.settings);
-        let healthy: Vec<String> = comfy
-            .health()
-            .into_iter()
-            .filter(|h| h.reachable)
-            .map(|h| h.url)
-            .collect();
-        if healthy.is_empty() {
-            return Err(StudioError::ComfyUnavailable {
-                tried: comfy.nodes().to_vec(),
-            });
-        }
+        comfy.ensure_reachable()?;
 
         let total = shots.len();
         let queue: Mutex<VecDeque<usize>> = Mutex::new((0..total).collect());
         let results: Mutex<Vec<Option<Value>>> = Mutex::new(vec![None; total]);
         let failure: Mutex<Option<StudioError>> = Mutex::new(None);
-        let worker_count = healthy.len().min(total.max(1));
+        let worker_count = ctx.settings.comfy_concurrency().min(total.max(1));
 
         std::thread::scope(|scope| {
-            for node in healthy.iter().take(worker_count) {
+            for _ in 0..worker_count {
                 let queue = &queue;
                 let results = &results;
                 let failure = &failure;
                 let comfy = &comfy;
-                let node = node.as_str();
                 scope.spawn(move || loop {
                     if ctx.is_cancelled() || failure.lock().unwrap().is_some() {
                         return;
@@ -259,7 +246,7 @@ impl Pipeline {
                     let idx = queue.lock().unwrap().pop_front();
                     let Some(idx) = idx else { return };
                     let shot = &shots[idx];
-                    match self.generate_shot(ctx, comfy, node, idx, total, shot, mode) {
+                    match self.generate_shot(ctx, comfy, idx, total, shot, mode) {
                         Ok(v) => results.lock().unwrap()[idx] = Some(v),
                         Err(e) => {
                             let mut f = failure.lock().unwrap();
@@ -288,14 +275,12 @@ impl Pipeline {
     }
 
     /// 一个镜头的提交-等待-下载，失败时最多重试 [`MAX_SHOT_ATTEMPTS`] 次。
-    /// 第一次尝试用调用方给的（worker 绑定的）节点；重试不再信任原节点还活着，
-    /// 每次都重新调 `pick_node()`，可能落到别的健康节点上。
+    /// 重试打到同一个入口——换后端节点是代理那一侧的事，控制面只负责再试一次。
     #[allow(clippy::too_many_arguments)]
     fn generate_shot(
         &self,
         ctx: &ExecContext<'_>,
         comfy: &Comfy,
-        preferred_node: &str,
         idx: usize,
         total: usize,
         shot: &Value,
@@ -359,21 +344,14 @@ impl Pipeline {
             if ctx.is_cancelled() {
                 return Err(StudioError::internal("渲染被中断"));
             }
-            let node = if attempt == 1 {
-                preferred_node.to_string()
-            } else {
-                // 已经没有健康节点了，重试没有意义，直接把错误交回去。
-                comfy.pick_node()?
-            };
-
             match self.generate_shot_once(
-                ctx, comfy, &node, idx, total, &shot_id, &graph, &debug_rel, shot, mode, dims,
+                ctx, comfy, idx, total, &shot_id, &graph, &debug_rel, shot, mode, dims,
             ) {
                 Ok(v) => return Ok(v),
                 Err(e) => {
                     if attempt < MAX_SHOT_ATTEMPTS {
                         ctx.say(format!(
-                            "[{node}] {}/{total} {shot_id} 第 {attempt} 次尝试失败（{}），重试中",
+                            "{}/{total} {shot_id} 第 {attempt} 次尝试失败（{}），重试中",
                             idx + 1,
                             e.message()
                         ));
@@ -390,7 +368,6 @@ impl Pipeline {
         &self,
         ctx: &ExecContext<'_>,
         comfy: &Comfy,
-        node: &str,
         idx: usize,
         total: usize,
         shot_id: &str,
@@ -400,18 +377,16 @@ impl Pipeline {
         mode: GenerateMode,
         dims: Option<(i64, i64)>,
     ) -> Result<Value> {
+        let node = comfy.node();
         let sub = ctx
-            .progress_and_step(
-                format!("[{node}] {}/{total} {shot_id} 提交", idx + 1),
-                "submit",
-            )
+            .progress_and_step(format!("{}/{total} {shot_id} 提交", idx + 1), "submit")
             .shot(shot_id)
             .node(node)
             .with("debug_request", json!(debug_rel))
-            .done(comfy.submit(node, graph, "video-studio"))?;
+            .done(comfy.submit(graph, "video-studio"))?;
 
         ctx.say(format!(
-            "[{node}] {}/{total} {shot_id} 渲染中（{}）",
+            "{}/{total} {shot_id} 渲染中（{}）",
             idx + 1,
             sub.prompt_id
         ));
@@ -428,15 +403,12 @@ impl Pipeline {
         let rel = format!("{}/{shot_id}.{ext}", mode.dest_dir());
         let dest = ctx.bundle.resolve(&rel)?;
         let bytes = ctx
-            .progress_and_step(
-                format!("[{node}] {}/{total} {shot_id} 下载", idx + 1),
-                "download",
-            )
+            .progress_and_step(format!("{}/{total} {shot_id} 下载", idx + 1), "download")
             .shot(shot_id)
             .node(node)
             .prompt(&sub.prompt_id)
             .with("path", json!(rel))
-            .done(comfy.download(node, first, &dest))?;
+            .done(comfy.download(first, &dest))?;
         let _ = bytes;
 
         let duration_seconds = shot
@@ -624,11 +596,24 @@ mod render_tests {
     }
 
     fn healthy_node() -> NodeStub {
+        node_stub(0)
+    }
+
+    /// 前 `drop_first` 个连接直接掐掉不回应答，之后一切正常。
+    /// 单入口之后「重试」不再是换节点，而是对同一个 URL 再来一次——
+    /// 这个桩就是用来逼出那条路径的。
+    fn node_stub(drop_first: usize) -> NodeStub {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let handle = std::thread::spawn(move || {
+            let mut seen = 0usize;
             for stream in listener.incoming().take(128) {
                 let Ok(mut stream) = stream else { continue };
+                seen += 1;
+                if seen <= drop_first {
+                    drop(stream); // 连上就断，制造一次连接层失败
+                    continue;
+                }
                 let mut reader = BufReader::new(stream.try_clone().unwrap());
                 let mut line = String::new();
                 if reader.read_line(&mut line).is_err() {
@@ -684,14 +669,22 @@ mod render_tests {
     }
 
     /// 搭好一个可以直接喂给 `Pipeline::render` 的 bundle + settings，
-    /// `.env` 里的 `COMFY_NODES` 指向传入的这些假节点。
-    fn scaffold(dir: &std::path::Path, nodes: &[String]) -> (Bundle, Settings) {
+    /// `.env` 里的 `COMFY_NODE` 指向传入的那个假节点。
+    fn scaffold(dir: &std::path::Path, node: &str) -> (Bundle, Settings) {
+        scaffold_with_concurrency(dir, node, 4)
+    }
+
+    fn scaffold_with_concurrency(
+        dir: &std::path::Path,
+        node: &str,
+        concurrency: usize,
+    ) -> (Bundle, Settings) {
         let bundle = Bundle::scaffold(dir).unwrap();
         std::fs::write(
             dir.join(".env"),
             format!(
-                "COMFY_NODES={}\nCOMFY_TIMEOUT_SECS=20\nCOMFY_POLL_INTERVAL_SECS=1\n",
-                nodes.join(",")
+                "COMFY_NODE={node}\nCOMFY_TIMEOUT_SECS=20\nCOMFY_POLL_INTERVAL_SECS=1\n\
+                 COMFY_CONCURRENCY={concurrency}\n"
             ),
         )
         .unwrap();
@@ -704,7 +697,7 @@ mod render_tests {
         let bundle_dir = tempfile::tempdir().unwrap();
         let baselines_dir = tempfile::tempdir().unwrap();
         write_baseline(baselines_dir.path());
-        let (bundle, settings) = scaffold(bundle_dir.path(), &["http://127.0.0.1:1".into()]);
+        let (bundle, settings) = scaffold(bundle_dir.path(), "http://127.0.0.1:1");
 
         let pipeline = Pipeline::new(baselines_dir.path().to_path_buf());
         let recorder = ExecRecorder::at(bundle.root());
@@ -721,15 +714,16 @@ mod render_tests {
         assert_eq!(e.code(), "comfy_unavailable");
     }
 
-    /// 首选节点根本联系不上（提交即失败），重试时重新 `pick_node()`，
-    /// 落到另一个健康节点上并跑成功——这是 issue 里要求的「干净重试」。
+    /// 第一次提交撞上连接层失败，重试打回同一个入口并跑成功。
+    /// 单入口之后重试不再是「换个节点」，但重试路径本身必须还在。
     #[test]
-    fn render_shot_retries_on_a_different_node_after_the_preferred_one_fails() {
+    fn render_shot_retries_against_the_same_entrypoint_after_a_transient_failure() {
         let bundle_dir = tempfile::tempdir().unwrap();
         let baselines_dir = tempfile::tempdir().unwrap();
         write_baseline(baselines_dir.path());
-        let good = healthy_node();
-        let (bundle, settings) = scaffold(bundle_dir.path(), std::slice::from_ref(&good.url));
+        // 第一个连接直接被掐断 —— 提交必然失败，逼出重试路径。
+        let good = node_stub(1);
+        let (bundle, settings) = scaffold(bundle_dir.path(), &good.url);
 
         let pipeline = Pipeline::new(baselines_dir.path().to_path_buf());
         let comfy = Comfy::from_settings(&settings);
@@ -744,36 +738,22 @@ mod render_tests {
         };
 
         let shot = shot("sh01");
-        // 首选节点是个根本没在监听的端口——提交必然失败，逼出重试路径。
         let result = pipeline
-            .generate_shot(
-                &ctx,
-                &comfy,
-                "http://127.0.0.1:1",
-                0,
-                1,
-                &shot,
-                GenerateMode::Render,
-            )
+            .generate_shot(&ctx, &comfy, 0, 1, &shot, GenerateMode::Render)
             .unwrap();
-        assert_eq!(
-            result["node"],
-            json!(good.url),
-            "重试应当落到唯一健康的节点上"
-        );
+        assert_eq!(result["node"], json!(good.url), "重试应当打回同一个入口");
         assert_eq!(result["shot_id"], json!("sh01"));
     }
 
-    /// 多个健康节点应当并发分担多个镜头，且不管谁先跑完，
+    /// 多个 worker 应当并发分担多个镜头，且不管谁先跑完，
     /// 落回 outputs 时仍按提示词包里镜头的原始顺序——`post` 阶段拼接靠这个顺序。
     #[test]
     fn render_runs_shots_concurrently_and_preserves_original_order() {
         let bundle_dir = tempfile::tempdir().unwrap();
         let baselines_dir = tempfile::tempdir().unwrap();
         write_baseline(baselines_dir.path());
-        let nodes: Vec<NodeStub> = (0..3).map(|_| healthy_node()).collect();
-        let node_urls: Vec<String> = nodes.iter().map(|n| n.url.clone()).collect();
-        let (bundle, settings) = scaffold(bundle_dir.path(), &node_urls);
+        let node = healthy_node();
+        let (bundle, settings) = scaffold_with_concurrency(bundle_dir.path(), &node.url, 3);
 
         let pipeline = Pipeline::new(baselines_dir.path().to_path_buf());
         let recorder = ExecRecorder::at(bundle.root());
@@ -805,7 +785,7 @@ mod render_tests {
         let baselines_dir = tempfile::tempdir().unwrap();
         write_baseline(baselines_dir.path());
         let good = healthy_node();
-        let (bundle, settings) = scaffold(bundle_dir.path(), std::slice::from_ref(&good.url));
+        let (bundle, settings) = scaffold(bundle_dir.path(), &good.url);
 
         let pipeline = Pipeline::new(baselines_dir.path().to_path_buf());
         let recorder = ExecRecorder::at(bundle.root());

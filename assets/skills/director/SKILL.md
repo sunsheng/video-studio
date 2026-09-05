@@ -82,6 +82,5 @@ description: 把已确认剧本转成逐镜头分镜，定义景别、构图、�
 - `studio.stage_output`
 - `studio.timeline`
 - `studio.export`
-- `studio.comfy.exclude_node`
 - `studio.retry_stage`
 - `studio.self_review`

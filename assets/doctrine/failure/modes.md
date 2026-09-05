@@ -122,8 +122,7 @@
 | 情况 | 用什么 |
 |---|---|
 | 内容/提示词要改 | `studio.revise` |
-| 内容没问题，是这次执行失败了（节点抖动、连接超时） | `studio.retry_stage` |
-| 怀疑某个节点本身有问题（反复失败、迟迟连不上） | `studio.comfy.exclude_node` 之后再重试 |
+| 内容没问题，是这次执行失败了（连接抖动、超时） | `studio.retry_stage` |
 
 上面 F1–F8 全都是**内容问题**，用 `studio.revise`。
 `studio.retry_stage` 不会让画面变好，它只是再跑一次同样的东西。

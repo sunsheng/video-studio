@@ -2,72 +2,173 @@
 
 只记真正没做完的事，做完就删。不记「以后也许可以」的想法。
 
+## 不需要 GPU，现在就能做
+
+这一节排在最前面是有原因的：**下面那节「需要 ComfyUI」里的活，多数被这一节
+堵着**。参考图进不了渲染、卡片挂不上多个锚点、AddGuide 串不起来，根子都是
+同一个——基线的绑定格式表达不了「数量由内容决定」的槽位。先把地基换掉，
+生产机那一轮才不会白跑。
+
+### 渲染工作流改为按镜头动态组装（issue #14）
+
+**这是当前优先级最高的一件事，其余多数条目的硬前置。**
+
+现在每一镜只能从三份固定基线里挑一份，能变的只有提示词、seed、尺寸、帧数。
+但真实镜头的差异**不是参数差异，是图结构差异**：1 秒空镜是「一张图 + 提示词」，
+接续镜要挂上一镜的尾段和音频，群戏要挂五张角色卡加两张场景卡——节点数量和
+连线都不同。
+
+`_studio.bindings` 的形状是「参数名 → 固定路径数组」，能表达「一个值写到 N 个
+固定位置」，表达不了「挂 K 个槽位，K 由内容决定」。**这是格式本身的天花板。**
+
+方案定完了，在 issue #14：
+
+- **片段库**：基线从「三张完整的图」降级为可组合片段（backbone / head / guide /
+  input）。切分已经验证是干净的——`i2v` 与 `r2v` 的骨架有 8 个节点逐字相同，
+  差异全部可参数化或由 head 决定。片段从已验证的图里切，`bindings_verified`
+  与 run_id 血缘保留：「已验证」这条规矩不丢，只是粒度从「整张图」变成
+  「片段 + 组合规则」。
+- **Agent 提交结构化声明，不提交节点图**：每镜声明 head + references[] +
+  guides[] + 参数。控制面不调 LLM，渲染路径保持确定性，`studio.retry_stage`
+  的语义继续成立。
+- **组装器是确定性 Rust 代码**，零 I/O、纯函数、没有 GPU 也能完整单测。
+  连线规则写死——**因为连线规则本来就是模型契约，不是创作决策**。
+- **组合合法性校验**，每条带 remedy：reference head 上限 9 图 / 3 视频 /
+  3 音频；image head 只接首尾帧；`guide.at_frame` 在范围内；clip 长度与
+  `length_frames` 都吃 `17k+5` 网格（现在完全没校验）。
+
+一条必须写进片段元数据的真机经验：**R2V 配 `beta` 调度器、I2V 配 `simple`**。
+这不在任何官方文档里，是从两份基线的差异里看出来的。这类「跟着 head 走的
+配套约束」正是不能让 LLM 现场猜的东西——猜错了图照跑、不报错，只是画面
+悄悄劣化。
+
+先写 ADR：这一项推翻的是「已验证基线」这条既有约定，是 ADR-0002 之后最大的
+一条。
+
+### 成片超分（issue #13）
+
+MiniMax H3 的原生画布是短边 768（16:9 即 1344×768），而交付要 1080×1920。
+`post` 现在只做拼接、字幕、封面抽帧，**没有超分**，成片就是 768 短边直接交付。
+
+候选是 SeedVR2 7B（2×–4×，带 tiling 和色彩校正）。要定的：逐帧还是视频超分
+（逐帧会闪）、放在拼接前还是拼接后、耗时占比、要不要做成可选步骤。
+
+注意**不要**把超分放到卡片链路上：卡片是喂给 R2V 的参考，
+`ref_image_size` 取值是 `"match"`，超分过的参考图进去也会被缩放对齐。
+
+## 这台机器探到了什么（2026-09-05 实测）
+
+**别再假设「开发环境没有 GPU」** —— 那个前提已经不成立。这次会话探到的：
+
+| 探针 | 结果 |
+|---|---|
+| ComfyUI | 0.34.0，**A800 80GB PCIe**（79.2 GiB，实时空闲 59.6 GiB），经带 Bearer token 的负载均衡代理 |
+| Z-Image Turbo 文生图 | **5/5 成功，21.9 秒**（768×1344 / 1344×768 / 1024² 三种画幅），中文「青山茶馆」四字渲染正确，灰底匀光全身卡片一次到位 |
+| `MiniMaxH3AddGuide` | **节点在** |
+| AddGuide 能接 R2V | **接口层确认**：R2V 输出 `[CONDITIONING, LATENT]`，AddGuide 要 `positive: CONDITIONING` + `latent: LATENT` |
+| R2V 多参考 | 四个槽位 `ref_images` / `ref_videos` / `ref_video_audios` / `ref_audios`，类型 **`COMFY_AUTOGROW_V3`**（ComfyUI 原生的「按需增长」类型） |
+| MiniMax 权重 | fl2va / ref2va / 剪枝版齐全，**turbo LoRA 两份都在**（`fl2v_turbo_8step`、`ref2v_turbo_4step`） |
+| Codex | 0.153.4 + `gpt-5.6-sol`，无 metadata 警告 |
+| FLUX.2 | **节点在，权重不在** |
+| SeedVR2 | **节点在，权重不在**（upscale 只有 `RealESRGAN_x4plus`） |
+| ffmpeg / ffprobe | **未安装** |
+
+两条要记住的：
+
+1. **「节点在」不等于「能用」。** FLUX.2 和 SeedVR2 的节点都在 `object_info`
+   里，但权重没下载。探针要探到权重那一层。
+2. Z-Image 的 `TextEncodeZImageOmni` 有 `image1` / `image2` / `image3`——
+   **它吃 3 张参考图，不是单参考**。issue #12 里「Z-Image 是单参考」的说法
+   是错的，那条论据不成立（累积锁定的对比结论仍待实测）。
+
+### 要下载的权重
+
+| 用途 | 文件 | 放到 |
+|---|---|---|
+| 成片超分（#13） | `seedvr2_7b_int8_convrot.safetensors` | `models/diffusion_models/` |
+| 成片超分（#13） | `seedvr2_ema_vae_fp16.safetensors` | `models/vae/` |
+| 卡片 10 参考（#12，可选） | `flux2_dev_fp8mixed.safetensors` | `models/diffusion_models/` |
+| 卡片 10 参考（#12，可选） | `mistral_3_small_flux2_bf16.safetensors` | `models/text_encoders/` |
+| 卡片 10 参考（#12，可选） | `flux2-vae.safetensors` | `models/vae/` |
+
+SeedVR2 走 **ComfyUI 原生节点**，不要装第三方 custom node。FLUX.2 那三份
+等 Z-Image 3 参考的累积锁定实测出结果再决定要不要下。
+
+### 装 ffmpeg
+
+云端会话的 setup script 加一行 `apt-get update && apt-get install -y ffmpeg`
+（带 ffprobe）。装上之后十个阶段可以在这台机器上走完，不必再等生产机。
+
 ## 需要一台有 ComfyUI 的机器
 
-### 核验四份 workflow 基线
+### ~~确认 ComfyUI 版本带 `MiniMaxH3AddGuide`~~（已探到，见上）
 
-这四份从前身仓库带过来了，图是完整的，但**参数绑定没核验，当前标记为不可用**，
-控制面拒绝用它们渲染——绑错节点会静默产出错的画面，比直接报错难查得多。
+这个节点把关键帧从「只能锚首尾」放开成「锚任意帧」，且能接 clip 和音频作为
+guide。它是镜头续接的核心手段——把上一镜的最后 22 帧连同音频喂进下一镜的
+frame 0，模型生成的是两条流的续接，比抽一张静止尾帧强得多。
 
-| 基线 | 卡在哪 |
-|---|---|
-| `wan2_2/i2v` | 正负提示词与尺寸走的连线尚未确认：`WanImageToVideo` 的 width/height 来源、两个 `CLIPTextEncode` 哪个是负向 |
-| `wan2_2/flf2v` | 同上，且首尾帧输入需要额外的图片上传流程 |
-| `ltx2_5/flf2v` | 首尾帧变体的尺寸经由 `ResizeImageMaskNode` 推导，与 t2v/i2v 的 Primitive 链不同 |
-| `wan_animate2/i2v` | 需要一段驱动视频作为输入，当前流水线不提供；且不属于默认三系列 |
+它是 [Comfy-Org/ComfyUI#15439](https://github.com/Comfy-Org/ComfyUI/pull/15439)
+加进来的，**生产机的 ComfyUI 版本得够新**。顺带在 UI 上确认一件事：
+把 `MiniMaxH3ReferenceToVideo` 的 positive/latent 接到 `AddGuide` 上能不能连。
+读代码看是能的（socket 是通用的 `Conditioning` + `Latent`，而且那个 PR 为了
+让 AddGuide 复用，专门把 R2V 的 `_encode_ref_audio` 提到了模块级），但没有
+真机连过线。
 
-做法：在目标 ComfyUI 上跑通一次，确认每个参数落到哪个节点的哪个输入，
-补进 `assets/workflows/<系列>/<用途>.json` 的 `_studio.bindings`，
-删掉 `unavailable_reason`，把 `bindings_verified` 改成 `true`。
-**不需要改代码。** 改完跑 `studio-cli workflows check` 验证。
+**能连的话，成片阶段可以统一走 R2V**——身份靠参考、构图靠 guide，
+`fl2va` 权重不必常驻，省下的 19.5G 正好够 FLUX.2 一起装进 80G。
 
-已核验可用的六份（`minimax_h3` 三份、`wan2_2/t2v`、`ltx2_5` 两份）可以作参考。
+顺带把图片输入的接法确认清楚，#14 的片段库要用：`minimax_h3/i2v` 的
+`load_first` / `load_last`、`r2v` 的 `load_ref`（都是 `LoadImage`）究竟吃
+什么——直接给文件名，还是要先经 `/upload/image` 传上去？多节点集群要不要
+按节点分别传？R2V 挂多张参考时是并列多个 `LoadImage`，还是单节点接列表？
 
-### 给视频基线补图片输入绑定
+（这几个节点**本来就在图里**，只是 `_studio.bindings` 没暴露。原先的做法是
+「补一行绑定」，那只够挂 1 张图——正是 `r2v.json` 现在 image-only 的状态。
+官方支持 9 图 + 3 视频 + 3 音频，补绑定够不着，所以这一项并进了 #14。）
 
-`minimax_h3/i2v` 和 `r2v` 的**节点图里已经有图片输入节点**，但 `_studio.bindings`
-没有把它们暴露出来：
+### FLUX.2 累积锁定的一致性实测（**卡片路线唯一剩下的支点**）
 
-| 基线 | 图里已有的节点 | 要绑成什么 |
-|---|---|---|
-| `minimax_h3/i2v` | `load_first` / `load_last`（都是 `LoadImage`） | 首帧、尾帧两个入口 |
-| `minimax_h3/r2v` | `load_ref`（`LoadImage`） | 参考图入口 |
+在导出基线、写执行器之前先做这个，成本很低、结论决定性。
 
-现在的后果：提示词包里的 `references` 写了也进不了渲染请求——它只被登记下来，
-不会变成图片喂给模型。**角色卡做出来也没有通道进渲染**，这是画面一致性链条上
-断掉的那一环，见 `docs/prompt-architecture.md` §2.4。
+用上次那个把脸锁崩了的身份锁（纯文字锚定，四个视图出来是三张不同的脸），
+出同样四个视图：`front_full` → `three_quarter` → `profile` → `face_close`，
+每一步把**已定稿的全部视图**挂上去当参考，看四张是不是同一个人。
 
-做法：在目标 ComfyUI 上确认这几个 `LoadImage` 节点吃的是什么（文件名？
-先经 `/upload/image` 上传？多节点集群要不要按节点分别传？），把
-`references` 加进 `_studio.bindings`，真机跑通一次再提交。
-**这一项是视觉资产生成（下一条）的硬前置**：卡片做出来进不了渲染就还是纸面计划。
+跟上次的单参考结果直接对比。**锁不住就别急着导基线**——那说明卡片路线要
+重新选型。
 
-### 导出 `z_image` 的两条基线
+### 导出 `flux2_dev` 的两条基线
 
 视觉资产阶段（角色卡 / 场景卡 / 道具卡）要两条基线，目前一条都没有：
 
 | 用途 | 文件 | 做什么 |
 |---|---|---|
-| 文生图 | `assets/workflows/z_image/t2i.json` | 出主视图 |
-| 参考图生图 | `assets/workflows/z_image/edit.json` | 以主视图为参考图出其余视图 |
+| 文生图 | `assets/workflows/flux2_dev/t2i.json` | 出主视图 |
+| 多参考编辑 | `assets/workflows/flux2_dev/multiref_edit.json` | 挂已定稿的全部视图累积锁定，出其余视图 |
 
-**导出要求已经写好**，在 `assets/workflows/z_image/README.md`：要绑哪些参数、
+**导出要求已经写好**，在 `assets/workflows/flux2_dev/README.md`：要绑哪些参数、
 `_studio` 长什么样、`bindings_verified` 什么时候才能置 true，逐条写死了。
-照着做即可，不需要在这里重复。
 
-同时把 `config/models.toml` 的 `[z_image]` 段填上真实文件名（现在是注释掉的
-占位）。开发环境没有 GPU 也没有 ComfyUI，出不了真机导出，所以这两件事都只能
-在生产机上做。
+同时把 `config/models.toml` 的 `[flux2_dev]` 段填上真实文件名（现在是注释掉的
+占位）。
+
+**参考图那一项现在绑不了**，跟渲染那边的 R2V 撞的是同一堵墙（可变数量槽位），
+解法在 issue #14。所以这一轮导出能做的是「把图导出来 + 绑固定参数」，
+外加**记录参考图的接法**（`/upload/image` 之后承接的节点叫什么、多张参考是
+并列多节点还是单节点接列表）——那些信息 #14 的片段库要用。
 
 做完之前 `studio-cli doctor` 会一直报「卡片生成基线未就绪」——那是提醒，
 不是故障：资产计划照样能提交，只是 `status` 一直停在 `planned`、生不出图。
 
 ### 视觉资产执行器与首帧图控制点（**先别在没有 GPU 的机器上写**）
 
-设计已经定完，见 `docs/prompt-architecture.md` §6.4 与批次 3、4：
-`trait ImageBackend`（文生图 + 参考图生图）与 `ZImageBackend` 实现、
-主视图先行、逐视图参考图锚定、落盘 `media/assets/`、门改为看图确认，
-以及每镜首帧图的控制点。
+**注意 `docs/prompt-architecture.md` §6 已经过时**：那一章写的是 Z-Image 单后端、
+「主视图先出、其余视图一律以主视图为参考」。现在的结论是 FLUX.2 累积锁定
+（出视图 N 时挂上已定稿的 1..N-1）加 MiniMax 锚视频，见 issue #12。
+§6 的重写等上面那项实测出结果再做——现在改是在猜。
+
+要做的执行器：主视图先行、逐视图**累积**锚定、落盘 `media/assets/`、
+产物登记、门改为看图确认，以及每镜首帧图的控制点。
 
 **代码没写，是有意的。** 这一块的价值全在真机行为上——尺寸对齐、参考图上传、
 逐视图重试、失败阻塞的判据，在开发环境只能拿假节点测状态流转。
@@ -75,12 +176,21 @@
 假执行器测过了、第一次真跑仍然大概率暴露参数细节问题。
 再提前写一套，只是把同一笔债翻倍。
 
-等能连上 ComfyUI 时，把这一条和前面两条**一起做**：导出基线 → 补绑定 →
-写执行器 → 真跑一轮。一轮就能收敛，比分三次各猜一半省事。
+`asset_plan` 的视图词表与结构校验（视图齐全、主视图唯一、同卡画幅一致、
+身份锁逐字包含）已经在 `studio-core` 里跑起来了。但 **`derived_from` 还是
+单值**（指向主视图），累积锁定要求它变成**数组**（指向所有已定稿视图）——
+这处 schema 改动跟 #14 的可变槽位一起做，不在生产机上做。
 
-`asset_plan` 的 schema、视图词表、结构校验（视图齐全、主视图唯一、
-`derived_from` 指向锚点、同卡画幅一致、身份锁逐字包含）已经在 `studio-core`
-里跑起来了，不需要重做——差的只有执行那一半。
+### 锚视频与镜头续接的真机验证
+
+issue #12 定的链路里，MiniMax 锚视频是卡片之外的第二路参考——它给 R2V 的
+3 个 video reference 槽位提供内容，带的是图片参考给不了的运动先验。要验的：
+
+- 一段 2 秒（49 帧）锚片段在 A800 80G 上的实际耗时，决定一个角色出几个视图
+- FLUX.2 出的卡片 vs MiniMax 锚视频抽的帧，回喂 R2V 的参考效力差多少
+  （跨模型域差有多大，决定锚视频这一路值不值得做）
+- 上一镜末 22 帧 + 音频作为下一镜 frame 0 的 guide，接缝质量如何
+- FLUX.2 dev fp8 与 MiniMax `ref2va` 能否真的同时常驻 80G
 
 ### 端到端跑一次真实 Codex 会话（**render 之后那一半**）
 
@@ -100,6 +210,32 @@ render 之前的六个阶段已经用真实 Codex 会话跑过了（开发环境
 但**没有对着真实 ComfyUI 和真实 ffmpeg 跑过**。
 第一次真跑大概率会暴露参数细节问题，属于预期内——尤其是 `preview`
 按短边 480 缩放后的尺寸是否符合各模型系列自身的对齐要求，需要真机验证。
+
+（#14 之后 `preview` 还能更便宜：片段化以后可以换 turbo LoRA 组合——官方有
+`ref2v_turbo_4step`——并去掉音频解码分支，而不是只把分辨率缩到 480p。
+门要看的本来就只是构图和内容。）
+
+### 核验四份 workflow 基线（**最低优先级**）
+
+这四份从前身仓库带过来了，图是完整的，但**参数绑定没核验，当前标记为不可用**，
+控制面拒绝用它们渲染——绑错节点会静默产出错的画面，比直接报错难查得多。
+
+| 基线 | 卡在哪 |
+|---|---|
+| `wan2_2/i2v` | 正负提示词与尺寸走的连线尚未确认：`WanImageToVideo` 的 width/height 来源、两个 `CLIPTextEncode` 哪个是负向 |
+| `wan2_2/flf2v` | 同上，且首尾帧输入需要额外的图片上传流程 |
+| `ltx2_5/flf2v` | 首尾帧变体的尺寸经由 `ResizeImageMaskNode` 推导，与 t2v/i2v 的 Primitive 链不同 |
+| `wan_animate2/i2v` | 需要一段驱动视频作为输入，当前流水线不提供；且不属于默认三系列 |
+
+做法：在目标 ComfyUI 上跑通一次，确认每个参数落到哪个节点的哪个输入，
+补进 `assets/workflows/<系列>/<用途>.json` 的 `_studio.bindings`，
+删掉 `unavailable_reason`，把 `bindings_verified` 改成 `true`。
+**不需要改代码。** 改完跑 `studio-cli workflows check` 验证。
+
+**优先级压到最低，别让它分心。** 现在全部精力在 `minimax_h3` 的深度利用上
+（多参考、AddGuide、卡片链路），备选系列的核验不产生画面质量收益。
+这些系列**保持整图基线**，#14 的片段化只对 `minimax_h3` 做——只有它需要
+可变槽位。两种形式共存是有意的。
 
 ## 已知限制
 

@@ -14,8 +14,13 @@
 
 # 端到端验收
 
-**含 render 的完整端到端不在开发环境跑。** render 需要真实 ComfyUI + GPU，
-开发环境没有，只能在生产环境跑。
+**能跑到第几阶段取决于探针结果，不要预设。** render 需要真实 ComfyUI；
+开发环境**可能有也可能没有**——`COMFY_NODE` 配好并且 `studio-cli doctor`
+探到了，render 就能在这里真跑；探不到才只能在生产环境跑。同理，`post` /
+`review` 取决于探到没探到 ffmpeg / ffprobe。
+
+报验收结论时必须附上当时探到了什么（型号、显存、权重清单），否则下一个人
+无从判断那次覆盖了多少。
 
 **render 之前的六个阶段（idea → prompt_pack）不一定要等生产环境。** 如果
 开发环境（Claude Code 容器）已经装好 Codex CLI 并配置了可用的 model
