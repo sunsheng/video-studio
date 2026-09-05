@@ -691,6 +691,21 @@ mod tests {
         assert!(e.message().contains("默认值"), "{}", e.message());
     }
 
+    /// 缺 seed 不该把这一镜的组合校验整个挡掉——不然 Agent 补上种子
+    /// 重新提交，才看到剩下那堆错。一次报全比来回两趟好。
+    #[test]
+    fn a_missing_seed_does_not_mask_the_combination_rules() {
+        let mut shot = declarative_shot();
+        shot.as_object_mut().unwrap().remove("seed");
+        shot["length_frames"] = json!(50); // 同时不在帧网格上
+        let e = mixed()
+            .check_prompt_pack(&pack("minimax_h3", shot), &[])
+            .unwrap_err();
+        let msg = e.message();
+        assert!(msg.contains("seed"), "缺种子要报：{msg}");
+        assert!(msg.contains("帧数网格"), "组合校验也要照跑：{msg}");
+    }
+
     /// 组合合法性由 assembly::validate_shot 出，这里只确认它真的接上了。
     #[test]
     fn combination_rules_run_on_the_fragment_family() {

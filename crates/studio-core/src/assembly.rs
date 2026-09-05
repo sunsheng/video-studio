@@ -95,6 +95,11 @@ pub struct ShotDeclaration {
     pub height: i64,
     pub length_frames: i64,
     pub fps: f64,
+    /// **有意可缺省。** 种子是必写的（不写就不可复现），但那条由能力面对账
+    /// 报出来。如果这里不给默认值，缺一个 seed 会让整份声明反序列化失败，
+    /// 于是 V1–V9 一条都跑不了——Agent 补上种子重新提交，才看到剩下那堆
+    /// 组合错误。一次报全比来回两趟好。
+    #[serde(default)]
     pub seed: i64,
     #[serde(default)]
     pub references: Vec<Reference>,
