@@ -81,6 +81,5 @@ description: 把已确认分镜与视觉资产编译成逐镜头 prompt 和 work
 - `studio.stage_output`
 - `studio.timeline`
 - `studio.export`
-- `studio.comfy.exclude_node`
 - `studio.retry_stage`
 - `studio.self_review`

@@ -7,7 +7,6 @@ use crate::bundle::{Bundle, LockGuard};
 use crate::config::Settings;
 use crate::executor::{ExecContext, ExecRecorder, NotWired, ProgressNote, SharedExecutor};
 use serde_json::{json, Value};
-use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use studio_core::contract::{
@@ -35,10 +34,6 @@ pub struct Project {
     program_dir: Option<std::path::PathBuf>,
     executor: SharedExecutor,
     worker: Mutex<Option<Worker>>,
-    /// 本次会话内临时排除的 ComfyUI 节点，来自 `studio.comfy.exclude_node`。
-    /// 和 `program_dir` 一样只活在这次进程里，不写 `.env`、不进数据库——
-    /// 排除一个节点是「这次会话别再往它头上派活」，不是作品的持久状态。
-    excluded_nodes: Mutex<HashSet<String>>,
     // 持有期间独占本 bundle；drop 即释放。
     _lock: LockGuard,
 }
@@ -113,7 +108,6 @@ impl Project {
             program_dir: program_dir.map(|p| p.to_path_buf()),
             executor,
             worker: Mutex::new(None),
-            excluded_nodes: Mutex::new(HashSet::new()),
             _lock: lock,
         })
     }
@@ -717,29 +711,6 @@ impl Project {
         self.store.undo_depth()
     }
 
-    /// 把一个 ComfyUI 节点加入本次会话的临时排除名单，选节点时会跳过它。
-    ///
-    /// 只活在这次进程里，不写 `.env`、不进数据库——排除一个坏节点是「这次
-    /// 会话先别派活给它」，不是作品要记住的持久决定。想恢复用它，或想
-    /// 真正从集群里摘掉，改 `.env` 的 `COMFY_NODES` 再重开一次会话。
-    pub fn exclude_comfy_node(&self, node: &str) -> Result<Envelope> {
-        let node = node.trim().trim_end_matches('/').to_string();
-        if node.is_empty() {
-            return Err(StudioError::internal("排除的节点地址不能为空"));
-        }
-        if let Ok(mut g) = self.excluded_nodes.lock() {
-            g.insert(node.clone());
-        }
-        let stage = self.current_stage()?.unwrap_or(StageId::Render);
-        self.store.append_event(
-            stage,
-            "node_excluded",
-            &format!("本次会话临时排除节点 {node}"),
-            None,
-        )?;
-        self.status()
-    }
-
     /// 干净地重试一个卡住的确定性阶段：先停掉可能还在跑的 worker 线程，
     /// 清掉上一次失败的记录，再让 [`Project::ensure_worker`] 重新把它跑起来。
     ///
@@ -831,16 +802,10 @@ impl Project {
         let root = self.bundle.root().to_path_buf();
         let db = self.bundle.db_path();
         // 每次真正要跑（或重试）确定性阶段，都当场重新读一遍 `.env`——
-        // 不用打开会话时缓存的那份。这样改完 COMFY_NODES 之后只需要让
+        // 不用打开会话时缓存的那份。这样改完 COMFY_NODE 之后只需要让
         // 控制面再跑一次这个阶段（比如 `studio.revise` 清掉上一次的失败），
         // 不需要重启整个 `studiod serve` 进程。
-        let excluded: Vec<String> = self
-            .excluded_nodes
-            .lock()
-            .map(|g| g.iter().cloned().collect())
-            .unwrap_or_default();
-        let settings = Settings::load(self.program_dir.as_deref(), Some(self.bundle.root()))
-            .exclude_comfy_nodes(excluded);
+        let settings = Settings::load(self.program_dir.as_deref(), Some(self.bundle.root()));
         let executor = Arc::clone(&self.executor);
         let p2 = Arc::clone(&progress);
         let c2 = Arc::clone(&cancelled);

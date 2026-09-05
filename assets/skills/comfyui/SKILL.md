@@ -14,10 +14,9 @@ description: 提交已确认且通过校验的 workflow，选择健康节点、�
 ## 职责
 
 - 这是确定性阶段，由控制面执行，你只需要用 studio.status 观察。
-- 失败时读 studio.timeline 看清是哪一镜、哪个节点、什么原因。
-- 节点不可用或模型契约不满足时会结构化阻塞——不要建议换模型来绕过。
-- 怀疑是某个节点本身有问题（反复失败、迟迟连不上），先调 studio.comfy.exclude_node 把它排除，再重试。
-- 执行失败但内容没问题（节点抖动、连接超时）时调 studio.retry_stage，不要用 studio.revise——那是给内容要改的场景用的。
+- 失败时读 studio.timeline 看清是哪一镜、什么原因。
+- ComfyUI 不可用或模型契约不满足时会结构化阻塞——不要建议换模型来绕过。
+- 执行失败但内容没问题（连接抖动、超时）时调 studio.retry_stage，不要用 studio.revise——那是给内容要改的场景用的。
 
 ## 方法
 
@@ -61,6 +60,5 @@ description: 提交已确认且通过校验的 workflow，选择健康节点、�
 - `studio.stage_output`
 - `studio.timeline`
 - `studio.export`
-- `studio.comfy.exclude_node`
 - `studio.retry_stage`
 - `studio.self_review`

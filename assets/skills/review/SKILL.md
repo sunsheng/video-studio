@@ -74,6 +74,5 @@ description: 检查成片的媒体完整性、时长、字幕、编码与发布�
 - `studio.stage_output`
 - `studio.timeline`
 - `studio.export`
-- `studio.comfy.exclude_node`
 - `studio.retry_stage`
 - `studio.self_review`

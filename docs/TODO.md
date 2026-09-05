@@ -56,9 +56,52 @@ MiniMax H3 的原生画布是短边 768（16:9 即 1344×768），而交付要 1
 注意**不要**把超分放到卡片链路上：卡片是喂给 R2V 的参考，
 `ref_image_size` 取值是 `"match"`，超分过的参考图进去也会被缩放对齐。
 
+## 这台机器探到了什么（2026-09-05 实测）
+
+**别再假设「开发环境没有 GPU」** —— 那个前提已经不成立。这次会话探到的：
+
+| 探针 | 结果 |
+|---|---|
+| ComfyUI | 0.34.0，**A800 80GB PCIe**（79.2 GiB，实时空闲 59.6 GiB），经带 Bearer token 的负载均衡代理 |
+| Z-Image Turbo 文生图 | **5/5 成功，21.9 秒**（768×1344 / 1344×768 / 1024² 三种画幅），中文「青山茶馆」四字渲染正确，灰底匀光全身卡片一次到位 |
+| `MiniMaxH3AddGuide` | **节点在** |
+| AddGuide 能接 R2V | **接口层确认**：R2V 输出 `[CONDITIONING, LATENT]`，AddGuide 要 `positive: CONDITIONING` + `latent: LATENT` |
+| R2V 多参考 | 四个槽位 `ref_images` / `ref_videos` / `ref_video_audios` / `ref_audios`，类型 **`COMFY_AUTOGROW_V3`**（ComfyUI 原生的「按需增长」类型） |
+| MiniMax 权重 | fl2va / ref2va / 剪枝版齐全，**turbo LoRA 两份都在**（`fl2v_turbo_8step`、`ref2v_turbo_4step`） |
+| Codex | 0.153.4 + `gpt-5.6-sol`，无 metadata 警告 |
+| FLUX.2 | **节点在，权重不在** |
+| SeedVR2 | **节点在，权重不在**（upscale 只有 `RealESRGAN_x4plus`） |
+| ffmpeg / ffprobe | **未安装** |
+
+两条要记住的：
+
+1. **「节点在」不等于「能用」。** FLUX.2 和 SeedVR2 的节点都在 `object_info`
+   里，但权重没下载。探针要探到权重那一层。
+2. Z-Image 的 `TextEncodeZImageOmni` 有 `image1` / `image2` / `image3`——
+   **它吃 3 张参考图，不是单参考**。issue #12 里「Z-Image 是单参考」的说法
+   是错的，那条论据不成立（累积锁定的对比结论仍待实测）。
+
+### 要下载的权重
+
+| 用途 | 文件 | 放到 |
+|---|---|---|
+| 成片超分（#13） | `seedvr2_7b_int8_convrot.safetensors` | `models/diffusion_models/` |
+| 成片超分（#13） | `seedvr2_ema_vae_fp16.safetensors` | `models/vae/` |
+| 卡片 10 参考（#12，可选） | `flux2_dev_fp8mixed.safetensors` | `models/diffusion_models/` |
+| 卡片 10 参考（#12，可选） | `mistral_3_small_flux2_bf16.safetensors` | `models/text_encoders/` |
+| 卡片 10 参考（#12，可选） | `flux2-vae.safetensors` | `models/vae/` |
+
+SeedVR2 走 **ComfyUI 原生节点**，不要装第三方 custom node。FLUX.2 那三份
+等 Z-Image 3 参考的累积锁定实测出结果再决定要不要下。
+
+### 装 ffmpeg
+
+云端会话的 setup script 加一行 `apt-get update && apt-get install -y ffmpeg`
+（带 ffprobe）。装上之后十个阶段可以在这台机器上走完，不必再等生产机。
+
 ## 需要一台有 ComfyUI 的机器
 
-### 确认 ComfyUI 版本带 `MiniMaxH3AddGuide`
+### ~~确认 ComfyUI 版本带 `MiniMaxH3AddGuide`~~（已探到，见上）
 
 这个节点把关键帧从「只能锚首尾」放开成「锚任意帧」，且能接 clip 和音频作为
 guide。它是镜头续接的核心手段——把上一镜的最后 22 帧连同音频喂进下一镜的

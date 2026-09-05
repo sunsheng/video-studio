@@ -34,7 +34,8 @@ pub struct Report {
     pub bundle: Option<String>,
     pub checks: Vec<Check>,
     pub tools: Vec<ToolStatus>,
-    pub nodes: Vec<NodeHealth>,
+    /// ComfyUI 入口的探活结果。只有一个——后端有几个节点是代理那一侧的事。
+    pub node: NodeHealth,
 }
 
 pub fn run(program_dir: Option<&std::path::Path>, bundle: Option<&std::path::Path>) -> Report {
@@ -77,27 +78,52 @@ pub fn run(program_dir: Option<&std::path::Path>, bundle: Option<&std::path::Pat
     }
 
     let comfy = Comfy::from_settings(&settings);
-    let nodes = comfy.health();
-    let reachable = nodes.iter().filter(|n| n.reachable).count();
-    if reachable > 0 {
+    let node = comfy.health();
+    if node.reachable {
         checks.push(Check {
-            name: "ComfyUI 节点".into(),
+            name: "ComfyUI".into(),
             level: Level::Ok,
-            detail: format!("{reachable}/{} 个可达", nodes.len()),
+            detail: format!("{} 可达，队列深度 {}", node.url, node.queue_depth),
             remedy: None,
         });
     } else {
         checks.push(Check {
-            name: "ComfyUI 节点全部不可达".into(),
+            name: "ComfyUI 不可达".into(),
             level: Level::Warn,
-            detail: format!("试过：{}", comfy.nodes().join("、")),
+            detail: format!(
+                "{}{}",
+                node.url,
+                node.detail
+                    .as_deref()
+                    .map(|d| format!("：{d}"))
+                    .unwrap_or_default()
+            ),
             remedy: Some(
-                "渲染之前必须至少有一个可达节点。在 .env 里配：\n    \
-                 COMFY_NODES=http://主机:9001,http://主机:9002\n  \
-                 本机不需要 GPU，节点可以在另一台机器上。\n  \
+                "渲染之前必须能连上。在 .env 里配：\n    \
+                 COMFY_NODE=https://主机名\n  \
+                 需要鉴权的代理再配 COMFY_TOKEN=<token>。\n  \
+                 本机不需要 GPU，ComfyUI 可以在另一台机器上。\n  \
                  提交给 ComfyUI 之前的六个阶段不受影响，现在就可以开始创作。"
                     .into(),
             ),
+        });
+    }
+
+    // 旧的复数名写了多个地址时只用第一个。被忽略的那些必须说出来——
+    // 静默丢掉配置正是这个项目最不能接受的失败方式。
+    let extras = settings.comfy_node_legacy_extras();
+    if !extras.is_empty() {
+        checks.push(Check {
+            name: "COMFY_NODES 里多余的地址被忽略".into(),
+            level: Level::Warn,
+            detail: format!("只用了第一个；被忽略的：{}", extras.join("、")),
+            remedy: Some(format!(
+                "入口现在只有一个 URL——多节点的分发由那一侧的代理负责，\n  \
+                 控制面不再维护节点集合。把 .env 改成：\n    \
+                 COMFY_NODE={}\n  \
+                 需要并发多压几个镜头就配 COMFY_CONCURRENCY（默认 16）。",
+                node.url
+            )),
         });
     }
 
@@ -114,7 +140,7 @@ pub fn run(program_dir: Option<&std::path::Path>, bundle: Option<&std::path::Pat
         bundle: bundle.map(|p| p.display().to_string()),
         checks,
         tools,
-        nodes,
+        node,
     }
 }
 
@@ -408,7 +434,12 @@ mod tests {
                 remedy: Some("修一下".into()),
             }],
             tools: vec![],
-            nodes: vec![],
+            node: NodeHealth {
+                url: "http://127.0.0.1:9001".into(),
+                reachable: false,
+                queue_depth: usize::MAX,
+                detail: None,
+            },
         };
         let text = render(&report);
         assert!(text.contains("有必须先解决的问题"));
@@ -429,7 +460,12 @@ mod tests {
                 remedy: None,
             }],
             tools: vec![],
-            nodes: vec![],
+            node: NodeHealth {
+                url: "http://127.0.0.1:9001".into(),
+                reachable: false,
+                queue_depth: usize::MAX,
+                detail: None,
+            },
         };
         assert!(render(&warn_only).contains("现在就可以开始创作"));
 
@@ -439,7 +475,12 @@ mod tests {
             bundle: None,
             checks: vec![],
             tools: vec![],
-            nodes: vec![],
+            node: NodeHealth {
+                url: "http://127.0.0.1:9001".into(),
+                reachable: false,
+                queue_depth: usize::MAX,
+                detail: None,
+            },
         };
         assert!(render(&clean).contains("全流程就绪"));
     }

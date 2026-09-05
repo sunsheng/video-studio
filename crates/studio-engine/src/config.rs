@@ -33,18 +33,21 @@ pub struct MediaConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ComfyConfig {
-    #[serde(default = "default_nodes")]
-    pub nodes: Vec<String>,
+    #[serde(default = "default_node")]
+    pub node: String,
     #[serde(default = "default_timeout")]
     pub timeout_secs: u64,
     #[serde(default = "default_poll")]
     pub poll_interval_secs: u64,
+    /// 一次往 ComfyUI 队列里压多少个镜头。入口只有一个 URL，客户端看不见
+    /// 后端有几个节点，所以并发度只能显式给。默认 16——队列深一点没有坏处，
+    /// 排队的部分由那一侧调度，而队列太浅会让后端节点闲着。
+    #[serde(default = "default_concurrency")]
+    pub concurrency: usize,
 }
 
-fn default_nodes() -> Vec<String> {
-    (9001..=9008)
-        .map(|p| format!("http://127.0.0.1:{p}"))
-        .collect()
+fn default_node() -> String {
+    "http://127.0.0.1:9001".to_string()
 }
 fn default_timeout() -> u64 {
     1800
@@ -52,13 +55,17 @@ fn default_timeout() -> u64 {
 fn default_poll() -> u64 {
     3
 }
+fn default_concurrency() -> usize {
+    16
+}
 
 impl Default for ComfyConfig {
     fn default() -> Self {
         ComfyConfig {
-            nodes: default_nodes(),
+            node: default_node(),
             timeout_secs: default_timeout(),
             poll_interval_secs: default_poll(),
+            concurrency: default_concurrency(),
         }
     }
 }
@@ -89,9 +96,6 @@ pub struct Settings {
     pub env: BTreeMap<String, String>,
     /// 找过的位置，用于 `tool_unavailable` 的报错。
     pub searched: Vec<String>,
-    /// 本次进程临时排除的 ComfyUI 节点——来自 `studio.comfy.exclude_node`，
-    /// 不写 `.env`、不落盘，只在当次会话内生效。
-    excluded_comfy_nodes: Vec<String>,
 }
 
 impl Settings {
@@ -139,14 +143,7 @@ impl Settings {
             file,
             env,
             searched,
-            excluded_comfy_nodes: Vec::new(),
         }
-    }
-
-    /// 叠加临时排除的节点。返回自身以便链式调用。
-    pub fn exclude_comfy_nodes(mut self, excluded: impl IntoIterator<Item = String>) -> Self {
-        self.excluded_comfy_nodes = excluded.into_iter().collect();
-        self
     }
 
     /// 解析一个外部程序的位置。返回 None 表示到处都找不到。
@@ -172,36 +169,45 @@ impl Settings {
         which(tool)
     }
 
-    pub fn comfy_nodes(&self) -> Vec<String> {
-        let all = if let Some(v) = self.env.get("COMFY_NODES") {
-            let list: Vec<String> = v
-                .split(',')
-                .map(|s| s.trim().trim_end_matches('/').to_string())
-                .filter(|s| !s.is_empty())
-                .collect();
-            if !list.is_empty() {
-                list
-            } else {
-                self.default_comfy_nodes()
-            }
-        } else {
-            self.default_comfy_nodes()
-        };
-        if self.excluded_comfy_nodes.is_empty() {
-            return all;
-        }
-        all.into_iter()
-            .filter(|n| !self.excluded_comfy_nodes.contains(n))
-            .collect()
+    /// ComfyUI 的入口地址。**只有一个**——多节点的调度是那一侧的事
+    /// （通常是个负载均衡代理），控制面不再维护节点集合。
+    ///
+    /// `COMFY_NODES`（复数）是旧名，仍然认，但只取第一个值；写了多个时
+    /// [`Settings::comfy_node_legacy_extras`] 会把被忽略的那些报出来，
+    /// 由 `doctor` 提示改名，不静默丢弃。
+    pub fn comfy_node(&self) -> String {
+        self.comfy_node_values()
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| self.file.comfy.node.trim_end_matches('/').to_string())
     }
 
-    fn default_comfy_nodes(&self) -> Vec<String> {
-        self.file
-            .comfy
-            .nodes
-            .iter()
-            .map(|s| s.trim_end_matches('/').to_string())
-            .collect()
+    /// 旧的 `COMFY_NODES` 里除第一个之外的值。空表示没有被忽略的配置。
+    pub fn comfy_node_legacy_extras(&self) -> Vec<String> {
+        self.comfy_node_values().into_iter().skip(1).collect()
+    }
+
+    fn comfy_node_values(&self) -> Vec<String> {
+        let raw = self
+            .env
+            .get("COMFY_NODE")
+            .or_else(|| self.env.get("COMFY_NODES"));
+        raw.map(|v| {
+            v.split(',')
+                .map(|s| s.trim().trim_end_matches('/').to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+    }
+
+    /// 接入代理时的 Bearer token。没配就不带 `Authorization` 头——
+    /// 直连一个没有鉴权的 ComfyUI 时本来就不需要。
+    pub fn comfy_token(&self) -> Option<String> {
+        self.env
+            .get("COMFY_TOKEN")
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
     }
 
     pub fn comfy_timeout_secs(&self) -> u64 {
@@ -209,6 +215,15 @@ impl Settings {
             .get("COMFY_TIMEOUT_SECS")
             .and_then(|v| v.parse().ok())
             .unwrap_or(self.file.comfy.timeout_secs)
+    }
+
+    /// 同时在途的镜头数，至少 1。
+    pub fn comfy_concurrency(&self) -> usize {
+        self.env
+            .get("COMFY_CONCURRENCY")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(self.file.comfy.concurrency)
+            .max(1)
     }
 
     pub fn comfy_poll_secs(&self) -> u64 {
@@ -305,41 +320,77 @@ mod tests {
         )
         .unwrap();
         let s = Settings::load(Some(prog.path()), Some(bundle.path()));
-        assert_eq!(s.comfy_nodes(), vec!["http://bundle:9001"]);
+        assert_eq!(s.comfy_node(), "http://bundle:9001");
+    }
+
+    /// 进程环境里可能已经有 `COMFY_NODE(S)`（云端会话就是这么配的），
+    /// 那种情况下这个测试问的「没有任何配置时的默认值」问不出来，跳过。
+    #[test]
+    fn comfy_node_falls_back_to_the_local_default() {
+        if std::env::var("COMFY_NODE").is_ok() || std::env::var("COMFY_NODES").is_ok() {
+            return;
+        }
+        assert_eq!(
+            Settings::load(None, None).comfy_node(),
+            "http://127.0.0.1:9001"
+        );
     }
 
     #[test]
-    fn comfy_nodes_default_to_the_local_eight() {
-        let s = Settings::load(None, None);
-        let nodes = s.comfy_nodes();
-        assert_eq!(nodes.len(), 8);
-        assert_eq!(nodes[0], "http://127.0.0.1:9001");
-        assert_eq!(nodes[7], "http://127.0.0.1:9008");
+    fn comfy_node_is_preferred_over_the_legacy_plural_name() {
+        let bundle = tempfile::tempdir().unwrap();
+        std::fs::write(
+            bundle.path().join(".env"),
+            "COMFY_NODES=http://old:9001\nCOMFY_NODE=http://new:9001\n",
+        )
+        .unwrap();
+        let s = Settings::load(None, Some(bundle.path()));
+        assert_eq!(s.comfy_node(), "http://new:9001");
+        assert!(s.comfy_node_legacy_extras().is_empty());
     }
 
+    /// 旧的复数名写了多个地址时只用第一个，但被忽略的那些要能报出来——
+    /// 静默丢掉配置正是这个项目最不能接受的失败方式。
     #[test]
-    fn excluded_nodes_are_filtered_out_of_comfy_nodes() {
+    fn extra_values_in_the_legacy_plural_name_are_reported_not_dropped() {
         let bundle = tempfile::tempdir().unwrap();
         std::fs::write(
             bundle.path().join(".env"),
             "COMFY_NODES=http://a:9001,http://b:9002,http://c:9003\n",
         )
         .unwrap();
-        let s = Settings::load(None, Some(bundle.path()))
-            .exclude_comfy_nodes(["http://b:9002".to_string()]);
-        assert_eq!(s.comfy_nodes(), vec!["http://a:9001", "http://c:9003"]);
+        let s = Settings::load(None, Some(bundle.path()));
+        assert_eq!(s.comfy_node(), "http://a:9001");
+        assert_eq!(
+            s.comfy_node_legacy_extras(),
+            vec!["http://b:9002", "http://c:9003"]
+        );
     }
 
     #[test]
     fn trailing_slashes_are_normalised() {
         let bundle = tempfile::tempdir().unwrap();
-        std::fs::write(
-            bundle.path().join(".env"),
-            "COMFY_NODES=http://a:9001/,http://b:9002//\n",
-        )
-        .unwrap();
+        std::fs::write(bundle.path().join(".env"), "COMFY_NODE=http://a:9001//\n").unwrap();
         let s = Settings::load(None, Some(bundle.path()));
-        assert_eq!(s.comfy_nodes(), vec!["http://a:9001", "http://b:9002"]);
+        assert_eq!(s.comfy_node(), "http://a:9001");
+    }
+
+    #[test]
+    fn comfy_token_is_none_when_unset_or_blank() {
+        let bundle = tempfile::tempdir().unwrap();
+        std::fs::write(bundle.path().join(".env"), "COMFY_TOKEN=  \n").unwrap();
+        assert!(Settings::load(None, Some(bundle.path()))
+            .comfy_token()
+            .is_none());
+
+        let other = tempfile::tempdir().unwrap();
+        std::fs::write(other.path().join(".env"), "COMFY_TOKEN=abc123\n").unwrap();
+        assert_eq!(
+            Settings::load(None, Some(other.path()))
+                .comfy_token()
+                .as_deref(),
+            Some("abc123")
+        );
     }
 
     #[test]

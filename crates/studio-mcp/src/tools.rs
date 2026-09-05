@@ -26,7 +26,7 @@ fn stage_arg(desc: &str) -> Value {
     })
 }
 
-pub const TOOLS: [ToolSpec; 12] = [
+pub const TOOLS: [ToolSpec; 11] = [
     ToolSpec {
         name: "studio.status",
         description:
@@ -156,22 +156,6 @@ pub const TOOLS: [ToolSpec; 12] = [
         name: "studio.export",
         description: "把交付物投递到作品的 output/ 目录。后期阶段通过之后才可用。",
         input_schema: no_args,
-    },
-    ToolSpec {
-        name: "studio.comfy.exclude_node",
-        description: "把一个 ComfyUI 节点加入本次会话的临时排除名单，选节点时会跳过它。\
-                      怀疑某个节点本身有问题（反复失败、迟迟连不上）时用它绕开，\
-                      不需要用户去改 .env。只在这次会话内生效，不是永久拓扑变更。",
-        input_schema: || {
-            json!({
-                "type": "object",
-                "properties": {
-                    "node": { "type": "string", "description": "要排除的节点地址，例如 http://127.0.0.1:9002" }
-                },
-                "required": ["node"],
-                "additionalProperties": false
-            })
-        },
     },
     ToolSpec {
         name: "studio.retry_stage",
