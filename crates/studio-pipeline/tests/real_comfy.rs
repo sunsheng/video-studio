@@ -1026,3 +1026,114 @@ fn a_character_card_is_actually_generated() {
     );
     assert_ne!(prints[0], prints[1], "两个视图出的是同一张图");
 }
+
+/// SPEC-0017 S4：**把队列压满，排队不能被报成失败。**
+///
+/// 这是整份 SPEC-0017 的落点。入口那一侧从一台变成八台节点之后，代理在所有
+/// 节点都到 `MAX_CONCURRENT_PER_NODE` 时会**一直排队等节点空出来，直到调用方
+/// 自己的 HTTP 客户端超时或取消**——排队在那一侧是等待，在我们这一侧长得像
+/// 超时。改之前 `/prompt` 走的是控制面那 30 秒读超时，排过头就报「渲染失败」。
+///
+/// 所以这条测试同时验两件事，**缺一条它就什么都没证明**：
+///
+/// 1. 一次并发压进去 `SATURATE` 个提交，**一个都不能失败**；
+/// 2. 至少有一个提交明显等了一会儿——那才说明真的排上队了。第 2 条不成立时
+///    不判失败（集群空、机器快，本来就可能不排队），但要**明说这一轮没验到
+///    排队**，不能让一次没压满的运行冒充通过。
+#[test]
+fn a_saturated_queue_is_waited_out_not_reported_as_failure() {
+    let Some(env) = setup() else { return };
+
+    // 比节点数（实测 8）多出一截，逼出排队。镜头都很小，只为占住节点。
+    const SATURATE: usize = 24;
+    // 「等了一会儿」的判据。健康路径上提交是毫秒级的——代理接了就回。
+    const QUEUED_MS: u128 = 1_500;
+
+    // 片段库只有 image / reference 两个 head，没有纯文生视频那条。
+    // 用 image head 配一张现造的纯色首帧，24 镜共用——这里要的是占住节点，
+    // 不是好看的画面。
+    let swatch = upload_swatch(&env, "saturate", "0x203040");
+
+    let graphs: Vec<_> = (0..SATURATE)
+        .map(|i| {
+            let mut shot = base(&format!("Q{i:02}"), "image");
+            shot.first_frame = Some(swatch.clone());
+            // 每镜换 seed，免得被任何一层缓存掉——那会让「压满」变成假的。
+            shot.seed = 20260905 + i as i64;
+            assemble_as(
+                &env.set,
+                &shot,
+                &format!("real-saturation/{}", shot.shot_id),
+                Combination::Standard,
+            )
+            .unwrap_or_else(|e| panic!("组装失败：{}", e.message()))
+        })
+        .collect();
+
+    let started = std::time::Instant::now();
+    let results: Vec<(usize, u128, Result<_, studio_core::StudioError>)> =
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = graphs
+                .iter()
+                .enumerate()
+                .map(|(i, g)| {
+                    let comfy = &env.comfy;
+                    scope.spawn(move || {
+                        let t = std::time::Instant::now();
+                        let r = comfy.submit(&g.graph, "real-saturation");
+                        (i, t.elapsed().as_millis(), r)
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+
+    let failed: Vec<String> = results
+        .iter()
+        .filter_map(|(i, _, r)| {
+            r.as_ref()
+                .err()
+                .map(|e| format!("Q{i:02}：{}", e.message()))
+        })
+        .collect();
+    assert!(
+        failed.is_empty(),
+        "{} / {SATURATE} 个提交失败了——排队被当成了失败：\n{}",
+        failed.len(),
+        failed.join("\n")
+    );
+
+    let mut waits: Vec<u128> = results.iter().map(|(_, ms, _)| *ms).collect();
+    waits.sort_unstable();
+    let slowest = *waits.last().unwrap();
+    let median = waits[waits.len() / 2];
+    eprintln!(
+        "✅ {SATURATE} 个提交全部成功，用时 {:.1}s；提交耗时 中位 {median}ms / 最慢 {slowest}ms",
+        started.elapsed().as_secs_f64()
+    );
+    if slowest < QUEUED_MS {
+        // **不判失败，但要说出来。** 集群空、机器快时本来就可能不排队，
+        // 那种情况下这一轮没验到 SPEC-0017 要验的东西——不能让它冒充通过。
+        eprintln!(
+            "⚠️  最慢的提交只等了 {slowest}ms（< {QUEUED_MS}ms），这一轮**没有真的压出排队**。\
+             结论只到「并发提交不失败」，没验到「排队被等过去」。"
+        );
+    }
+
+    // 提交完就算完不行——排上队的那些要真的跑完，否则「不失败」也可能只是
+    // 因为它们根本没被执行。等出片，顺便把队列清空还给下一条测试。
+    let mut done = 0usize;
+    for (i, _, r) in results {
+        let sub = r.expect("上面已经断言过没有失败");
+        let files = env
+            .comfy
+            .wait(&sub)
+            .unwrap_or_else(|e| panic!("Q{i:02} 执行失败：{}", e.message()));
+        assert!(!files.is_empty(), "Q{i:02} 跑完却没有产出");
+        done += 1;
+    }
+    eprintln!(
+        "✅ {done} 镜全部出片，总耗时 {:.1}s",
+        started.elapsed().as_secs_f64()
+    );
+}
