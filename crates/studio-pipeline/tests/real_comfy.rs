@@ -2,7 +2,7 @@
 //!
 //! 这一组测试有环境前置条件，**CI 里不会跑**：
 //!
-//! - `COMFY_NODE`（或旧名 `COMFY_NODES`）指向一个可达的 ComfyUI 入口
+//! - `COMFY_NODE` 指向一个可达的 ComfyUI 入口
 //! - 该实例上装着 `minimax_h3` 的权重
 //! - 本机有 `ffmpeg`（用来现造参考图）
 //!
@@ -41,9 +41,8 @@ struct Env {
 /// 备齐前置条件；缺什么就返回 None 并说明。
 fn setup() -> Option<Env> {
     let node = std::env::var("COMFY_NODE")
-        .or_else(|_| std::env::var("COMFY_NODES"))
         .ok()
-        .map(|v| v.split(',').next().unwrap_or_default().trim().to_string())
+        .map(|v| v.trim().trim_end_matches('/').to_string())
         .filter(|v| !v.is_empty());
     let Some(node) = node else {
         eprintln!("跳过：没有 COMFY_NODE，这台机器上没有可达的 ComfyUI");
