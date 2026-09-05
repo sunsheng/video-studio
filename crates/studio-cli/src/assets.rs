@@ -861,7 +861,30 @@ fn fragments_section(f: &FragmentCard) -> String {
         "\n`at_frame` 负数从末尾倒数，`-1` 是最后一帧。\
          `head: image` 只有首尾两个槽位，锚不了中间帧。\n",
     );
+    s.push_str(&frame_grid_section());
     s
+}
+
+/// 帧数网格与画幅约束。**数值从 `studio-core` 的常量算出来**，不手抄——
+/// 手抄的表和代码里的校验迟早会分家，而分家的那一天 Agent 照着表写、
+/// 提交时被挡下，却不知道该信哪个。
+fn frame_grid_section() -> String {
+    use studio_core::assembly::{FRAME_GRID_BASE, FRAME_GRID_STEP};
+    let legal: Vec<String> = (0..5)
+        .map(|k| (FRAME_GRID_BASE + k * FRAME_GRID_STEP).to_string())
+        .collect();
+    format!(
+        "\n### 帧数与画幅\n\n\
+         `length_frames` 吃 **{FRAME_GRID_STEP}k+{FRAME_GRID_BASE}** 的网格：\
+         {} …（k ≥ 0）。写别的值模型会自己 snap 到最近的合法值，\
+         **于是成片时长跟你声明的对不上**——而后期拼接是按声明算的，\
+         差出来的部分会一路错到交付。提交时会当场挡下并给出最近的两个合法值。\n\n\
+         按目标时长反推：`length_frames ≈ 秒数 × fps`，再挪到最近的网格值上，\
+         然后用挪完的帧数回头修剧本里那一拍的时长，别让两边对不上。\n\n\
+         `width` / `height` 取 32 的倍数，短边不超过原生画布 768。\
+         超出的部分不会带来细节，只是更慢；要更高分辨率走后期的超分。\n",
+        legal.join(" / ")
+    )
 }
 
 /// 「写了会被挡下」的参数——能力卡存在的主要理由。
@@ -1542,6 +1565,33 @@ mod tests {
         );
         assert!(md.contains("image × 9"), "要给出参考槽位的上限");
         assert!(md.contains("~~video × 3~~"), "未核验的介质要划掉");
+    }
+
+    /// 帧数网格必须写在卡上，而且数值要跟 studio-core 的常量对得上。
+    ///
+    /// 这条是端到端跑出来的：assembly/shots.md 写着「哪一档见能力卡」，
+    /// 而卡上压根没有——Agent 满文件 grep「网格」找不到东西。
+    /// 指路指向一个空位比不指还糟。
+    #[test]
+    fn the_fragment_card_states_the_frame_grid_from_the_shared_constants() {
+        use studio_core::assembly::{is_on_frame_grid, FRAME_GRID_BASE, FRAME_GRID_STEP};
+        let card = MODEL_CARDS
+            .iter()
+            .find(|c| c.family == "minimax_h3")
+            .unwrap();
+        let md = model_card_md(card);
+        assert!(
+            md.contains(&format!("{FRAME_GRID_STEP}k+{FRAME_GRID_BASE}")),
+            "卡上没写帧数网格的公式"
+        );
+        // 列出来的那几档必须真的合法——手抄的表迟早跟校验分家。
+        for k in 0..5 {
+            let n = FRAME_GRID_BASE + k * FRAME_GRID_STEP;
+            assert!(is_on_frame_grid(n), "{n} 不在网格上，卡列错了");
+            assert!(md.contains(&n.to_string()), "卡上缺 {n} 这一档");
+        }
+        assert!(md.contains("768"), "没写原生画布的短边上限");
+        assert!(md.contains("32 的倍数"), "没写画幅要取 32 的倍数");
     }
 
     /// 整图基线的系列要说清声明式字段在它上面没有落点——
