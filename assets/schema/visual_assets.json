@@ -156,7 +156,7 @@
               "type": "string"
             },
             "typography": {
-              "description": "排版禁止项：字幕、Logo、水印、可读文字",
+              "description": "排版禁止项：乱码文字、假字幕、水印。挡的是模型幻觉出来的假字，不是标识本身——要出现的 logo、图标、品牌正常写进提示词即可",
               "type": "string"
             }
           },

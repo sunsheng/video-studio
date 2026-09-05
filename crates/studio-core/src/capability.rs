@@ -434,7 +434,7 @@ fn dropped_hint(param: &str, workflow: &str) -> String {
     match param {
         "negative" => format!(
             "{head}。把约束改写成正向提示词里的完整句子——\
-             「一镜到底，不切场景，画面中不出现任何文字、标志或水印」\
+             「一镜到底，不切场景，画面中不出现乱码文字、假字幕或水印」\
              比一串负向标签可靠"
         ),
         "length_frames" => format!("{head}。这条基线按秒收时长，改用 duration_seconds"),

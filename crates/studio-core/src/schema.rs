@@ -753,7 +753,14 @@ pub fn stage_schema(stage: StageId) -> Schema {
                             ),
                             ("camera", text("机位签名")),
                             ("environment", text("环境锁定：地点、天气、时段")),
-                            ("typography", text("排版禁止项：字幕、Logo、水印、可读文字")),
+                            (
+                                "typography",
+                                text(
+                                    "排版禁止项：乱码文字、假字幕、水印。\
+                                     挡的是模型幻觉出来的假字，不是标识本身——\
+                                     要出现的 logo、图标、品牌正常写进提示词即可",
+                                ),
+                            ),
                         ],
                         vec!["character"],
                     ),
@@ -1369,6 +1376,40 @@ fn structural(stage: StageId, v: &Value, key: &str, out: &mut Vec<Violation>) {
             if let Some(a) = view.get("aspect").and_then(|a| a.as_str()) {
                 aspects.insert(a.to_string());
             }
+            // V13：视图的提示词必须逐字包含**本卡自己的** identity_prompt。
+            //
+            // 「一次写定、逐字复用」是这个阶段的一致性手段（SPEC-0016 §6.3），
+            // 但在这条校验之前它只是一句约定，没有任何东西机械地查过。
+            //
+            // 2026-09-05 的十阶段端到端就栽在这里：Agent 把**角色卡的**身份锁
+            // 抄进了全部三张卡的全部 15 个视图，于是场景卡和道具卡出来的都是
+            // 那个角色。控制面忠实渲染了它被告知的东西，一路绿到人眼看图才发现。
+            //
+            // 「本卡自己的」是这条校验的全部重点：场景卡的身份锁是那个空间，
+            // 道具卡的是那个道具，都不是角色。
+            //
+            // 判据是**开头**，不是「包含」。`contains` 不够：这次那份计划里，
+            // 角色卡的身份锁末尾恰好是「手持无标识透明饮料杯。」，把道具卡的
+            // 身份锁整个包了进去——于是道具卡那四个视图用 `contains` 查是「通过」的，
+            // 而它们画的全是角色。技能清单里写的本来就是「以 identity_prompt
+            // 逐字开头」，按它来。
+            let prompt = view
+                .get("prompt")
+                .and_then(|p| p.as_str())
+                .unwrap_or("")
+                .trim_start();
+            if !identity.is_empty() && !prompt.starts_with(identity) {
+                out.push(Violation::new(
+                    at(&format!(".views[{j}].prompt")),
+                    format!(
+                        "没有以本卡的 identity_prompt 逐字开头。同一张卡的每个视图都要\
+                         以它开头，一个字不改——那是这张卡里「是同一个东西」的唯一凭据。\
+                         本卡的是：「{identity}」。\
+                         （别抄别的卡的：场景卡的身份锁是那个空间，道具卡的是那个道具，\
+                         都不是角色。）"
+                    ),
+                ));
+            }
             let at_field = at(&format!(".views[{j}].derived_from"));
             if is_anchor {
                 if !derived.is_empty() {
@@ -1710,6 +1751,37 @@ mod fixture_tests {
         o["asset_plan"]["assets"][0]["identity_prompt"] =
             json!("20岁女生，黑长发，白裙子，白板鞋，小挎包，鹅蛋脸");
         refuses(&o, "没有逐字包含 consistency_lock.character");
+    }
+
+    /// V13：视图的提示词要以**本卡自己的** identity_prompt 逐字开头。
+    ///
+    /// 2026-09-05 的十阶段端到端栽在这里：Agent 把角色卡的身份锁抄进了三张卡
+    /// 全部 15 个视图，于是场景卡和道具卡出来的都是那个角色。控制面忠实渲染了
+    /// 它被告知的东西，一路绿到人眼看图才发现。
+    #[test]
+    fn a_view_prompt_that_does_not_start_with_its_own_card_identity_is_refused() {
+        let mut o = plan();
+        let other = "完全不相干的一段身份锁";
+        o["asset_plan"]["assets"][0]["views"][1]["prompt"] =
+            json!(format!("{other}，四分之三侧身全身"));
+        refuses(&o, "没有以本卡的 identity_prompt 逐字开头");
+    }
+
+    /// **判据是「开头」，不是「包含」。**
+    ///
+    /// 真实那份计划里，角色卡的身份锁末尾恰好是「手持无标识透明饮料杯。」，
+    /// 把道具卡的身份锁整个包了进去——用 `contains` 查，道具卡那四个画着角色的
+    /// 视图是「通过」的。这条测试守着这个区别。
+    #[test]
+    fn a_prompt_that_merely_contains_the_identity_somewhere_is_still_refused() {
+        let mut o = plan();
+        let identity = o["asset_plan"]["assets"][0]["identity_prompt"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        o["asset_plan"]["assets"][0]["views"][1]["prompt"] =
+            json!(format!("一段别的开头，中间才提到{identity}"));
+        refuses(&o, "没有以本卡的 identity_prompt 逐字开头");
     }
 
     #[test]
