@@ -73,7 +73,7 @@
 
 | 来源 | 关键事实 |
 |---|---|
-| [OpenAI gpt-image-2 文档](https://developers.openai.com/api/docs/models/gpt-image-2)、[images.edit 参考](https://developers.openai.com/api/reference/resources/images/methods/edit)、[图像生成指南](https://developers.openai.com/api/docs/guides/image-generation) | 编辑接口最多接受 **16 张参考图**且自动高保真保留细节；尺寸只有 1024×1024 / 1024×1536 / 1536×1024 三档；quality low/med/high；n ≤ 10；png/webp/jpeg；支持透明背景；**没有 negative_prompt** |
+| [OpenAI gpt-image-2 文档](https://developers.openai.com/api/docs/models/gpt-image-2)、[images.edit 参考](https://developers.openai.com/api/reference/resources/images/methods/edit)、[图像生成指南](https://developers.openai.com/api/docs/guides/image-generation) | 编辑接口最多接受 **16 张参考图**且自动高保真保留细节；尺寸 1024×1024 / 1024×1536 / 1536×1024 / auto；quality low/med/high；n ≤ 10；png/webp/jpeg；支持透明背景；**没有 negative_prompt**。⚠ 这些是 **Platform API** 的能力；本项目实际用的 sub2api 链路只吃其中一部分，以 §6.2.1 的实测为准 |
 | [Z-Image Turbo · ComfyUI 官方教程](https://docs.comfy.org/tutorials/image/z-image/z-image-turbo)、[模型说明](https://comfyui.org/en/z-image-turbo-in-comfyui-realism) | 通义实验室 6B、Apache-2.0；Turbo 仅 8 NFE、16GB 显存可跑、4090 上 1024px 约 2–3 秒；有 **Z-Image-Edit** 变体做指令编辑；ComfyUI 有官方工作流，走正负提示词 |
 
 ---
@@ -509,11 +509,63 @@ AGENTS.md 现在说的是「不要用 shell 去读写这个目录里的状态」
 | 模型 | OpenAI [gpt-image-2](https://developers.openai.com/api/docs/models/gpt-image-2) | [Z-Image](https://docs.comfy.org/tutorials/image/z-image/z-image-turbo)（通义 6B，Turbo / Edit） |
 | 通道 | HTTPS → OpenAI Images API | HTTP → ComfyUI（与视频同一条通道） |
 | 触发条件 | 环境里有 `OPENAI_API_KEY` | 没有 key，或 key 探活失败 |
-| 尺寸 | 只有三档：1024×1024、1024×1536、1536×1024 | ComfyUI 自由设定 |
-| 参考图 | `images.edit` 最多 **16 张**输入，高保真自动保留细节 | Z-Image-Edit 走指令编辑；Turbo 纯 t2i |
+| 画幅 | **写进提示词**，`size` 参数无效（见 §6.2.1） | ComfyUI 自由设定 |
+| 参考图 | **不用**（见 §6.2.1） | Z-Image-Edit 走指令编辑；Turbo 纯 t2i |
 | 负向提示词 | 无此参数，约束写进正向 | 有，走标准 CLIP 负向通道 |
-| 其它 | quality low/med/high、n ≤ 10、png/webp/jpeg、透明背景 | 8 NFE 亚秒级、16GB 显存可跑、Apache-2.0 |
+| 其它 | 只有 `output_format` 可控（png/webp/jpeg） | 8 NFE 亚秒级、16GB 显存可跑、Apache-2.0 |
 | 成本 | 按张计费，需联网 | 本机 GPU，免费 |
+
+#### 6.2.1 实测：这条链路到底吃什么
+
+上面那张表的 A 栏是**实测**的，不是照抄官方文档。原因是我们用的 key 不是
+Platform API key（直连官方端点报 `invalid_api_key`），而是 **sub2api** 转出来的
+订阅制凭证。请求会被包装成 Responses API 的 `image_generation` 工具调用——
+`n` 参数报的错 `Unknown parameter: 'tools[0].n'` 直接暴露了这一点——
+并被静默改路由到 `gpt-image-2-codex`。这与
+[openai/codex#28723](https://github.com/openai/codex/issues/28723) 记录的现象一致。
+
+实测矩阵（全部走文生图）：
+
+| 参数 | 行为 |
+|---|---|
+| `model` | 只有 `gpt-image-2` 是入口；显式写 `gpt-image-2-codex` 或 `gpt-image-1` 都 404。响应回报的 `model` 恒为 `gpt-image-2-codex` |
+| `size` | **完全失效**。三个官方档、`auto`、省略、越界值、非法比例，连 `"banana"` 都返回 200 且尺寸相同——这个字段在到达模型前就被丢弃，不做任何校验 |
+| `quality` | **完全失效**，同上，恒为 `auto` |
+| `output_format` | **有效**：png / jpeg / webp |
+| `background` | **被校验**：`transparent` → 400 `Transparent background is not supported for this model.` |
+| `n` | **不支持**：400 `Unknown parameter: 'tools[0].n'` |
+
+`background` 会明确报错而 `size` 连垃圾值都不报错——这个分化说明请求确实到了真实
+模型层，只是那两个字段不在 `image_generation` 工具的参数集里。**不是配置问题，
+也不是用法问题，换模型名或换取值都绕不过去。**
+
+#### 画幅靠提示词控制
+
+`size` 没用，但 auto 模式会**按提示词里的构图描述定画幅**，而且写明比例就给得很准：
+
+| 提示词里写的 | 实际输出 | 比例 |
+|---|---|---|
+| `square 1:1 product plate framing` | 1254×1254 | 1.000 |
+| `ultra wide horizontal panorama, 16:9 letterbox framing` | 1672×941 | **1.777** = 16:9 |
+| `Vertical 9:16 smartphone video frame, portrait orientation` | 941×1672 | **0.563** = 9:16 |
+| `tall vertical framing`（没给比例） | 836×1881 | 0.444，模型自己挑的 |
+
+所以**画幅是可控的，只是控制通道从参数变成了文本**。每个视图的提示词模板里
+必须显式写出目标比例，不能省——不写就由模型自由发挥，同一张卡的多个视图会
+拿到不同画幅。
+
+#### 不使用上传参考图
+
+`images.edit`（多参考图输入）在这条链路上**不用**：
+
+- 这个网络路径上，超过约 5–14 KB 的 multipart 上传会被站点的 Cloudflare 拦成
+  403 HTML，而任何真实参考图都远超这个体量；
+- 官方文档写的「最多 16 张参考图」是 Platform API 的能力，与这条 sub2api
+  链路无关。
+
+**后果**：后端 A 上的多视图一致性只能靠**提示词里逐字复用的身份锁**，
+和视频那边是同一套办法（见 `consistency/bible.md`）。要用参考图锚定，
+走后端 B——ComfyUI 在本机，没有这层限制。
 
 #### 选择规则：整片一次性选定，不逐张回退
 
@@ -608,36 +660,49 @@ IMAGE_BACKEND           可选，显式锁定 openai / z_image，跳过自动探
 
 正面、侧面、使用状态三视图 + 比例参照（与手或人体的相对大小）。
 
-#### 身份锁与锚点扩散
+#### 身份锁与生成顺序
 
 一致性不靠「每次都描述得很详细」，靠**同一个字符串被逐字复用**：
 
 - 每张卡有一个 `identity_prompt`：一次写定的外观锁（发型、脸型、肤色、瞳色、
   服装、体型、年龄段、标志性特征），此后所有视图、所有镜头提示词**逐字复制**，
   不复述、不改写、不「优化措辞」。
-- 生成顺序是**锚点扩散**，不是并行独立生成：
+- 生成顺序按后端分两种：
+
+  **后端 A（不能上传参考图，见 §6.2.1）**——纯文本锚定：
   1. 先出主视图（角色 `front_full`、场景 `establishing`）；
-  2. 主视图作为**参考图**输入，生成其余视图——
-     OpenAI 走 `images.edit`（最多 16 张参考），Z-Image 走 Edit 变体；
+  2. 其余视图的提示词 = **逐字相同的 `identity_prompt`** + 该视图特有的机位/表情
+     描述 + 画幅比例，**除了视图差异之外一个字都不改**；
   3. 任一视图与主视图明显不符 → 重生成该视图，而不是接受漂移。
-- 这条顺序是硬要求：并行生成八个视图，出来的是八个长得像但不是同一个人的角色。
 
-#### 画幅：卡片不是成片帧
+  **后端 B（可以喂图）**——锚点扩散：
+  1. 同样先出主视图；
+  2. 主视图作为**参考图**输入 Z-Image-Edit，生成其余视图；
+  3. 同样，不符就重生成。
 
-OpenAI 只有三档尺寸，**出不了 9:16 的 1080×1920**。这不影响卡片用途——
-卡片是参考素材，1024×1536（2:3）完全够用。
+- 无论哪个后端，主视图**先出、单独出**是硬要求：并行生成八个视图，
+  出来的是八个长得像但不是同一个人的角色。
+- 两者的一致性强度不同：后端 B 有图锚定，后端 A 只有文字。这是选后端时
+  要知道的取舍，也是为什么身份锁在 A 上必须逐字复用、一个字都不能改。
 
-但**首帧图**不一样：要喂给 i2v 当第一帧，就必须是成片画幅，否则模型要么拉伸要么裁切。
-所以分开处理：
+#### 画幅：写进提示词，且卡片不是成片帧
 
-| 用途 | 画幅要求 | 建议来源 |
+后端 A 的 `size` 参数无效，画幅由提示词里的比例描述决定（§6.2.1）；
+后端 B 在 ComfyUI 里按参数设。两条路都能拿到想要的比例，写法不同而已。
+
+**卡片和首帧图的画幅要求本来就不同**，分开处理：
+
+| 用途 | 画幅要求 | 提示词里怎么写 / 来源 |
 |---|---|---|
-| 角色卡 / 场景卡 / 道具卡 | 自由（参考用途） | 图像后端（A 或 B） |
-| 每镜首帧图（i2v） | **必须等于成片画幅** | Z-Image 按成片画幅出图，或用视频系列 t2v 出片抽帧 |
-| 参考图（r2v） | 自由 | 直接复用角色卡/场景卡 |
+| 角色卡（全身、转身） | 竖构图 | `tall vertical 9:16 framing, full body head to toe` |
+| 角色卡（面部、细节） | 方构图 | `square 1:1 framing` |
+| 场景卡（建立镜头、机位） | 横构图 | `ultra wide 16:9 letterbox framing` |
+| 道具卡 | 方构图 | `square 1:1 product plate framing` |
+| 每镜首帧图（i2v） | **必须等于成片画幅** | 写明 `9:16`；或用 Z-Image 按精确像素出图 |
 
-也就是说：即便用了 OpenAI 做卡片，首帧图这条路仍然可能要走 ComfyUI。
-这不是缺陷，是两种资产的用途本来就不同。
+实测确认：写明比例就能拿到准的（9:16 → 941×1672，16:9 → 1672×941）；
+不写比例就由模型自由发挥，同一张卡的多个视图会拿到不同画幅——
+所以**每个视图的提示词模板都必须带比例**，不能省。
 
 ### 6.4 分层与新 crate
 
@@ -645,11 +710,13 @@ OpenAI 只有三档尺寸，**出不了 9:16 的 1080×1920**。这不影响卡�
 
 ```
 studio-openai    OpenAI Images HTTP 客户端。★ 纯协议，零业务逻辑，
-                 与 studio-comfy 同构：生成、编辑、下载、错误映射。
+                 与 studio-comfy 同构：生成、下载、错误映射。
+                 **不实现 edit**——这条链路不用上传参考图（§6.2.1）。
                  不依赖 engine / store。
 
 studio-pipeline  新增 visual_assets 执行器与后端抽象：
                  trait ImageBackend { generate, edit }
+                 （edit 在后端 A 上返回「不支持」，由调用方退回纯文本锚定）
                  ├── OpenAiBackend  (studio-openai)
                  └── ZImageBackend  (studio-comfy + z_image 基线)
                  依赖 core + engine + comfy + media + openai。
@@ -658,8 +725,8 @@ studio-pipeline  新增 visual_assets 执行器与后端抽象：
 依赖方向不变（仍然只向下），`studio-core` 不受影响，**不引入第二种运行时语言**
 （Rust + ureq，与现有 HTTP 调用同一套）。
 
-后端选择、锚点扩散顺序、重试与阻塞策略都在 `studio-pipeline` 里，
-两个后端只负责「把提示词和参考图变成一张图」。
+后端选择、生成顺序、重试与阻塞策略都在 `studio-pipeline` 里，
+两个后端只负责「把提示词（后端 B 还可加参考图）变成一张图」。
 
 ### 6.5 schema 改动：`asset_plan` 重做
 
@@ -683,15 +750,19 @@ studio-pipeline  新增 visual_assets 执行器与后端抽象：
           {
             "view": "front_full",          // enum，见 §6.3
             "is_anchor": true,             // 主视图，先生成
-            "prompt": "……",
-            "derived_from": null,          // 非主视图必须指向锚点
+            "aspect": "9:16",              // 目标比例，必须显式写进 prompt
+            "prompt": "……身份锁逐字 + 本视图机位 + 画幅比例……",
+            "derived_from": null,          // 非主视图指向锚点：后端 B 用它取参考图，
+                                           // 后端 A 只表达血缘，不上传（§6.2.1）
             "status": "ready",             // planned/generating/ready/failed
             "path": "media/assets/C01/front_full.png",   // 控制面回填，相对路径
             "provenance": {                // 控制面回填，可审计
               "backend": "openai:gpt-image-2",
-              "size": "1024x1536",
+              "requested_model": "gpt-image-2",   // 实际执行的可能是别的，如实记
+              "served_model": "gpt-image-2-codex",
+              "size": "941x1672",          // 实测出来的，不是请求的
               "seed": null,                // OpenAI 无种子；Z-Image 有则记
-              "references": []
+              "references": []             // 后端 A 恒为空
             }
           }
         ]
@@ -706,7 +777,12 @@ studio-pipeline  新增 visual_assets 执行器与后端抽象：
 - `views[].view` 是**枚举**（§6.3 的两张表），schema 层保证「不许只出一张大头照」——
   角色卡缺 `front_full`/`three_quarter`/`profile`/`back`/`face_close` 任一即 `schema_violation`。
 - `identity_prompt` 提到卡片级，不再散落在每个 view 里，从结构上杜绝逐视图改写。
-- `derived_from` 强制表达锚点扩散关系：非锚点视图必须指向一个锚点视图。
+- `aspect` 必填：画幅在后端 A 上只能靠提示词控制（§6.2.1），
+  这个字段是校验点——提交时检查 `prompt` 里确实写了这个比例，
+  没写就是 `schema_violation`，而不是等出图之后才发现画幅不对。
+- `derived_from` 表达血缘：非锚点视图必须指向一个锚点视图。
+  后端 B 用它去取参考图；后端 A 不上传，但仍要写——它标明了
+  「这一视图必须与哪张保持同一个人」，是人工核对时的依据。
 - `path` / `provenance` / `status` 由**控制面回填**，Agent 提交时不填——
   这是 Hybrid 阶段的分工：Agent 给意图，控制面给事实。
 - bundle 内一律相对路径（硬规则 4），资产落
@@ -729,9 +805,9 @@ studio-pipeline  新增 visual_assets 执行器与后端抽象：
 
 | 对象 | 改动 |
 |---|---|
-| `visual` skill | 从「写一份计划」改为「定身份锁 + 视图清单 + 逐视图提示词」；补多视图规格、锚点扩散顺序、两个后端的写法差异；说明门后面是**图**不是 JSON |
+| `visual` skill | 从「写一份计划」改为「定身份锁 + 视图清单 + 逐视图提示词（含画幅比例）」；补多视图规格、主视图先行的生成顺序、两个后端的写法差异；说明门后面是**图**不是 JSON |
 | 新 doctrine `consistency/character-sheet.md` | 多视图规格全表、中性光/中性底的理由、identity_prompt 的写法与反例 |
-| 新能力卡 `models/openai_image.md` | 三档尺寸、16 张参考图、无 negative（约束写正向）、内容政策边界（真人肖像/名人）、按张计费 |
+| 新能力卡 `models/openai_image.md` | **`size`/`quality` 无效、画幅写进提示词、不用参考图、只有 `output_format` 可调**（§6.2.1 的实测矩阵）、无 negative（约束写正向）、内容政策边界（真人肖像/名人）、按张计费 |
 | 新能力卡 `models/z_image.md` | 尺寸自由、Turbo 8 步、Edit 变体做参考编辑、有 negative、本地免费 |
 | `prompt` skill | 增加「优先 r2v、其次 i2v」的选型规则与 asset_id 引用方式 |
 | doctor | 增加图像后端体检：有无 key、探活结果、z_image 基线在不在、将要使用哪个后端。**不回显 key** |
@@ -789,13 +865,13 @@ studio-pipeline  新增 visual_assets 执行器与后端抽象：
 10. `is_studio_key()` 放行 `OPENAI_` 前缀；补密钥不外泄的测试（doctor 输出、
     trace、debug 请求体、stages 产物里都搜不到 key）。
 11. `asset_plan` schema 重做成两级（identity + views + provenance），视图枚举必填校验。
-12. `visual_assets` 执行器：锚点扩散顺序、逐视图重试、落盘 `media/assets/`、
+12. `visual_assets` 执行器：主视图先行的生成顺序、逐视图重试、落盘 `media/assets/`、
     产物登记、门改为**看图确认**。
 13. `z_image` 基线（t2i / edit）+ `config/models.toml` 的 `[z_image]` 段 +
     doctor 的图像后端体检 + `.env.example`。
 14. 新错误码 `image_backend_unavailable` 与它的 remedy（穷尽 match，硬规则 3）。
 
-**验收**：后端选择、锚点扩散、视图完整性校验、密钥不外泄都能在开发环境单测；
+**验收**：后端选择、生成顺序、视图完整性与画幅比例校验、密钥不外泄都能在开发环境单测；
 OpenAI 那条路只要有 key 就能在开发机真跑（不需要 GPU），
 **Z-Image 那条路需要 ComfyUI，只能在生产机验**。
 
@@ -862,6 +938,8 @@ OpenAI 那条路只要有 key 就能在开发机真跑（不需要 GPU），
 | **批次 4 改状态机的成本** | 拆成独立 ADR，不和批次 1、2、3 绑定 |
 | **引入 OpenAI 依赖**：联网、计费、内容政策（真人肖像、名人、未成年人题材会被拒） | 这是 §6.2 兜底存在的理由：Z-Image 全本地、Apache-2.0、无政策拒绝。被拒时按 §6.8 报错并说明原因，**不静默换后端**（换了画风就变了） |
 | **两个后端画风不一致** | 后端整片一次性选定，不逐张回退（§6.2）。这是硬约束，不是优化项 |
+| **后端 A 的一致性弱于 B**：不能上传参考图，只有文字锚定（§6.2.1） | 这是选后端时就要知道的取舍，不是可以事后补救的。身份锁在 A 上必须逐字复用、一个字不改；对一致性要求高的作品优先选 B。也是为什么 `derived_from` 在 A 上仍要写——人工核对时靠它 |
+| **画幅只能靠提示词控制**，`size` 参数在 A 上完全失效且不报错 | `aspect` 字段设为必填并在提交时校验 `prompt` 里确实写了该比例（§6.5）。不做这层校验，画幅错了要等出图才发现 |
 | **API key 泄漏进产物/日志** | §6.2 的密钥安全条款 + 一条专门的搜索测试。debug 请求体落盘这条路尤其要盯 |
 | **多节点上传成本**：渲染是多节点并发的，卡片要在每个节点上都存在 | 上传按节点做、可缓存（同一文件同一节点只传一次）。这是实现细节，但会影响首镜延迟 |
 | **卡片生成把 `visual_assets` 从秒级变成分钟级** | 这道门本来就该花时间——它现在秒过是因为什么都没做。进度用现有 `note` 机制回报（「C01 3/5 视图」） |
