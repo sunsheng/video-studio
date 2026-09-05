@@ -576,6 +576,10 @@ impl Project {
                 blocked_on: self.current_stage()?.unwrap_or(StageId::Review),
             });
         }
+        let attempt = match &loaded {
+            LoadedStage::Approved(a) => a.attempt(),
+            _ => 1,
+        };
         let mut outputs = loaded_outputs(&loaded)
             .cloned()
             .ok_or_else(|| StudioError::internal("验收阶段没有产物"))?;
@@ -593,14 +597,20 @@ impl Project {
                 obj.insert("content_review".to_string(), review.to_json());
             }
         }
+        // attempt 照旧：这次写的是内容自评，不是重跑一遍验收。
+        // 写死 1 会抹掉重试过几次的事实，后面的 retry / undo 还可能撞上
+        // 一个已经用过的编号。
         self.store.save_stage(
             StageId::Review,
             StageState::Approved,
-            1,
+            attempt,
             Some(&outputs),
             self.store.stage_summary(StageId::Review)?.as_deref(),
             None,
         )?;
+        // 人可读的那份也要跟上，否则打包出去的 bundle 里 stages/review.json
+        // 仍然没有 content_review，看的人会以为这份自评根本没交。
+        self.mirror_stage_file(StageId::Review, Some(&outputs))?;
         self.store.append_event(
             StageId::Review,
             "content_reviewed",

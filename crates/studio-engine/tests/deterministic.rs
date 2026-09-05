@@ -169,6 +169,18 @@ fn the_control_plane_runs_render_post_review_on_its_own() {
     assert_eq!(env.waiting_on, WaitingOn::Agent);
 
     let env = p.self_review(self_review()).unwrap();
+    // 落盘的那份也要有：打包出去的 bundle 里 stages/review.json 没有
+    // content_review，看的人会以为这份自评根本没交。
+    let text = std::fs::read_to_string(p.bundle().root().join("stages/review.json")).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert!(
+        v["review"]["content_review"]["items"]
+            .as_array()
+            .unwrap()
+            .len()
+            == 5,
+        "人可读的那份没跟上：{text}"
+    );
     assert_eq!(
         env.project.status,
         ProjectStatus::Completed,
