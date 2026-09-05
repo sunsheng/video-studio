@@ -101,11 +101,6 @@ SeedVR2 走 **ComfyUI 原生节点**（`SeedVR2Preprocess` / `SeedVR2Conditionin
 3 参考；#13 的超分链路可以真机验证。两者仍排在 #14 之后——#12 依赖 #14 的
 可变槽位，#13 独立但优先级低于地基。
 
-### 装 ffmpeg
-
-云端会话的 setup script 加一行 `apt-get update && apt-get install -y ffmpeg`
-（带 ffprobe）。装上之后十个阶段可以在这台机器上走完，不必再等生产机。
-
 ## 需要一台有 ComfyUI 的机器
 
 ### ~~确认 ComfyUI 版本带 `MiniMaxH3AddGuide`~~（已探到，见上）
@@ -206,21 +201,18 @@ render 之前的六个阶段已经用真实 Codex 会话跑过了（开发环境
 的 `waiting_on: system`。「Codex 读完 AGENTS.md 和 SKILL.md 之后会不会正确
 使用工具面」这个问题，前六个阶段有答案了。
 
-**render 往后没有。** 那一半要真实 ComfyUI + GPU + ffmpeg，开发环境跑不出真
-信号，顶多验证到「提交后结构化阻塞在 `comfy_unavailable`」。步骤见
-`docs/e2e.md`，跑完把 `report.json` 带回开发环境分析。
+**render 往后没有。** 那一半要真实 ComfyUI + GPU + ffmpeg——**这台机器现在
+三样都有了**（见上面的探针结果），不必再等生产机。步骤见 `docs/e2e.md`。
+
 
 ### 渲染与后期的真实链路
 
-`preview` / `render` / `post` / `review` 的代码写完了，测试用假执行器和
-本机 TCP 假节点覆盖了状态流转、并发分片、轮询容错、重试路径，
-但**没有对着真实 ComfyUI 和真实 ffmpeg 跑过**。
-第一次真跑大概率会暴露参数细节问题，属于预期内——尤其是 `preview`
-按短边 480 缩放后的尺寸是否符合各模型系列自身的对齐要求，需要真机验证。
+`render` 那一段已经对着真实 ComfyUI 跑过了（#14 的真机验收，7 项全过），
+`preview` 的 turbo 组合也是。**没跑过的是 `post` / `review`**——ffmpeg 拼接、
+字幕挂载、封面抽帧、ffprobe 核对这一串，测试只用过假执行器。
 
-（#14 之后 `preview` 还能更便宜：片段化以后可以换 turbo LoRA 组合——官方有
-`ref2v_turbo_4step`——并去掉音频解码分支，而不是只把分辨率缩到 480p。
-门要看的本来就只是构图和内容。）
+`preview` 按短边 480 缩放后的尺寸对齐问题已经暴露并修掉：768×1344 缩到 480
+得 840，不是 32 的倍数，片段化的系列现在会取整到 32（见 SPEC-0014 V8）。
 
 ### 核验四份 workflow 基线（**最低优先级**）
 

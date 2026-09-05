@@ -43,27 +43,9 @@ pub fn no_state_drift(records: &[TraceRecord]) -> Verdict {
     }
 }
 
-/// 每次 `revise` 到下一次成功 `submit_stage` 之间用了几次调用——理想值是
-/// 1（紧接着就重新提交）。前身项目那次事故是 18。
-pub fn revise_round_trips(records: &[TraceRecord]) -> Vec<usize> {
-    let mut out = Vec::new();
-    let mut pending: Option<usize> = None;
-    for (i, r) in records.iter().enumerate() {
-        if r.tool == "studio.revise" && r.ok {
-            pending = Some(i);
-        } else if let Some(start) = pending {
-            if r.tool == "studio.submit_stage" && r.ok {
-                out.push(i - start);
-                pending = None;
-            }
-        }
-    }
-    out
-}
-
 /// 每次修订往返都不超过 `max` 次调用。
 pub fn revise_round_trips_within(records: &[TraceRecord], max: usize) -> Verdict {
-    let trips = revise_round_trips(records);
+    let trips = studio_mcp::trace::revise_round_trips(records);
     let worst = trips.iter().copied().max().unwrap_or(0);
     let ok = trips.iter().all(|n| *n <= max);
     Verdict {
