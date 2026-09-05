@@ -109,18 +109,20 @@ pub fn run(program_dir: Option<&std::path::Path>, bundle: Option<&std::path::Pat
         });
     }
 
-    // 旧的复数名写了多个地址时只用第一个。被忽略的那些必须说出来——
-    // 静默丢掉配置正是这个项目最不能接受的失败方式。
+    // 旧的多节点写法（`COMFY_NODES` 环境变量，或 config.toml 的 `[comfy].nodes`）
+    // 只用第一个。被忽略的那些必须说出来——静默丢掉配置正是这个项目最不能接受
+    // 的失败方式。
     let extras = settings.comfy_node_legacy_extras();
     if !extras.is_empty() {
         checks.push(Check {
-            name: "COMFY_NODES 里多余的地址被忽略".into(),
+            name: "旧的多节点配置里多余的地址被忽略".into(),
             level: Level::Warn,
             detail: format!("只用了第一个；被忽略的：{}", extras.join("、")),
             remedy: Some(format!(
                 "入口现在只有一个 URL——多节点的分发由那一侧的代理负责，\n  \
                  控制面不再维护节点集合。把 .env 改成：\n    \
                  COMFY_NODE={}\n  \
+                 config.toml 里的 [comfy].nodes 同理，改成 node = \"…\" 一项。\n  \
                  需要并发多压几个镜头就配 COMFY_CONCURRENCY（默认 16）。",
                 node.url
             )),

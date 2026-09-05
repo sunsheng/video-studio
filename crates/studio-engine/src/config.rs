@@ -35,6 +35,12 @@ pub struct MediaConfig {
 pub struct ComfyConfig {
     #[serde(default = "default_node")]
     pub node: String,
+    /// 旧的多节点写法。**保留这个字段只为了不静默丢掉它**——serde 会把未知
+    /// 字段直接吞掉，于是升级后 `[comfy].nodes = [...]` 的老部署会安静地
+    /// 回落到本机默认端口，渲染打到一个根本不对的地方。认下来、取第一个，
+    /// 并让 `doctor` 报出来，跟 `COMFY_NODES` 环境变量那条路对称。
+    #[serde(default)]
+    pub nodes: Option<Vec<String>>,
     #[serde(default = "default_timeout")]
     pub timeout_secs: u64,
     #[serde(default = "default_poll")]
@@ -63,6 +69,7 @@ impl Default for ComfyConfig {
     fn default() -> Self {
         ComfyConfig {
             node: default_node(),
+            nodes: None,
             timeout_secs: default_timeout(),
             poll_interval_secs: default_poll(),
             concurrency: default_concurrency(),
@@ -182,23 +189,51 @@ impl Settings {
             .unwrap_or_else(|| self.file.comfy.node.trim_end_matches('/').to_string())
     }
 
-    /// 旧的 `COMFY_NODES` 里除第一个之外的值。空表示没有被忽略的配置。
+    /// 被忽略的旧多节点配置——`COMFY_NODES` 里除第一个之外的值，以及
+    /// `config.toml` 的 `[comfy].nodes`（只在环境变量没给时才轮到它）。
+    /// 空表示没有配置被忽略。
     pub fn comfy_node_legacy_extras(&self) -> Vec<String> {
-        self.comfy_node_values().into_iter().skip(1).collect()
+        let from_env = self.comfy_env_values();
+        if !from_env.is_empty() {
+            return from_env.into_iter().skip(1).collect();
+        }
+        // 环境变量没给，才看 TOML 里的旧写法。第一个已经被 comfy_node() 用上了。
+        self.comfy_toml_legacy_values()
+            .into_iter()
+            .skip(1)
+            .collect()
     }
 
     fn comfy_node_values(&self) -> Vec<String> {
-        let raw = self
-            .env
+        let from_env = self.comfy_env_values();
+        if !from_env.is_empty() {
+            return from_env;
+        }
+        self.comfy_toml_legacy_values()
+    }
+
+    fn comfy_env_values(&self) -> Vec<String> {
+        self.env
             .get("COMFY_NODE")
-            .or_else(|| self.env.get("COMFY_NODES"));
-        raw.map(|v| {
-            v.split(',')
-                .map(|s| s.trim().trim_end_matches('/').to_string())
-                .filter(|s| !s.is_empty())
-                .collect()
-        })
-        .unwrap_or_default()
+            .or_else(|| self.env.get("COMFY_NODES"))
+            .map(|v| split_nodes(v))
+            .unwrap_or_default()
+    }
+
+    /// `config.toml` 里旧的 `[comfy].nodes`。不认它的话 serde 会把这个字段
+    /// 静默吞掉，老部署升级后会安静地回落到本机默认端口。
+    fn comfy_toml_legacy_values(&self) -> Vec<String> {
+        self.file
+            .comfy
+            .nodes
+            .as_deref()
+            .map(|list| {
+                list.iter()
+                    .map(|s| s.trim().trim_end_matches('/').to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// 接入代理时的 Bearer token。没配就不带 `Authorization` 头——
@@ -239,6 +274,13 @@ impl Settings {
             .cloned()
             .unwrap_or_else(|| self.file.model.core_family.clone())
     }
+}
+
+fn split_nodes(v: &str) -> Vec<String> {
+    v.split(',')
+        .map(|s| s.trim().trim_end_matches('/').to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
 fn is_studio_key(k: &str) -> bool {
@@ -373,6 +415,44 @@ mod tests {
         std::fs::write(bundle.path().join(".env"), "COMFY_NODE=http://a:9001//\n").unwrap();
         let s = Settings::load(None, Some(bundle.path()));
         assert_eq!(s.comfy_node(), "http://a:9001");
+    }
+
+    /// `config.toml` 里旧的 `[comfy].nodes` 不能被 serde 静默吞掉——那会让老部署
+    /// 升级后安静地回落到本机默认端口，渲染打到一个根本不对的地方。
+    #[test]
+    fn a_legacy_toml_node_list_is_used_and_reported_not_silently_dropped() {
+        if std::env::var("COMFY_NODE").is_ok() || std::env::var("COMFY_NODES").is_ok() {
+            return; // 进程环境里已有配置时，问不出「只有 TOML」这个场景
+        }
+        let prog = tempfile::tempdir().unwrap();
+        std::fs::write(
+            prog.path().join("config.toml"),
+            "[comfy]\nnodes = [\"http://old-a:9001\", \"http://old-b:9002\"]\n",
+        )
+        .unwrap();
+        let s = Settings::load(Some(prog.path()), None);
+        assert_eq!(
+            s.comfy_node(),
+            "http://old-a:9001",
+            "旧的 TOML 节点列表要接着用第一个，而不是回落到本机默认端口"
+        );
+        assert_eq!(s.comfy_node_legacy_extras(), vec!["http://old-b:9002"]);
+    }
+
+    /// 环境变量优先于 TOML 的旧写法，而且此时不该再去报 TOML 里那些。
+    #[test]
+    fn the_env_var_wins_over_the_legacy_toml_list() {
+        let prog = tempfile::tempdir().unwrap();
+        std::fs::write(
+            prog.path().join("config.toml"),
+            "[comfy]\nnodes = [\"http://old:9001\"]\n",
+        )
+        .unwrap();
+        let bundle = tempfile::tempdir().unwrap();
+        std::fs::write(bundle.path().join(".env"), "COMFY_NODE=http://new:9001\n").unwrap();
+        let s = Settings::load(Some(prog.path()), Some(bundle.path()));
+        assert_eq!(s.comfy_node(), "http://new:9001");
+        assert!(s.comfy_node_legacy_extras().is_empty());
     }
 
     #[test]
