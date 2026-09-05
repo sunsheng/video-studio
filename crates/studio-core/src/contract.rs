@@ -140,6 +140,8 @@ pub enum ActionKind {
     Answer,
     /// 控制面正在执行，Agent 只需观察。
     Await,
+    /// 技术验收已出，还差内容自评。见 `studio-core::rubric`。
+    SelfReview,
 }
 
 /// 下一步该做什么。Agent 只看这个字段就够了。

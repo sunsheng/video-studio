@@ -557,6 +557,7 @@ impl Pipeline {
             .unwrap_or(0);
 
         // 每一条都必须基于 ffprobe 的实测值，不能靠推断。
+        // 这四条全是技术项：passed 只由它们决定。
         let checks = vec![
             check(
                 "总时长",
@@ -601,8 +602,10 @@ impl Pipeline {
     }
 }
 
+/// 技术验收的一项。控制面只出这一类——内容那半由 Agent 事后补，
+/// 见 `studio-core::rubric`。
 fn check(name: &str, passed: bool, detail: String) -> Value {
-    json!({ "name": name, "passed": passed, "detail": detail })
+    json!({ "name": name, "kind": "technical", "passed": passed, "detail": detail })
 }
 
 #[cfg(test)]

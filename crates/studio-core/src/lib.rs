@@ -13,6 +13,7 @@ pub mod error;
 pub mod fixtures;
 pub mod lexicon;
 pub mod quality;
+pub mod rubric;
 pub mod schema;
 pub mod stage;
 pub mod state;
@@ -24,6 +25,7 @@ pub use contract::{
 };
 pub use error::{Result, StudioError, Violation};
 pub use quality::{Finding, Metric, Severity};
+pub use rubric::{RubricItem, SelfReview};
 pub use stage::{Capability, StageId, StageKind, StageSpec, STAGE_GRAPH};
 pub use state::{Approved, AwaitingConfirmation, Draft, LoadedStage, Stage, StageState, Submitted};
 

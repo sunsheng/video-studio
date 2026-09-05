@@ -54,3 +54,4 @@ description: 把生成片段拼接为交付视频，处理字幕、音频、封�
 - `studio.export`
 - `studio.comfy.exclude_node`
 - `studio.retry_stage`
+- `studio.self_review`

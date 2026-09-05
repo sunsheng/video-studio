@@ -85,3 +85,4 @@ description: 把用户创意整理成可执行 brief，明确受众、平台、�
 - `studio.export`
 - `studio.comfy.exclude_node`
 - `studio.retry_stage`
+- `studio.self_review`

@@ -81,3 +81,4 @@ description: 创建短视频的故事结构、节奏与声音时间线。
 - `studio.export`
 - `studio.comfy.exclude_node`
 - `studio.retry_stage`
+- `studio.self_review`

@@ -63,3 +63,4 @@ description: 提交已确认且通过校验的 workflow，选择健康节点、�
 - `studio.export`
 - `studio.comfy.exclude_node`
 - `studio.retry_stage`
+- `studio.self_review`

@@ -78,3 +78,4 @@ description: 从可行性、受众匹配和发布风险筛选 brief，给出推�
 - `studio.export`
 - `studio.comfy.exclude_node`
 - `studio.retry_stage`
+- `studio.self_review`

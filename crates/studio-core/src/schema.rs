@@ -966,12 +966,14 @@ pub fn stage_schema(stage: StageId) -> Schema {
         ),
 
         StageId::Review => obj(
-            "验收报告（由控制面产出）",
+            "验收报告。**技术验收**由控制面产出（下面的 checks 与 passed）；\
+             **内容验收**由 Agent 事后用 studio.self_review 补上（content_review），\
+             它不改变 passed——片子已经出来了，内容评价改变不了它是否完整",
             vec![
                 (
                     "passed",
                     Schema::Bool {
-                        desc: "是否通过"
+                        desc: "技术验收是否通过。只看 kind 为 technical 的检查项"
                     },
                 ),
                 (
@@ -982,12 +984,71 @@ pub fn stage_schema(stage: StageId) -> Schema {
                             "一项",
                             vec![
                                 ("name", text("检查项")),
+                                (
+                                    "kind",
+                                    one_of(
+                                        "这一项是谁判的：technical 来自 ffprobe 实测，\
+                                         content 来自内容自评",
+                                        vec!["technical", "content"],
+                                    ),
+                                ),
                                 ("passed", Schema::Bool { desc: "结果" }),
                                 ("detail", text("依据。必须来自实际媒体元数据，不能是推断")),
                             ],
-                            vec!["name", "passed", "detail"],
+                            vec!["name", "kind", "passed", "detail"],
                         ),
                         1,
+                    ),
+                ),
+                (
+                    "content_review",
+                    obj(
+                        "内容自评。由 studio.self_review 写入，Agent 不在这里提交",
+                        vec![
+                            (
+                                "items",
+                                arr(
+                                    "逐维度一条",
+                                    obj(
+                                        "一条自评",
+                                        vec![
+                                            (
+                                                "criterion",
+                                                one_of(
+                                                    "评价维度。固定五条，不可增删",
+                                                    crate::rubric::CRITERIA
+                                                        .iter()
+                                                        .map(|(c, _)| *c)
+                                                        .collect(),
+                                                ),
+                                            ),
+                                            (
+                                                "verdict",
+                                                one_of(
+                                                    "结论",
+                                                    crate::rubric::VERDICTS.to_vec(),
+                                                ),
+                                            ),
+                                            (
+                                                "at_seconds",
+                                                num_min("可指认的时间点（秒）", 0.0),
+                                            ),
+                                            (
+                                                "evidence",
+                                                text(
+                                                    "在那个时间点上看见/听见了什么，\
+                                                     以及它为什么支持这个结论",
+                                                ),
+                                            ),
+                                        ],
+                                        vec!["criterion", "verdict", "at_seconds", "evidence"],
+                                    ),
+                                    5,
+                                ),
+                            ),
+                            ("summary", text("一句话：最强的一点和最弱的一点")),
+                        ],
+                        vec!["items", "summary"],
                     ),
                 ),
             ],

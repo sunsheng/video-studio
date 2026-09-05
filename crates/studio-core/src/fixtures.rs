@@ -405,10 +405,25 @@ pub fn outputs(stage: StageId) -> Outputs {
             json!({
                 "passed": true,
                 "checks": [
-                    { "name": "总时长", "passed": true, "detail": "ffprobe 实测 10.00 秒，与剧本一致" },
-                    { "name": "画幅", "passed": true, "detail": "ffprobe 实测 1080x1920，9:16" },
-                    { "name": "镜头数与转场", "passed": true, "detail": "五段拼接，四处硬切可审计" }
-                ]
+                    { "name": "总时长", "kind": "technical", "passed": true, "detail": "ffprobe 实测 10.00 秒，与剧本一致" },
+                    { "name": "画幅", "kind": "technical", "passed": true, "detail": "ffprobe 实测 1080x1920，9:16" },
+                    { "name": "镜头数与转场", "kind": "technical", "passed": true, "detail": "五段拼接，四处硬切可审计" }
+                ],
+                "content_review": {
+                    "items": [
+                        { "criterion": "hook", "verdict": "met", "at_seconds": 0.6,
+                          "evidence": "0.6 秒她已经转过头笑出来，同一帧里船头切开的水面和远处群岛都在，地点和人一起给到" },
+                        { "criterion": "information_density", "verdict": "partially_met", "at_seconds": 5.8,
+                          "evidence": "第四镜的碰杯除了「她很开心」没有给出新信息，删掉它观众不会察觉少了什么" },
+                        { "criterion": "pacing", "verdict": "met", "at_seconds": 3.4,
+                          "evidence": "第三镜给到 2.4 秒，是全片最长的一镜，正好够举手机、摇过去、按快门三个动作走完" },
+                        { "criterion": "consistency", "verdict": "met", "at_seconds": 7.8,
+                          "evidence": "第五镜的白裙、板鞋、奶油色挎包与第一镜逐一对得上，侧脸角度也仍在30度附近" },
+                        { "criterion": "brief_metrics", "verdict": "met", "at_seconds": 9.9,
+                          "evidence": "brief 要求30度侧脸至少出现在4/5镜，实际五镜都有；全片无可读文字与水印" }
+                    ],
+                    "summary": "最强的是前三秒的地点加人物一次给足；最弱的是第四镜没有承担新信息"
+                }
             }),
         ),
     }

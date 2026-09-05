@@ -20,7 +20,7 @@ use studio_mcp::TOOLS;
 ///
 /// 全部按需加载：SKILL.md 只给索引，Agent 用到哪份读哪份。默认一份都不进
 /// 上下文——前身项目把 30 行模型文件名塞进每个会话的教训在这里同样适用。
-const DOCTRINE: [(&str, &str); 12] = [
+const DOCTRINE: [(&str, &str); 13] = [
     ("README.md", include_str!("../assets/doctrine/README.md")),
     (
         "story/structure.md",
@@ -61,6 +61,10 @@ const DOCTRINE: [(&str, &str); 12] = [
     (
         "failure/modes.md",
         include_str!("../assets/doctrine/failure/modes.md"),
+    ),
+    (
+        "quality/rubric.md",
+        include_str!("../assets/doctrine/quality/rubric.md"),
     ),
     (
         "exemplars/script.md",
@@ -235,7 +239,10 @@ fn doctrine_for(skill: &str) -> &'static [&'static str] {
             ".agents/doctrine/quality/banned.md",
         ],
         "comfyui" => &[".agents/doctrine/failure/modes.md"],
-        "review" => &[".agents/doctrine/quality/checklist.md"],
+        "review" => &[
+            ".agents/doctrine/quality/rubric.md",
+            ".agents/doctrine/quality/checklist.md",
+        ],
         "run-management" => &[".agents/doctrine/failure/modes.md"],
         _ => &[],
     }
@@ -288,7 +295,13 @@ fn checklist(stage: StageId) -> &'static [&'static str] {
             "种子固定并记录，尺寸与帧数按各镜时长算准",
             "audio 写了三层，没有放弃原生音频",
         ],
-        StageId::Preview | StageId::Render | StageId::Post | StageId::Review => &[],
+        StageId::Review => &[
+            "五个维度各一条，一条不少也不重复",
+            "每条都带了落在成片时长之内的时间点",
+            "证据写的是那一刻看见/听见了什么，不是「还不错」",
+            "summary 说清了最强的一点和最弱的一点",
+        ],
+        StageId::Preview | StageId::Render | StageId::Post => &[],
     }
 }
 
@@ -445,13 +458,25 @@ const SKILLS: [SkillDoc; 10] = [
         description: "检查成片的媒体完整性、时长、字幕、编码与发布风险。",
         stage: Some(StageId::Review),
         trigger: "后期完成，需要验收。",
-        not_trigger: "创作质量的主观评价。",
+        not_trigger: "片子还没拼完。",
         duties: &[
-            "每一条检查都必须基于 ffprobe 的**实测**元数据，不能靠推断。",
-            "逐条核对 idea 阶段定下的 success_metrics。",
+            "技术验收由控制面做：每一条检查都基于 ffprobe 的**实测**元数据，不靠推断。",
+            "技术验收出来之后，**内容验收是你的**：调 studio.self_review，\
+             按 rubric 的五个维度各给一条结论。",
+            "每条结论都要带一个可指认的时间点，和在那一刻看见/听见了什么。\
+             写「还不错」会被退回。",
+            "逐条核对 idea 阶段定下的 success_metrics——技术型的在 checks 里，\
+             内容型的在 brief_metrics 那一条里。",
             "任一必需项缺失就判不通过，不要为了让流程走完而放水。",
         ],
-        notes: &["验收通过不等于可以发布。对外发布需要另行获得授权。"],
+        notes: &[
+            "技术验收全过只说明片子是完整的，不说明它好看。\
+             这两半判的是两件事，见 quality/rubric.md。",
+            "内容自评不改变 passed，但不交这一份作品就不算收尾——\
+             status 会一直停在「等你交自评」。",
+            "说实话比说好话有用：全写 met 的自评既骗不到人，也帮不到下一次。",
+            "验收通过不等于可以发布。对外发布需要另行获得授权。",
+        ],
     },
     SkillDoc {
         name: "run-management",

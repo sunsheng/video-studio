@@ -201,6 +201,14 @@ impl Project {
 
         let (stage, status, waiting_on, next_action) = match (&pending, current) {
             (Some(q), _) => (q.stage, ProjectStatus::Active, WaitingOn::User, None),
+            // 十个阶段都通过了，但验收只做了技术那一半：片子是完整的，
+            // 没人说过它好不好。差这份记录就不算收尾。
+            (None, None) if self.content_review_missing()? => (
+                StageId::Review,
+                ProjectStatus::Active,
+                WaitingOn::Agent,
+                Some(self.self_review_action()?),
+            ),
             (None, None) => (
                 StageId::Review,
                 ProjectStatus::Completed,
@@ -253,6 +261,27 @@ impl Project {
             inputs: self.inputs_for(stage)?,
             required_outputs: vec![stage.output_key().to_string()],
             schema_ref: stage.to_string(),
+        })
+    }
+
+    /// 内容自评要照着技术验收的实测结果写，所以输入里得带上 review 自己
+    /// 的产物——`inputs_for` 只给前置阶段，这里补一格。
+    fn self_review_action(&self) -> Result<NextAction> {
+        let mut inputs = self.inputs_for(StageId::Review)?;
+        let loaded = self.store.load_stage(StageId::Review)?;
+        if let (Some(map), Some(o)) = (inputs.as_object_mut(), loaded_outputs(&loaded)) {
+            if let Some(v) = o.get("review") {
+                map.insert("review".to_string(), v.clone());
+            }
+        }
+        Ok(NextAction {
+            kind: ActionKind::SelfReview,
+            stage: StageId::Review,
+            capability: StageId::Review.capability(),
+            gate: None,
+            inputs,
+            required_outputs: vec!["content_review".to_string()],
+            schema_ref: "review".to_string(),
         })
     }
 
@@ -518,6 +547,70 @@ impl Project {
                 self.status()
             }
         }
+    }
+
+    /// 内容自评：验收的另一半。
+    ///
+    /// 技术验收由控制面做（时长、画幅、镜头数、音轨，全部 ffprobe 实测），
+    /// 它证明片子是**完整的**，不证明它**好看**。这个方法收的是后者。
+    ///
+    /// 它**不改 `review.passed`**：片子已经出来了，内容评价改变不了它是否
+    /// 完整。它改变的是这次交付有没有留下一份「照自己定的标准打了几分」
+    /// 的记录——没有这份记录，作品就不算收尾。
+    pub fn self_review(&self, review: studio_core::SelfReview) -> Result<Envelope> {
+        let loaded = self.store.load_stage(StageId::Review)?;
+        if loaded.state() != StageState::Approved {
+            return Err(StudioError::StageNotReady {
+                stage: StageId::Review,
+                blocked_on: self.current_stage()?.unwrap_or(StageId::Review),
+            });
+        }
+        let mut outputs = loaded_outputs(&loaded)
+            .cloned()
+            .ok_or_else(|| StudioError::internal("验收阶段没有产物"))?;
+
+        // 时间点要落在成片里，所以得先拿到实测时长。
+        let post = self.store.load_stage(StageId::Post)?;
+        let duration = loaded_outputs(&post)
+            .and_then(|o| o["post"]["duration_seconds"].as_f64())
+            .ok_or_else(|| StudioError::internal("后期结果里没有实测时长，无法校验自评的时间点"))?;
+        studio_core::rubric::validate(&review, duration)?;
+
+        let (met, partial, not_met) = studio_core::rubric::tally(&review);
+        if let Some(v) = outputs.get_mut("review") {
+            if let Some(obj) = v.as_object_mut() {
+                obj.insert("content_review".to_string(), review.to_json());
+            }
+        }
+        self.store.save_stage(
+            StageId::Review,
+            StageState::Approved,
+            1,
+            Some(&outputs),
+            self.store.stage_summary(StageId::Review)?.as_deref(),
+            None,
+        )?;
+        self.store.append_event(
+            StageId::Review,
+            "content_reviewed",
+            &format!(
+                "内容自评：{met} 条达成、{partial} 条部分达成、{not_met} 条未达成。{}",
+                review.summary
+            ),
+            None,
+        )?;
+        self.status()
+    }
+
+    /// 内容自评还没交。作品因此还没收尾。
+    fn content_review_missing(&self) -> Result<bool> {
+        let loaded = self.store.load_stage(StageId::Review)?;
+        if loaded.state() != StageState::Approved {
+            return Ok(false);
+        }
+        Ok(loaded_outputs(&loaded)
+            .map(|o| o["review"].get("content_review").is_none())
+            .unwrap_or(false))
     }
 
     /// 修订某个阶段：回到草稿，等待重新提交。
