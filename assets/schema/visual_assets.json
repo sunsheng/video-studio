@@ -174,7 +174,7 @@
           "type": "string"
         },
         "strategy": {
-          "description": "生成策略，例如先出开发片段再抽帧",
+          "description": "这批卡怎么排：哪些角色/场景/道具要出卡、各要哪些视图、为什么。用什么模型出图由控制面决定，不用写",
           "type": "string"
         }
       },

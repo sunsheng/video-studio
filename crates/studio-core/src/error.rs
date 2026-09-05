@@ -188,10 +188,11 @@ impl StudioError {
                 if tried.is_empty() { "无".to_string() } else { tried.join("、") }
             ),
             StudioError::ComfyFailed { node, detail } => format!(
-                "{node} 执行失败（{detail}）。用 studio.timeline() 看这一镜的历史；\
+                "{node} 执行失败（{detail}）。用 studio.timeline() 看这一步的历史；\
                  内容本身没问题、只是这次执行失败了（连接抖动、超时）就调 studio.status() \
-                 确认当前卡在 preview 还是 render，再对它调 studio.retry_stage(<该阶段>)——\
-                 它会先停掉可能还在跑的 worker 再干净重试。只有内容/提示词本身要改才用 \
+                 确认当前卡在哪个阶段（visual_assets、preview、render、post 都会走 ComfyUI），\
+                 再对它调 studio.retry_stage(<该阶段>)——它会先停掉可能还在跑的 worker \
+                 再干净重试，已经出来的产物不会重做。只有内容/提示词本身要改才用 \
                  studio.revise。"
             ),
             StudioError::ModelContractViolation { detail } => format!(

@@ -53,6 +53,23 @@ fn default_type() -> String {
 /// 不该打断一个实际还在正常跑着的渲染。总耗时超过 `timeout` 仍是兜底上限。
 const MAX_CONSECUTIVE_UNREACHABLE: u32 = 5;
 
+/// 控制面调用的读超时：`/prompt`、`/history`、`/queue`、`/object_info`。
+/// 这些都是小 JSON，30 秒绰绰有余，短一点能早点发现节点没反应。
+const CONTROL_READ_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// 大块传输的读超时：上传参考图、下载产物。
+///
+/// **这个值不能跟控制面共用。** 2026-09-05 实测：一张 1.09 MB 的卡片图经
+/// 这条代理传上去要 **25–38 秒**，而当时上传走的正是控制面那 30 秒——
+/// 也就是说超时值压在实测耗时的中位数上，稳定地时好时坏。表现出来不是
+/// 「上传失败」这么直白：锚点视图图出来了、落盘了、状态是 ready，只是传不回
+/// ComfyUI，于是**后面每一个派生视图都报「参考图还没生成出来」**——一句与
+/// 事实相反的话，最难查的那种。
+///
+/// 取 5 分钟：够 1 MB 图慢十倍、够几十 MB 的成片下载，又不至于让一条真死掉
+/// 的连接挂到天亮。
+const BULK_READ_TIMEOUT: Duration = Duration::from_secs(300);
+
 pub struct Comfy {
     node: String,
     /// 代理的 Bearer token。None 表示对端不需要鉴权。
@@ -97,9 +114,13 @@ impl Comfy {
     }
 
     fn agent(&self) -> ureq::Agent {
+        self.agent_with(CONTROL_READ_TIMEOUT)
+    }
+
+    fn agent_with(&self, read: Duration) -> ureq::Agent {
         ureq::AgentBuilder::new()
             .timeout_connect(Duration::from_secs(3))
-            .timeout_read(Duration::from_secs(30))
+            .timeout_read(read)
             .build()
     }
 
@@ -118,6 +139,16 @@ impl Comfy {
 
     fn post(&self, url: &str) -> ureq::Request {
         self.auth(self.agent().post(url))
+    }
+
+    /// 大块传输专用的 GET：下载产物。读超时按 [`BULK_READ_TIMEOUT`]。
+    fn bulk_get(&self, url: &str) -> ureq::Request {
+        self.auth(self.agent_with(BULK_READ_TIMEOUT).get(url))
+    }
+
+    /// 大块传输专用的 POST：上传参考图。读超时按 [`BULK_READ_TIMEOUT`]。
+    fn bulk_post(&self, url: &str) -> ureq::Request {
+        self.auth(self.agent_with(BULK_READ_TIMEOUT).post(url))
     }
 
     /// 探活。不可达不是错误，只是不可用。
@@ -289,7 +320,7 @@ impl Comfy {
             urlencode(&file.r#type)
         );
         let resp = self
-            .get(&url)
+            .bulk_get(&url)
             .call()
             .map_err(|e| StudioError::ComfyFailed {
                 node: self.node.clone(),
@@ -320,7 +351,7 @@ impl Comfy {
         body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
 
         let resp = self
-            .post(&format!("{}/upload/image", self.node))
+            .bulk_post(&format!("{}/upload/image", self.node))
             .set(
                 "Content-Type",
                 &format!("multipart/form-data; boundary={boundary}"),

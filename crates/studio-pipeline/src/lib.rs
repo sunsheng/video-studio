@@ -926,32 +926,52 @@ impl Pipeline {
 
         let mut done = done.into_inner().unwrap();
         let mut ready = 0usize;
-        let mut failed = 0usize;
+        // 没出来的：(卡.视图, 原因)。用来拼阻塞信息，人和 Agent 都得看得懂。
+        let mut broken: Vec<String> = Vec::new();
         for (i, card) in plan["assets"]
             .as_array_mut()
             .unwrap()
             .iter_mut()
             .enumerate()
         {
+            let card_id = card["asset_id"].as_str().unwrap_or("card").to_string();
             if let Some(views) = done.remove(&i) {
                 for v in &views {
+                    let name = v["view"].as_str().unwrap_or("view");
                     match v["status"].as_str() {
-                        Some("ready") => ready += 1,
-                        _ => failed += 1,
+                        Some("ready") => {
+                            ready += 1;
+                            // 图出来了但传不回去：它自己交付得了，却当不了后面的锚点。
+                            // 不算 ready 就放过——下一轮 retry 还是会卡在同一处。
+                            if let Some(why) = v["provenance"]["reference_upload_error"].as_str() {
+                                broken.push(format!("{card_id}.{name}：{why}"));
+                            }
+                        }
+                        _ => {
+                            let why = v["provenance"]["error"].as_str().unwrap_or("原因没记下来");
+                            broken.push(format!("{card_id}.{name}：{why}"));
+                        }
                     }
                 }
                 card["views"] = Value::Array(views);
             }
         }
-        if ready == 0 {
-            return Err(StudioError::internal(format!(
-                "{total} 个视图一个都没生成出来——多半是 ComfyUI 或卡片基线的问题，\
-                 不是内容问题。看 .studio/exec.jsonl 里 card_view 那几步的错误"
-            )));
+
+        // **部分 ready、部分 failed 一律不放行。** 缺视图的卡片锁不住身份，
+        // 等于没有；放过去的代价是下游拿着一套不自洽的参考一路绿到交付，
+        // 等渲染烧完 GPU 才发现。retry_stage 会跳过已经 ready 的，只补没成的。
+        if !broken.is_empty() {
+            return Err(StudioError::ComfyFailed {
+                node: comfy.node().to_string(),
+                detail: format!(
+                    "{total} 个视图里 {ready} 个出了图，{} 个不达标\
+                     （没生成出来，或者生成了却当不了后面的参考）：{}",
+                    broken.len(),
+                    broken.join("｜")
+                ),
+            });
         }
-        ctx.say(format!(
-            "卡片生成完成：{ready} 个视图出来了，{failed} 个失败"
-        ));
+        ctx.say(format!("卡片生成完成：{ready} 个视图全部就绪"));
 
         let mut out = Outputs::new();
         out.insert(StageId::VisualAssets.output_key().to_string(), plan);
@@ -973,6 +993,13 @@ impl Pipeline {
 
         // 视图名 → 已经生成好的那张图在 ComfyUI 那侧的文件名
         let mut uploaded: BTreeMap<String, String> = BTreeMap::new();
+        // 视图名 → 它为什么当不了参考。
+        //
+        // **「没生成出来」和「生成了但传不回去」必须分开记。** 这两条的排查方向
+        // 完全相反，而下游看到的现象是同一个「缺参考图」。2026-09-05 的端到端就
+        // 栽在这里：锚点图出来了、落盘了、status 是 ready，只是上传超时，于是
+        // 后面五个视图全报「参考图还没生成出来」——一句与事实相反的话。
+        let mut unusable: BTreeMap<String, String> = BTreeMap::new();
         let mut out = Vec::with_capacity(views.len());
 
         for view in views {
@@ -985,10 +1012,12 @@ impl Pipeline {
                         Ok(remote) => {
                             uploaded.insert(name.clone(), remote);
                         }
-                        Err(e) => ctx.say(format!(
-                            "{card_id}.{name} 已有的图传不上去（{}），                             后面引用它的视图会因此被挡下",
-                            e.message()
-                        )),
+                        Err(e) => {
+                            let why = format!("图在磁盘上，但传不回 ComfyUI：{}", e.message());
+                            ctx.say(format!("{card_id}.{name} {why}"));
+                            view["provenance"]["reference_upload_error"] = json!(why);
+                            unusable.insert(name.clone(), why);
+                        }
                     }
                 }
                 out.push(view);
@@ -1004,21 +1033,24 @@ impl Pipeline {
                 .filter_map(|d| d.as_str())
                 .map(String::from)
                 .collect();
-            let missing: Vec<&str> = want
+            let missing: Vec<String> = want
                 .iter()
-                .map(|d| d.as_str())
-                .filter(|d| !uploaded.contains_key(*d))
+                .filter(|d| !uploaded.contains_key(d.as_str()))
+                .map(|d| match unusable.get(d) {
+                    Some(why) => format!("{d}（{why}）"),
+                    None => format!("{d}（这张卡里没有这个视图，或者它排在本视图后面）"),
+                })
                 .collect();
             if !missing.is_empty() {
-                ctx.say(format!("{card_id}.{name} 缺参考图：{}", missing.join("、")));
+                ctx.say(format!("{card_id}.{name} 缺参考图：{}", missing.join("；")));
+                let why = format!(
+                    "拿不到参考图 {}。没有锚点就不生成——\
+                     退回无参考出来的是长得像但不是同一个人",
+                    missing.join("；")
+                );
                 view["status"] = json!("failed");
-                view["provenance"] = json!({
-                    "error": format!(
-                        "参考图 {} 还没生成出来（或者传不上去），\
-                         没有锚点就不生成——退回无参考出来的是长得像但不是同一个人",
-                        missing.join("、")
-                    ),
-                });
+                view["provenance"] = json!({ "error": why.clone() });
+                unusable.insert(name.clone(), why);
                 out.push(view);
                 continue;
             }
@@ -1055,29 +1087,33 @@ impl Pipeline {
             );
             match attempt {
                 Ok(rel) => {
-                    match self.upload_view(ctx, comfy, &card_id, &name, &rel) {
-                        Ok(remote) => {
-                            uploaded.insert(name.clone(), remote);
-                        }
-                        Err(e) => ctx.say(format!(
-                            "{card_id}.{name} 出来了但传不回 ComfyUI（{}），\
-                             后面引用它的视图会因此被挡下",
-                            e.message()
-                        )),
-                    }
-                    view["status"] = json!("ready");
-                    view["path"] = json!(rel);
-                    view["provenance"] = json!({
+                    let mut prov = json!({
                         "backend": backend,
                         "width": w, "height": h, "seed": seed,
                         "references": view["derived_from"].clone(),
                     });
+                    match self.upload_view(ctx, comfy, &card_id, &name, &rel) {
+                        Ok(remote) => {
+                            uploaded.insert(name.clone(), remote);
+                        }
+                        Err(e) => {
+                            let why = format!("图在磁盘上，但传不回 ComfyUI：{}", e.message());
+                            ctx.say(format!("{card_id}.{name} {why}"));
+                            prov["reference_upload_error"] = json!(why);
+                            unusable.insert(name.clone(), why);
+                        }
+                    }
+                    view["status"] = json!("ready");
+                    view["path"] = json!(rel);
+                    view["provenance"] = prov;
                 }
                 Err(e) => {
                     // 这一张没出来，同卡后面的继续——它们照样能拿更前面的当参考。
-                    ctx.say(format!("{card_id}.{name} 没生成出来：{}", e.message()));
+                    let why = format!("没生成出来：{}", e.message());
+                    ctx.say(format!("{card_id}.{name} {why}"));
                     view["status"] = json!("failed");
                     view["provenance"] = json!({ "backend": backend, "error": e.message() });
+                    unusable.insert(name.clone(), why);
                 }
             }
             out.push(view);
@@ -1577,6 +1613,127 @@ mod render_tests {
         }
     }
 
+    /// 一切正常，**只有 `/upload/image` 回 500**。
+    ///
+    /// 这是 2026-09-05 端到端里真实发生过的形状：图出来了、下载下来了、
+    /// 落盘了，只有「传回去当下一张的参考」这一步没成。
+    fn node_stub_upload_broken() -> NodeStub {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = std::thread::spawn(move || {
+            for stream in listener.incoming().take(256) {
+                let Ok(mut stream) = stream else { continue };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                if reader.read_line(&mut line).is_err() {
+                    continue;
+                }
+                let path = line.split_whitespace().nth(1).unwrap_or("/").to_string();
+                let (status, body) = if path.starts_with("/upload/image") {
+                    ("500 Internal Server Error", "upload broke".to_string())
+                } else if path.starts_with("/queue") {
+                    (
+                        "200 OK",
+                        json!({ "queue_running": [], "queue_pending": [] }).to_string(),
+                    )
+                } else if path.starts_with("/prompt") {
+                    (
+                        "200 OK",
+                        json!({ "prompt_id": "p1", "number": 1 }).to_string(),
+                    )
+                } else if path.starts_with("/history/") {
+                    (
+                        "200 OK",
+                        json!({ "p1": {
+                            "status": { "status_str": "success", "completed": true },
+                            "outputs": { "save": { "images": [ { "filename": "card.png" } ] } }
+                        }})
+                        .to_string(),
+                    )
+                } else if path.starts_with("/view") {
+                    ("200 OK", "fake-png-bytes".to_string())
+                } else {
+                    ("200 OK", "{}".to_string())
+                };
+                let resp = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(resp.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+        NodeStub {
+            url: format!("http://127.0.0.1:{port}"),
+            _handle: handle,
+        }
+    }
+
+    /// 两份卡片基线，形状跟 `assets/workflows/flux2_dev/` 一致但节点是最小的。
+    fn write_card_baselines(dir: &std::path::Path) {
+        let family = dir.join("flux2_dev");
+        std::fs::create_dir_all(&family).unwrap();
+        let bindings = json!({
+            "positive": ["pos.inputs.text"],
+            "width": ["latent.inputs.width"],
+            "height": ["latent.inputs.height"],
+            "seed": ["noise.inputs.noise_seed"],
+            "output_prefix": ["save.inputs.filename_prefix"]
+        });
+        let nodes = json!({
+            "pos": { "class_type": "CLIPTextEncode", "inputs": { "text": "" } },
+            "guidance": { "class_type": "FluxGuidance", "inputs": { "conditioning": ["pos", 0] } },
+            "latent": { "class_type": "EmptyFlux2LatentImage", "inputs": { "width": 0, "height": 0 } },
+            "noise": { "class_type": "RandomNoise", "inputs": { "noise_seed": 0 } },
+            "guider": { "class_type": "BasicGuider", "inputs": { "conditioning": ["guidance", 0] } },
+            "vae": { "class_type": "VAELoader", "inputs": { "vae_name": "flux2-vae.safetensors" } },
+            "save": { "class_type": "SaveImage", "inputs": { "filename_prefix": "" } }
+        });
+
+        let mut t2i = nodes.clone();
+        t2i["_studio"] = json!({ "role": "card", "bindings": bindings, "bindings_verified": true });
+        std::fs::write(family.join("t2i.json"), t2i.to_string()).unwrap();
+
+        let mut multiref = nodes;
+        multiref["_studio"] = json!({
+            "role": "card",
+            "bindings": bindings,
+            "bindings_verified": true,
+            "reference_chain": {
+                "nodes": {
+                    "load": { "class_type": "LoadImage", "inputs": { "image": "" } },
+                    "encode": { "class_type": "VAEEncode",
+                                "inputs": { "pixels": ["load", 0], "vae": ["vae", 0] } },
+                    "link": { "class_type": "ReferenceLatent",
+                              "inputs": { "conditioning": null, "latent": ["encode", 0] } }
+                },
+                "asset": "load.inputs.image",
+                "chain_in": "link.inputs.conditioning",
+                "chain_out": ["link", 0],
+                "head": ["guidance", 0],
+                "tail": "guider.inputs.conditioning",
+                "max": 10
+            }
+        });
+        std::fs::write(family.join("multiref_edit.json"), multiref.to_string()).unwrap();
+    }
+
+    /// 一张角色卡：一个锚点视图 + 一个派生视图。
+    fn card_inputs() -> Value {
+        json!({ "asset_plan": { "assets": [{
+            "asset_id": "C01",
+            "asset_kind": "character_card",
+            "identity_prompt": "身份锁",
+            "views": [
+                { "view": "front_full", "is_anchor": true, "aspect": "9:16",
+                  "prompt": "正面全身", "status": "planned" },
+                { "view": "three_quarter", "is_anchor": false, "aspect": "9:16",
+                  "derived_from": ["front_full"], "prompt": "四分之三", "status": "planned" }
+            ]
+        }] }})
+    }
+
     /// 已验证的最小 workflow 基线：`minimax_h3/t2v`。
     fn write_baseline(dir: &std::path::Path) {
         let family = dir.join("minimax_h3");
@@ -1629,6 +1786,87 @@ mod render_tests {
             "script": { "segments": [] },
             "brief": { "aspect_ratio": "9:16" }
         })
+    }
+
+    /// **锚点传不回 ComfyUI 时，整阶段阻塞，而且报的是真原因。**
+    ///
+    /// 2026-09-05 的十阶段端到端就栽在这里：锚点图出来了、落盘了、status 是
+    /// ready，只有上传超时，于是派生视图报「参考图**还没生成出来**」——一句
+    /// 与事实相反的话——而且六个视图成一个照样上了确认门。
+    ///
+    /// 这条测试盯两件事，缺一不可：
+    /// 1. **不放行**（`ready == 0` 才拦是不够的，部分成功也不行）；
+    /// 2. **说真话**（错误里要能看出是「传不回去」，不是「没生成」）。
+    #[test]
+    fn an_anchor_that_cannot_be_uploaded_blocks_the_stage_and_says_why() {
+        let bundle_dir = tempfile::tempdir().unwrap();
+        let baselines_dir = tempfile::tempdir().unwrap();
+        write_card_baselines(baselines_dir.path());
+        let node = node_stub_upload_broken();
+        let (bundle, settings) = scaffold_with_concurrency(bundle_dir.path(), &node.url, 1);
+
+        let pipeline = Pipeline::new(baselines_dir.path().to_path_buf());
+        let recorder = ExecRecorder::at(bundle.root());
+        let ctx = ExecContext {
+            bundle: &bundle,
+            settings: &settings,
+            inputs: card_inputs(),
+            progress: &ProgressNote::default(),
+            recorder: &recorder,
+            cancelled: &AtomicBool::new(false),
+        };
+
+        let e = pipeline.visual_assets(&ctx).unwrap_err();
+        assert_eq!(
+            e.code(),
+            "comfy_failed",
+            "部分成功必须阻塞：{}",
+            e.message()
+        );
+
+        let msg = e.message();
+        assert!(
+            msg.contains("传不回 ComfyUI"),
+            "错误要指出锚点是传不回去，不是没生成：{msg}"
+        );
+        assert!(
+            msg.contains("C01.three_quarter"),
+            "错误要点名是哪个视图受连累：{msg}"
+        );
+        assert!(
+            !msg.contains("还没生成出来"),
+            "锚点的图明明生成出来了，不能这么说：{msg}"
+        );
+    }
+
+    /// 一切正常时不阻塞：两个视图都出来，派生那个真的挂上了一张参考。
+    #[test]
+    fn a_card_with_every_view_ready_passes_and_the_derived_view_carries_its_anchor() {
+        let bundle_dir = tempfile::tempdir().unwrap();
+        let baselines_dir = tempfile::tempdir().unwrap();
+        write_card_baselines(baselines_dir.path());
+        let node = healthy_node();
+        let (bundle, settings) = scaffold_with_concurrency(bundle_dir.path(), &node.url, 1);
+
+        let pipeline = Pipeline::new(baselines_dir.path().to_path_buf());
+        let recorder = ExecRecorder::at(bundle.root());
+        let ctx = ExecContext {
+            bundle: &bundle,
+            settings: &settings,
+            inputs: card_inputs(),
+            progress: &ProgressNote::default(),
+            recorder: &recorder,
+            cancelled: &AtomicBool::new(false),
+        };
+
+        let out = pipeline.visual_assets(&ctx).unwrap();
+        let views = &out.get("asset_plan").unwrap()["assets"][0]["views"];
+        assert_eq!(views[0]["status"], "ready");
+        assert_eq!(views[1]["status"], "ready");
+        // 派生视图走的是多参考基线，不是文生图——挂参考这一步真的发生了。
+        assert_eq!(views[0]["provenance"]["backend"], CARD_T2I);
+        assert_eq!(views[1]["provenance"]["backend"], CARD_MULTIREF);
+        assert_eq!(views[1]["provenance"]["references"], json!(["front_full"]));
     }
 
     /// **超分缺基线时结构化阻塞，不静默交原生画布。**

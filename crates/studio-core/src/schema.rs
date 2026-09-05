@@ -730,7 +730,13 @@ pub fn stage_schema(stage: StageId) -> Schema {
             vec![
                 ("backend", text("生成后端，通常是 comfyui")),
                 ("core_model_family", text("核心模型系列，例如 minimax_h3")),
-                ("strategy", text("生成策略，例如先出开发片段再抽帧")),
+                (
+                    "strategy",
+                    text(
+                        "这批卡怎么排：哪些角色/场景/道具要出卡、各要哪些视图、为什么。\
+                         用什么模型出图由控制面决定，不用写",
+                    ),
+                ),
                 (
                     "fallback_policy",
                     text("降级策略。默认结构化阻塞，不自动换系列"),
