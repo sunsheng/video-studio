@@ -1,6 +1,6 @@
 ---
 name: prompt
-description: 把已确认分镜与视觉资产编译成逐镜头 prompt 和 workflow 参数。
+description: 把已确认分镜与视觉资产编译成逐镜头的声明与渲染参数。
 ---
 
 <!-- 本文件由代码生成，请勿手改。 -->
@@ -13,10 +13,11 @@ description: 把已确认分镜与视觉资产编译成逐镜头 prompt 和 work
 
 ## 职责
 
-- 逐镜头给出正向、负向提示词，以及尺寸、帧数、帧率、种子。
+- 逐镜头给出正向提示词，以及尺寸、帧数、帧率、种子。
 - 种子必须固定并记录，否则结果不可复现。
-- workflow 名必须是已验证基线里的，不要临时编一个。
+- **先调 studio.schema('prompt_pack') 看这台机器给的是哪一种形状。**片段化的系列给 head + references + guides，没有 workflow 字段；整图基线的系列给 workflow。两种形状不会同时出现，schema 里有什么就写什么。
 - 引用视觉资产用 asset_id，不要重复描述角色外观。
+- 要接上一镜就挂 guide 锚它的尾段（`<上一镜的 shot_id>.tail`），不要只在提示词里写「接上一镜」——模型看不到上一镜生成了什么。
 
 ## 方法
 
@@ -25,6 +26,7 @@ description: 把已确认分镜与视觉资产编译成逐镜头 prompt 和 work
 - `.agents/models/minimax_h3.md`
 - `.agents/models/wan2_2.md`
 - `.agents/models/ltx2_5.md`
+- `.agents/doctrine/assembly/shots.md`
 - `.agents/doctrine/exemplars/prompt_pack.md`
 - `.agents/doctrine/consistency/bible.md`
 - `.agents/doctrine/quality/banned.md`
@@ -55,13 +57,17 @@ description: 把已确认分镜与视觉资产编译成逐镜头 prompt 和 work
 
 逐条过。过不了就别提交——退回来重做比往下走便宜得多。
 
-- [ ] 逐项对照能力卡：写的每个参数这条基线都吃
+- [ ] 形状对了：schema 给 head 就写 head，给 workflow 才写 workflow，没有混着写
+- [ ] 逐项对照能力卡：写的每个参数这个系列都吃
 - [ ] 不支持负向提示词的系列，约束改写成了正向的完整句子
 - [ ] identity_lock.character 从上一阶段复制而来，一个字没改
 - [ ] 身份锁在每一镜里逐字出现，没有写成「同一位…」
 - [ ] 运镜按能力卡译成了该系列吃的指令，没有只留中文散文
 - [ ] 没有禁用词（cinematic / 电影感 / 唯美这类）
 - [ ] 种子固定并记录，尺寸与帧数按各镜时长算准
+- [ ] 帧数落在这个系列的网格上（能力卡里写了是哪一档）
+- [ ] 每个 references / guides 的 asset_id 都真的存在：要么是 visual_assets 登记过的，要么是本包里**更靠前**那一镜的 .tail
+- [ ] 该接续的镜头都挂了 guide，没有只在提示词里写「接上一镜」
 - [ ] audio 写了三层，没有放弃原生音频
 
 ## 注意

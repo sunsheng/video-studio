@@ -1,0 +1,38 @@
+{
+  "load": {
+    "class_type": "LoadVideo",
+    "inputs": {}
+  },
+  "split": {
+    "class_type": "GetVideoComponents",
+    "inputs": {
+      "video": [
+        "load",
+        0
+      ]
+    }
+  },
+  "_studio": {
+    "kind": "input",
+    "id": "video",
+    "from": "/object_info/LoadVideo + GetVideoComponents",
+    "source_run": "video-channel 2026-09-05（真机出片：5 帧锚点接 39 帧镜头，前 5 帧跟住锚点、其余由提示词接管；kind: video 参考另跑一镜，画面正常。两条都人眼看过）",
+    "bindings_verified": true,
+    "bindings": {
+      "filename": [
+        "load.inputs.file"
+      ]
+    },
+    "outputs": {
+      "image": [
+        "split",
+        0
+      ],
+      "audio": [
+        "split",
+        1
+      ]
+    },
+    "note": "clip 锚点与 kind: video 参考共用这条通道。素材经 /upload/image 上传——那个端点收 mp4，实测过。**锚点必须短于镜头**：等长的锚点会把整镜钉死，模型只把它复现出来，提示词一个字都不生效，那不是接续是复制。这条已写成 V5 校验。"
+  }
+}

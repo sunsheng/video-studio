@@ -50,6 +50,15 @@ pub struct ComfyConfig {
     /// 排队的部分由那一侧调度，而队列太浅会让后端节点闲着。
     #[serde(default = "default_concurrency")]
     pub concurrency: usize,
+    /// preview 挂不挂 turbo LoRA。默认开——预览门要看的只是构图与内容，
+    /// 4/8 步比 20 步快得多。片段库里没有对应的叠加层、或者它还没真机核验时
+    /// 会自动退回普通组合并在进度里说明，所以开着也不会悄悄跑出不可信的东西。
+    #[serde(default = "default_preview_turbo")]
+    pub preview_turbo: bool,
+}
+
+fn default_preview_turbo() -> bool {
+    true
 }
 
 fn default_node() -> String {
@@ -73,6 +82,7 @@ impl Default for ComfyConfig {
             timeout_secs: default_timeout(),
             poll_interval_secs: default_poll(),
             concurrency: default_concurrency(),
+            preview_turbo: default_preview_turbo(),
         }
     }
 }
@@ -122,14 +132,14 @@ impl Settings {
         if let Some(dir) = program_dir {
             let p = dir.join(".env");
             if let Some(map) = read_dotenv(&p) {
-                env.extend(map);
+                merge_env(&mut env, map);
             }
             searched.push(format!("{}", p.display()));
         }
         if let Some(root) = bundle_root {
             let p = root.join(".env");
             if let Some(map) = read_dotenv(&p) {
-                env.extend(map);
+                merge_env(&mut env, map);
             }
             searched.push(format!("{}", p.display()));
         }
@@ -261,6 +271,17 @@ impl Settings {
             .max(1)
     }
 
+    /// preview 是否挂 turbo LoRA。`COMFY_PREVIEW_TURBO=0` 可以关掉。
+    pub fn comfy_preview_turbo(&self) -> bool {
+        match self.env.get("COMFY_PREVIEW_TURBO") {
+            Some(v) => !matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "0" | "false" | "no" | "off"
+            ),
+            None => self.file.comfy.preview_turbo,
+        }
+    }
+
     pub fn comfy_poll_secs(&self) -> u64 {
         self.env
             .get("COMFY_POLL_INTERVAL_SECS")
@@ -274,6 +295,28 @@ impl Settings {
             .cloned()
             .unwrap_or_else(|| self.file.model.core_family.clone())
     }
+}
+
+/// 同一个设置的两个名字。后面的来源给了其中一个，就要顶掉前面来源给的
+/// 另一个——否则**别名优先级会盖过来源优先级**。
+///
+/// 踩过一次：进程环境里有 `COMFY_NODE`，bundle 的 `.env` 里写的是旧名
+/// `COMFY_NODES`。两个键都进了合并后的表，而取值时 `COMFY_NODE` 优先，
+/// 于是 bundle 的配置被进程环境静默盖掉——渲染打到了另一个入口，不报错。
+/// bundle 要能被随意 `mv` / `cp -r` 到别的机器，机器相关的配置只能来自
+/// 当次进程看得见的文件，这条契约不能被别名破坏。
+const ALIASES: [[&str; 2]; 1] = [["COMFY_NODE", "COMFY_NODES"]];
+
+/// 把一层来源合并进来，顺带清掉被这一层覆盖掉的别名。
+fn merge_env(env: &mut BTreeMap<String, String>, layer: BTreeMap<String, String>) {
+    for pair in ALIASES {
+        if pair.iter().any(|k| layer.contains_key(*k)) {
+            for k in pair {
+                env.remove(k);
+            }
+        }
+    }
+    env.extend(layer);
 }
 
 fn split_nodes(v: &str) -> Vec<String> {
@@ -363,6 +406,47 @@ mod tests {
         .unwrap();
         let s = Settings::load(Some(prog.path()), Some(bundle.path()));
         assert_eq!(s.comfy_node(), "http://bundle:9001");
+    }
+
+    /// **别名不能盖过来源优先级。**
+    ///
+    /// 踩过一次：进程环境里有 `COMFY_NODE`，bundle 的 `.env` 里写的是旧名
+    /// `COMFY_NODES`。两个键都进了合并表，取值时新名优先，于是 bundle 的
+    /// 配置被进程环境静默盖掉——渲染打到另一个入口，不报错。
+    ///
+    /// bundle 要能被随意 `mv` / `cp -r` 到别的机器，机器相关的配置只能来自
+    /// 当次进程看得见的文件；用哪个名字写的不该改变这条。
+    #[test]
+    fn a_later_source_shadows_the_other_alias_too() {
+        for (outer, inner) in [
+            ("COMFY_NODE", "COMFY_NODES"),
+            ("COMFY_NODES", "COMFY_NODE"),
+            ("COMFY_NODE", "COMFY_NODE"),
+            ("COMFY_NODES", "COMFY_NODES"),
+        ] {
+            let prog = tempfile::tempdir().unwrap();
+            let bundle = tempfile::tempdir().unwrap();
+            std::fs::write(
+                prog.path().join(".env"),
+                format!("{outer}=http://program:9001\n"),
+            )
+            .unwrap();
+            std::fs::write(
+                bundle.path().join(".env"),
+                format!("{inner}=http://bundle:9001\n"),
+            )
+            .unwrap();
+            let s = Settings::load(Some(prog.path()), Some(bundle.path()));
+            assert_eq!(
+                s.comfy_node(),
+                "http://bundle:9001",
+                "外层写 {outer}、内层写 {inner} 时，内层应当赢"
+            );
+            assert!(
+                s.comfy_node_legacy_extras().is_empty(),
+                "只配了一个值，不该报出被忽略的旧配置"
+            );
+        }
     }
 
     /// 进程环境里可能已经有 `COMFY_NODE(S)`（云端会话就是这么配的），

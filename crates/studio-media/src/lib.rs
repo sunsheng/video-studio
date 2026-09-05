@@ -200,6 +200,36 @@ impl<'a> Media<'a> {
         run(cmd, "ffmpeg 抽帧")
     }
 
+    /// 截出一段。镜头之间接续用的就是它：把上一镜的尾段裁出来，
+    /// 作为本镜第 0 帧的锚点喂回模型。
+    ///
+    /// **重编码，不 stream copy**：copy 只能从关键帧切，尾段的起点几乎不会
+    /// 正好落在关键帧上，切出来会缺头几帧或多出一截——而锚点的帧数是要
+    /// 卡在 `17k+5` 网格上的，差一帧就不是声明的那个东西了。
+    pub fn cut(&self, video: &Path, start_seconds: f64, seconds: f64, out: &Path) -> Result<()> {
+        let ffmpeg = self.resolve("ffmpeg")?;
+        if !video.is_file() {
+            return Err(StudioError::ArtifactMissing {
+                path: video.display().to_string(),
+            });
+        }
+        let mut cmd = Command::new(&ffmpeg);
+        cmd.args(["-hide_banner", "-y"])
+            .arg("-i")
+            .arg(video)
+            .args([
+                "-ss",
+                &format!("{:.6}", start_seconds.max(0.0)),
+                "-t",
+                &format!("{seconds:.6}"),
+                "-an",
+                "-pix_fmt",
+                "yuv420p",
+            ])
+            .arg(out);
+        run(cmd, "ffmpeg 截取片段")
+    }
+
     /// 把字幕烧进画面或作为软字幕封装。
     pub fn mux_subtitles(&self, video: &Path, srt: &Path, out: &Path) -> Result<()> {
         let ffmpeg = self.resolve("ffmpeg")?;

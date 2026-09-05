@@ -297,14 +297,43 @@ impl Project {
 
     pub fn schema_of(&self, stage: StageId) -> Value {
         let mut doc = schema::stage_schema_document(stage);
-        // 提示词包的 workflow 取值随机器而变：只给出这台机器上真正能跑的
-        // 那几条，而不是让 Agent 写完一整包才在提交时被告知基线没核验。
+        // 提示词包的形状随机器而变：这个系列走整图基线还是片段组装、
+        // 有哪几条基线/哪几个 head 可用，都在这一刻定下来，而不是让 Agent
+        // 写完一整包才在提交时被告知形状用错了或基线没核验。
         if stage == StageId::PromptPack {
             if let Some(caps) = self.executor.capabilities() {
-                caps.narrow_schema(&mut doc);
+                let family = self.core_model_family();
+                caps.narrow_schema(&mut doc, family.as_deref());
             }
         }
         doc
+    }
+
+    /// 上游 `visual_assets` 定下的核心模型系列。它决定提示词包用哪一种形状。
+    /// 那个阶段还没过就返回 `None`——这时候两种形状都还摆着。
+    fn core_model_family(&self) -> Option<String> {
+        let loaded = self.store.load_stage(StageId::VisualAssets).ok()?;
+        loaded_outputs(&loaded)?
+            .get(StageId::VisualAssets.output_key())?
+            .get("core_model_family")?
+            .as_str()
+            .map(String::from)
+    }
+
+    /// `visual_assets` 登记过的产物 id，用来查参考与锚点引用的资产在不在。
+    ///
+    /// **卡级和视图级两种都算数**：`C01` 指这张卡的主视图，`C01.front` 指定
+    /// 某一个视图，渲染时的解析两种都认。这里只列卡级 id 的话，写
+    /// `C01.front`（方法文档里教的写法）会在提交时被判成「资产不存在」，
+    /// 而它其实是能解析的。
+    fn known_asset_ids(&self) -> Vec<String> {
+        let Ok(loaded) = self.store.load_stage(StageId::VisualAssets) else {
+            return Vec::new();
+        };
+        loaded_outputs(&loaded)
+            .and_then(|o| o.get(StageId::VisualAssets.output_key()))
+            .map(registered_asset_ids)
+            .unwrap_or_default()
     }
 
     pub fn stage_output(&self, stage: StageId) -> Result<Value> {
@@ -363,7 +392,7 @@ impl Project {
         // 这道关必须在 prompt_pack 那道门之前，因为门一过就开始烧 GPU。
         if stage == StageId::PromptPack {
             if let Some(caps) = self.executor.capabilities() {
-                caps.check_prompt_pack(&outputs)?;
+                caps.check_prompt_pack(&outputs, &self.known_asset_ids())?;
             }
         }
         // 形状对、参数对，内容仍然可以是空的：`three_facts: ["好看","很美","有感觉"]`
@@ -943,6 +972,27 @@ const STAGE_TOTAL: usize = 10;
 /// 整套架构的原则是渐进披露，见 `docs/decisions/ADR-0003`。
 const DECISION_LIMIT: usize = 20;
 
+/// 一份资产计划里登记过的全部 id，**卡级和视图级都算**。
+///
+/// `C01` 指这张卡的主视图，`C01.front` 指定某个视图，渲染时的解析两种都认。
+/// 只列卡级 id 的话，照方法文档写 `C01.front` 反而会在提交时被判成
+/// 「资产不存在」。
+fn registered_asset_ids(plan: &Value) -> Vec<String> {
+    let mut ids = Vec::new();
+    for card in plan["assets"].as_array().into_iter().flatten() {
+        let Some(card_id) = card["asset_id"].as_str() else {
+            continue;
+        };
+        ids.push(card_id.to_string());
+        for view in card["views"].as_array().into_iter().flatten() {
+            if let Some(name) = view["view"].as_str() {
+                ids.push(format!("{card_id}.{name}"));
+            }
+        }
+    }
+    ids
+}
+
 fn loaded_outputs(l: &LoadedStage) -> Option<&Outputs> {
     match l {
         LoadedStage::Draft(s) => s.outputs(),
@@ -1136,4 +1186,39 @@ fn collect_inputs(store: &Store, stage: StageId) -> Result<Value> {
         }
     }
     Ok(Value::Object(map))
+}
+
+#[cfg(test)]
+mod asset_id_tests {
+    use super::registered_asset_ids;
+    use studio_core::{fixtures, StageId};
+
+    /// 卡级和视图级两种写法都要认。以前只收卡级，于是照方法文档写
+    /// `C01.front` 会在提交时被判成「资产不存在」，而它其实解析得出来。
+    #[test]
+    fn both_the_card_and_its_views_are_registered() {
+        let plan = fixtures::outputs(StageId::VisualAssets);
+        let ids = registered_asset_ids(&plan[StageId::VisualAssets.output_key()]);
+        assert!(ids.contains(&"C01".to_string()), "缺卡级 id：{ids:?}");
+        assert!(
+            ids.iter().any(|i| i.starts_with("C01.")),
+            "缺视图级 id：{ids:?}"
+        );
+        // 视图级 id 必须真的对应卡上的视图，不是凭空拼的。
+        let views = plan[StageId::VisualAssets.output_key()]["assets"][0]["views"]
+            .as_array()
+            .unwrap();
+        for v in views {
+            let want = format!("C01.{}", v["view"].as_str().unwrap());
+            assert!(ids.contains(&want), "缺 {want}");
+        }
+    }
+
+    /// 形状不对的计划不该 panic，也不该凭空造出 id 来。
+    #[test]
+    fn a_malformed_plan_yields_nothing() {
+        assert!(registered_asset_ids(&serde_json::json!({})).is_empty());
+        assert!(registered_asset_ids(&serde_json::json!({ "assets": "不是数组" })).is_empty());
+        assert!(registered_asset_ids(&serde_json::json!({ "assets": [{}] })).is_empty());
+    }
 }

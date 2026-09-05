@@ -910,10 +910,19 @@ pub fn stage_schema(stage: StageId) -> Schema {
                                 (
                                     "workflow",
                                     text(
-                                        "使用的已验证 workflow 名，例如 minimax_h3/t2v。\
-                                         每条基线吃的参数不同，写之前先看这个系列的能力卡——\
-                                         提交时会按这台机器上基线的能力面逐项对账，\
-                                         多写、少写、用未核验的基线都会被挡下",
+                                        "整图基线名，例如 ltx2_5/t2v。**只有走整图基线的系列用它**\
+                                         （ltx2_5 / wan2_2 等）。片段化的系列改用 head + \
+                                         references + guides，写 workflow 会被挡下。\
+                                         调 studio.schema 看这台机器给的是哪一种",
+                                    ),
+                                ),
+                                (
+                                    "head",
+                                    text(
+                                        "这一镜用哪种生成方式。**片段化的系列用它代替 workflow**：\
+                                         reference（挂参考，锁身份/风格，起幅由模型定）、\
+                                         image（给首尾帧，锁构图与运动轨迹）。\
+                                         取值由 studio.schema 按这台机器的片段库给出",
                                     ),
                                 ),
                                 (
@@ -959,18 +968,80 @@ pub fn stage_schema(stage: StageId) -> Schema {
                                 (
                                     "references",
                                     arr(
-                                        "引用的视觉资产。可以照常写——它声明这一镜用到哪些资产，\
-                                         基线补上图片输入绑定后会自动生效。但**当前所有基线都还没绑\
-                                         图片输入**，写在这里的 asset_id 暂时进不了渲染请求，\
-                                         一致性目前只能靠 positive 里逐字复用同一段外观描述",
-                                        text("asset_id"),
+                                        "挂给这一镜的视觉资产。**只有 head: reference 吃它**——\
+                                         身份、空间、运动各挂一路，比在 positive 里反复描述外观\
+                                         有效得多。上限按介质分：图 9、视频 3、音频 3",
+                                        obj(
+                                            "一条参考",
+                                            vec![
+                                                (
+                                                    "kind",
+                                                    one_of(
+                                                        "介质",
+                                                        vec!["image", "video", "audio"],
+                                                    ),
+                                                ),
+                                                (
+                                                    "asset_id",
+                                                    text(
+                                                        "visual_assets 登记过的产物 id。\
+                                                         写不存在的会被挡下并列出可用的",
+                                                    ),
+                                                ),
+                                                (
+                                                    "with_audio",
+                                                    Schema::Bool {
+                                                        desc: "视频参考是否连音轨一起挂。\
+                                                               只有 kind: video 能用",
+                                                    },
+                                                ),
+                                            ],
+                                            vec!["kind", "asset_id"],
+                                        ),
                                         0,
                                     ),
+                                ),
+                                (
+                                    "guides",
+                                    arr(
+                                        "把某个素材锚在某一帧上。**镜头之间接不接得住靠它**——\
+                                         把上一镜的尾段锚在本镜第 0 帧，模型生成的是两条流的续接，\
+                                         比只在提示词里说「接上一镜」有效。\
+                                         head: image 只能锚首帧（0）或尾帧（-1）",
+                                        obj(
+                                            "一个锚点",
+                                            vec![
+                                                (
+                                                    "kind",
+                                                    one_of(
+                                                        "锚什么。clip 是视频片段，长度吃 17k+5 网格",
+                                                        vec!["image", "clip", "audio"],
+                                                    ),
+                                                ),
+                                                (
+                                                    "at_frame",
+                                                    int(
+                                                        "锚在第几帧。负数从末尾倒数，-1 是最后一帧",
+                                                    ),
+                                                ),
+                                                ("asset_id", text("visual_assets 登记过的产物 id")),
+                                            ],
+                                            vec!["kind", "at_frame", "asset_id"],
+                                        ),
+                                        0,
+                                    ),
+                                ),
+                                (
+                                    "first_frame",
+                                    text("首帧的 asset_id。**只有 head: image 用**"),
+                                ),
+                                (
+                                    "last_frame",
+                                    text("尾帧的 asset_id。**只有 head: image 用**，可不给"),
                                 ),
                             ],
                             vec![
                                 "shot_id",
-                                "workflow",
                                 "positive",
                                 "width",
                                 "height",

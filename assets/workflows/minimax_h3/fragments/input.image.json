@@ -1,0 +1,24 @@
+{
+  "load": {
+    "class_type": "LoadImage",
+    "inputs": {}
+  },
+  "_studio": {
+    "kind": "input",
+    "id": "image",
+    "from": "minimax_h3/r2v.json",
+    "source_run": "20260831T035154Z-29b70a",
+    "bindings_verified": true,
+    "bindings": {
+      "filename": [
+        "load.inputs.image"
+      ]
+    },
+    "outputs": {
+      "image": [
+        "load",
+        0
+      ]
+    }
+  }
+}

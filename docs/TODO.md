@@ -4,46 +4,50 @@
 
 ## 不需要 GPU，现在就能做
 
-这一节排在最前面是有原因的：**下面那节「需要 ComfyUI」里的活，多数被这一节
-堵着**。参考图进不了渲染、卡片挂不上多个锚点、AddGuide 串不起来，根子都是
-同一个——基线的绑定格式表达不了「数量由内容决定」的槽位。先把地基换掉，
-生产机那一轮才不会白跑。
+这一节排在最前面是有原因的：下面那节「需要 ComfyUI」里的活，多数曾被
+**#14 那条地基**堵着——参考图进不了渲染、卡片挂不上多个锚点、AddGuide
+串不起来，根子都是基线的绑定格式表达不了「数量由内容决定」的槽位。
+那条地基已经实现（PR #19），被它堵着的几项现在可以往下走了。
 
-### 渲染工作流改为按镜头动态组装（issue #14）
+### 渲染工作流改为按镜头动态组装（issue #14）—— 已实现，待合并
 
-**这是当前优先级最高的一件事，其余多数条目的硬前置。**
+方案见 [ADR-0005](decisions/ADR-0005-workflow-fragments.md) /
+[SPEC-0014](specs/SPEC-0014-dynamic-workflow-assembly.md) /
+[PLAN-0014](plans/PLAN-0014-dynamic-workflow-assembly.md)，实现在 PR #19。
+S0–S8 全部落地，CI 绿，真机验收 5 项全过。
 
-现在每一镜只能从三份固定基线里挑一份，能变的只有提示词、seed、尺寸、帧数。
-但真实镜头的差异**不是参数差异，是图结构差异**：1 秒空镜是「一张图 + 提示词」，
-接续镜要挂上一镜的尾段和音频，群戏要挂五张角色卡加两张场景卡——节点数量和
-连线都不同。
+落成的样子：基线降级为片段库（backbone / head / guide / input / overlay），
+Agent 每镜声明 `head` + `references` + `guides` 而不是选一张整图，
+`studio-core` 的确定性组装器把声明翻译成节点图，组合合法性校验 V1–V9
+在提交那一刻就报，每条带 remedy。整图基线那条路保留给 `ltx2_5` / `wan2_2`，
+schema 按 `core_model_family` 分派两种形状，不让 Agent 混着写。
 
-`_studio.bindings` 的形状是「参数名 → 固定路径数组」，能表达「一个值写到 N 个
-固定位置」，表达不了「挂 K 个槽位，K 由内容决定」。**这是格式本身的天花板。**
+**做的时候翻出来的三件事**，都记在 SOURCE-fragments.md 与 SPEC 里：
 
-方案定完了，在 issue #14：
+1. **图校验通过不等于画面是对的。** turbo 叠加层四种组合的 ComfyUI 图校验
+   全过，真机出片才发现 reference + 4 步是坏的。原因不是接线顺序（换到
+   sigmashift 之后画面一模一样地坏），是调度器——`beta` 是 20 步下的配套档位，
+   步数降到 4 就不成立。所以真机验收必须真等出片，不能只看 `node_errors`。
+2. **`clip` 锚点原本接的是一张静帧。** 它映射到 `LoadImage`，而帧序列得走
+   `LoadVideo` + `GetVideoComponents`。两条路输出都是 `IMAGE`，图能过校验。
+3. **接续镜要排队。** 引用 `sh01.tail` 的镜头得等 sh01 出片才有东西可裁，
+   调度改成按依赖分波；上一镜的尾段也不在 `visual_assets` 里，用 ffmpeg 现裁。
 
-- **片段库**：基线从「三张完整的图」降级为可组合片段（backbone / head / guide /
-  input）。切分已经验证是干净的——`i2v` 与 `r2v` 的骨架有 8 个节点逐字相同，
-  差异全部可参数化或由 head 决定。片段从已验证的图里切，`bindings_verified`
-  与 run_id 血缘保留：「已验证」这条规矩不丢，只是粒度从「整张图」变成
-  「片段 + 组合规则」。
-- **Agent 提交结构化声明，不提交节点图**：每镜声明 head + references[] +
-  guides[] + 参数。控制面不调 LLM，渲染路径保持确定性，`studio.retry_stage`
-  的语义继续成立。
-- **组装器是确定性 Rust 代码**，零 I/O、纯函数、没有 GPU 也能完整单测。
-  连线规则写死——**因为连线规则本来就是模型契约，不是创作决策**。
-- **组合合法性校验**，每条带 remedy：reference head 上限 9 图 / 3 视频 /
-  3 音频；image head 只接首尾帧；`guide.at_frame` 在范围内；clip 长度与
-  `length_frames` 都吃 `17k+5` 网格（现在完全没校验）。
+`input.video` 已于 2026-09-05 真机核验并放开：`clip` 锚点（5 帧接 39 帧镜头）
+与 `kind: video` 参考各跑一镜，画面人眼看过。连带补了 V5 的后半句——**锚点
+必须短于这一镜**，等长的会把整镜钉死，那是第一次跑用等长锚点、测试全绿但
+画面全错才发现的。
 
-一条必须写进片段元数据的真机经验：**R2V 配 `beta` 调度器、I2V 配 `simple`**。
-这不在任何官方文档里，是从两份基线的差异里看出来的。这类「跟着 head 走的
-配套约束」正是不能让 LLM 现场猜的东西——猜错了图照跑、不报错，只是画面
-悄悄劣化。
+`input.audio` 也已核验，但结论是**分裂的**：`audio` 锚点真机跑通（1kHz 纯音在
+输出里 4000 倍于邻频），而同一段音频挂到 `ref_audios` 上一点痕迹都没有
+（0.5–1.9 倍）——接线是对的，图能跑、有音轨，就是模型不理这个参考。
 
-先写 ADR：这一项推翻的是「已验证基线」这条既有约定，是 ADR-0002 之后最大的
-一条。
+因此标志位分了两层：`input.audio` 通道已核验，`ref_audios` **槽位**单独标未核验
+（`AutogrowSlot` 新增 `verified` 字段）。不分开只能二选一：要么挡掉验通的锚点，
+要么把没生效的参考说成可用。
+
+还剩：查清 `ref_audios` 为什么不生效——可能要真实声音而非合成纯音，可能必须配
+`ref_videos` 一起给，也可能它影响本来就弱。这是唯一还挂着未核验的东西。
 
 ### 成片超分（issue #13）
 
@@ -81,18 +85,21 @@ MiniMax H3 的原生画布是短边 768（16:9 即 1344×768），而交付要 1
    **它吃 3 张参考图，不是单参考**。issue #12 里「Z-Image 是单参考」的说法
    是错的，那条论据不成立（累积锁定的对比结论仍待实测）。
 
-### 要下载的权重
+### 权重已全部到位（2026-09-05 核对）
 
-| 用途 | 文件 | 放到 |
+| 用途 | 文件 | 状态 |
 |---|---|---|
-| 成片超分（#13） | `seedvr2_7b_int8_convrot.safetensors` | `models/diffusion_models/` |
-| 成片超分（#13） | `seedvr2_ema_vae_fp16.safetensors` | `models/vae/` |
-| 卡片 10 参考（#12，可选） | `flux2_dev_fp8mixed.safetensors` | `models/diffusion_models/` |
-| 卡片 10 参考（#12，可选） | `mistral_3_small_flux2_bf16.safetensors` | `models/text_encoders/` |
-| 卡片 10 参考（#12，可选） | `flux2-vae.safetensors` | `models/vae/` |
+| 成片超分（#13） | `seedvr2_7b_int8_convrot` / `seedvr2_3b_int8_convrot` / `seedvr2_ema_vae_fp16` | ✅ |
+| 卡片累积锁定（#12） | `flux2_dev_fp8mixed` / `mistral_3_small_flux2_bf16` / `flux2-vae` | ✅ |
+| 卡片草稿 / 已验证 | `z_image_turbo_bf16` + `qwen_3_4b` + `ae` | ✅ |
 
-SeedVR2 走 **ComfyUI 原生节点**，不要装第三方 custom node。FLUX.2 那三份
-等 Z-Image 3 参考的累积锁定实测出结果再决定要不要下。
+SeedVR2 走 **ComfyUI 原生节点**（`SeedVR2Preprocess` / `SeedVR2Conditioning` /
+`SeedVR2TemporalChunk` 都在），不要装第三方 custom node。
+
+**这意味着 #12 与 #13 不再被权重卡住**：#12 的累积锁定实测（卡片路线唯一
+剩下的支点）现在可以直接跑 FLUX.2 的 10 参考，不必退而求其次用 Z-Image 的
+3 参考；#13 的超分链路可以真机验证。两者仍排在 #14 之后——#12 依赖 #14 的
+可变槽位，#13 独立但优先级低于地基。
 
 ### 装 ffmpeg
 

@@ -129,6 +129,7 @@ pub fn run(program_dir: Option<&std::path::Path>, bundle: Option<&std::path::Pat
         });
     }
 
+    checks.push(check_workflow_assets(program_dir));
     checks.push(check_image_baselines(program_dir));
 
     if let Some(root) = bundle {
@@ -143,6 +144,56 @@ pub fn run(program_dir: Option<&std::path::Path>, bundle: Option<&std::path::Pat
         checks,
         tools,
         node,
+    }
+}
+
+/// 基线目录在不在 `studiod` 旁边。
+///
+/// **这一项是 Fail，不是 Warn。** 它管的是本项目最怕的那种失败：
+/// `studiod` 找不到 `assets/workflows/` 时，能力面是空的，于是提交
+/// `prompt_pack` 时的对账**整个不跑**——写了基线不吃的参数、帧数不在网格上、
+/// 引用了不存在的资产，一律照收。错误不会消失，只是从「提交那一刻」推迟到
+/// 「烧完 GPU 之后」，而 SPEC-0014 §6 那套校验存在的全部理由就是不让它推迟。
+///
+/// 这不是假设出来的：一次真实的 Codex 端到端会话里，release 二进制旁边没有
+/// assets，五个镜头的帧数全都不在 `17k+5` 网格上，照样提交通过了。
+fn check_workflow_assets(program_dir: Option<&std::path::Path>) -> Check {
+    let dir = program_dir
+        .map(|p| p.join("assets/workflows"))
+        .unwrap_or_else(|| std::path::PathBuf::from("assets/workflows"));
+    let families: Vec<String> = std::fs::read_dir(&dir)
+        .map(|entries| {
+            let mut v: Vec<String> = entries
+                .flatten()
+                .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+                .map(|e| e.file_name().to_string_lossy().to_string())
+                .collect();
+            v.sort();
+            v
+        })
+        .unwrap_or_default();
+
+    if families.is_empty() {
+        return Check {
+            name: "基线目录不在 studiod 旁边".into(),
+            level: Level::Fail,
+            detail: format!("{} 下一个模型系列都没有", dir.display()),
+            remedy: Some(format!(
+                "提交 prompt_pack 时的能力面对账会**整个不跑**——参数写错、帧数不在网格上、\n  \
+                 引用了不存在的资产，全都照收，等烧完 GPU 才发现。\n  \
+                 把仓库的 assets/ 整个复制到 studiod 所在目录：\n    \
+                 cp -r <仓库>/assets {}",
+                program_dir
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "<studiod 所在目录>".into())
+            )),
+        };
+    }
+    Check {
+        name: "基线目录".into(),
+        level: Level::Ok,
+        detail: format!("{} 个系列：{}", families.len(), families.join("、")),
+        remedy: None,
     }
 }
 
@@ -403,13 +454,36 @@ mod tests {
         assert!(c.remedy.is_none());
     }
 
+    /// studiod 旁边没有基线目录 = 提交时的能力面对账整个不跑。
+    /// 这是 Fail 不是 Warn：错误不会消失，只是推迟到烧完 GPU 之后。
+    #[test]
+    fn missing_workflow_assets_is_a_failure_not_a_warning() {
+        let d = tempfile::tempdir().unwrap();
+        let c = check_workflow_assets(Some(d.path()));
+        assert_eq!(c.level, Level::Fail);
+        let remedy = c.remedy.expect("必须给出可执行的补救");
+        assert!(remedy.contains("cp -r"), "要给出照抄就能跑的命令：{remedy}");
+        assert!(remedy.contains("整个不跑"), "要说清后果：{remedy}");
+    }
+
+    #[test]
+    fn present_workflow_assets_lists_the_families() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("assets/workflows/minimax_h3")).unwrap();
+        std::fs::create_dir_all(d.path().join("assets/workflows/ltx2_5")).unwrap();
+        let c = check_workflow_assets(Some(d.path()));
+        assert_eq!(c.level, Level::Ok);
+        assert!(c.detail.contains("minimax_h3") && c.detail.contains("ltx2_5"));
+    }
+
     #[test]
     fn run_without_a_bundle_skips_the_codex_config_check() {
         let report = run(None, None);
         assert!(report.bundle.is_none());
         assert!(!report.checks.iter().any(|c| c.name.contains("Codex 配置")));
-        // ffmpeg、ffprobe、ComfyUI 节点、卡片生成基线——不看 bundle 时总归只有这四项。
-        assert_eq!(report.checks.len(), 4);
+        // ffmpeg、ffprobe、ComfyUI 节点、基线目录、卡片生成基线——
+        // 不看 bundle 时总归只有这五项。
+        assert_eq!(report.checks.len(), 5);
     }
 
     #[test]

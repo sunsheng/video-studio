@@ -21,6 +21,7 @@ pub fn all() -> Vec<(AgentScenario, ScriptedUser)> {
         ambiguous_user_input_handling(),
         retry_vs_revise_confusion_probe(),
         capability_boundary_probe(),
+        declarative_shape_probe(),
         decision_archive_crosses_stages(),
     ]
 }
@@ -123,6 +124,92 @@ fn retry_vs_revise_confusion_probe() -> (AgentScenario, ScriptedUser) {
                         name: "改用了 studio.retry_stage".into(),
                         passed: used_retry,
                         detail: format!("调用过 studio.retry_stage：{used_retry}"),
+                    },
+                ]
+            },
+        },
+        ScriptedUser::new(&[]),
+    )
+}
+
+/// ADR-0005 之后 `minimax_h3` 的 shot 形状换了：写 `head` 不写 `workflow`，
+/// 镜头之间接得住靠 `guides` 锚上一镜的尾段。这个场景测的就是文档换完之后
+/// Agent 会不会照新形状写——**形状写错在提交时会被挡下**，但更要紧的是
+/// 「该接续的地方没接」这类不报错的漏写。
+fn declarative_shape_probe() -> (AgentScenario, ScriptedUser) {
+    (
+        AgentScenario {
+            id: "declarative_shape_probe",
+            description: "brief 明确要求一个连续动作跨两镜——检查 Agent 会不会按 assets/models/minimax_h3.md 与 assembly/shots.md 写声明式形状（head 而不是 workflow），并且真的挂 guide 去接上一镜，而不是只在提示词里写「接上一镜」（那句话对模型没有任何作用）。",
+            brief: "拍一支千岛湖旅拍短片。要有一个动作是连着的：她在木栈道上跑起来，紧接着落地站稳——这两下必须看起来是同一次动作，不能像两个不相干的镜头拼在一起。",
+            expected_stage: StageId::PromptPack,
+            verdicts: |run| {
+                let Some(pack) = read_stage_json(&run.bundle_root, StageId::PromptPack) else {
+                    return vec![Verdict {
+                        name: "prompt_pack 产物存在".into(),
+                        passed: false,
+                        detail: "没有找到 stages/prompt_pack.json——Agent 可能没走到这一步。".into(),
+                    }];
+                };
+                let family = pack["prompt_pack"]["core_model_family"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string();
+                if !family.starts_with("minimax_h3") {
+                    return vec![Verdict {
+                        name: "目标模型是 minimax_h3（场景前提）".into(),
+                        passed: false,
+                        detail: format!(
+                            "实际用的是 {family}——这个场景专测片段化系列的形状，跟整图基线无关。"
+                        ),
+                    }];
+                }
+                let shots: Vec<&Value> = pack["prompt_pack"]["shots"]
+                    .as_array()
+                    .map(|a| a.iter().collect())
+                    .unwrap_or_default();
+                let all_have_head = !shots.is_empty()
+                    && shots.iter().all(|s| s.get("head").is_some());
+                let any_workflow = shots.iter().any(|s| s.get("workflow").is_some());
+                // 接续的判据：某一镜的 guide 引用了别的镜头的尾段/首段。
+                let ids: Vec<&str> = shots
+                    .iter()
+                    .filter_map(|s| s["shot_id"].as_str())
+                    .collect();
+                let continued = shots.iter().any(|s| {
+                    s["guides"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|g| g["asset_id"].as_str())
+                        .any(|a| {
+                            a.split_once('.').is_some_and(|(shot, seg)| {
+                                ids.contains(&shot)
+                                    && (seg.starts_with("tail") || seg.starts_with("head"))
+                            })
+                        })
+                });
+                vec![
+                    Verdict {
+                        name: "每一镜都写了 head".into(),
+                        passed: all_have_head,
+                        detail: format!("{} 镜里都有 head：{all_have_head}", shots.len()),
+                    },
+                    Verdict {
+                        name: "没有写 workflow（这个系列没有整图基线可选）".into(),
+                        passed: !any_workflow,
+                        detail: format!("出现过 workflow 字段：{any_workflow}"),
+                    },
+                    Verdict {
+                        name: "连续动作那两镜真的挂了 guide 去接".into(),
+                        passed: continued,
+                        detail: if continued {
+                            "有镜头用 guide 锚了另一镜的尾段。".into()
+                        } else {
+                            "没有任何镜头挂 guide 接上一镜——brief 明确要求连续动作，\
+                             只在提示词里写「接上一镜」对模型没有作用。"
+                                .into()
+                        },
                     },
                 ]
             },

@@ -1,0 +1,68 @@
+{
+  "h3_i2v": {
+    "class_type": "MiniMaxH3ImageToVideo",
+    "inputs": {
+      "clip": [
+        "load_clip",
+        0
+      ],
+      "vae": [
+        "vae_video",
+        0
+      ],
+      "prompt": "<Picture 1> is the first frame and <Picture 2> is the final frame. The same red paper lantern sways gently to the right in one continuous shot, quiet studio, no text, no logo.",
+      "width": 160,
+      "height": 288,
+      "length": 22
+    }
+  },
+  "_studio": {
+    "kind": "head",
+    "id": "image",
+    "from": "minimax_h3/i2v.json",
+    "source_run": "20260831T035154Z-29b70a",
+    "bindings_verified": true,
+    "backbone_overrides": {
+      "load_unet.inputs.unet_name": "minimax_h3_fl2va_int8_convrot.safetensors",
+      "scheduler.inputs.scheduler": "simple"
+    },
+    "outputs": {
+      "conditioning": [
+        "h3_i2v",
+        0
+      ],
+      "latent": [
+        "h3_i2v",
+        1
+      ]
+    },
+    "wires_from_backbone": {
+      "h3_i2v.inputs.clip": [
+        "load_clip",
+        0
+      ],
+      "h3_i2v.inputs.vae": [
+        "vae_video",
+        0
+      ]
+    },
+    "bindings": {
+      "positive": [
+        "h3_i2v.inputs.prompt"
+      ],
+      "width": [
+        "h3_i2v.inputs.width"
+      ],
+      "height": [
+        "h3_i2v.inputs.height"
+      ],
+      "length_frames": [
+        "h3_i2v.inputs.length"
+      ]
+    },
+    "frames": {
+      "first": "h3_i2v.inputs.first_frame",
+      "last": "h3_i2v.inputs.last_frame"
+    }
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "lora": {
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+      "lora_name": "minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors",
+      "strength_model": 1.0
+    }
+  },
+  "_studio": {
+    "kind": "overlay",
+    "id": "image",
+    "from": "/object_info/LoraLoaderModelOnly + /object_info 的 loras 清单（文件名逐字抄）",
+    "source_run": "turbo-confirm 2026-09-05（真机出片，两个种子，640x384x22f，画面与 20 步基准可比）",
+    "bindings_verified": true,
+    "wires_from_backbone": {
+      "lora.inputs.model": ["load_unet", 0]
+    },
+    "backbone_overrides": {
+      "sigmashift.inputs.model": ["lora", 0],
+      "scheduler.inputs.steps": 8,
+      "scheduler.inputs.scheduler": "simple"
+    },
+    "note": "image head 配 fl2v_turbo_8step——跟 head 的权重是配套的，ref2v 的 LoRA 挂不到 fl2va 上。调度器写 simple 是显式写死，虽然 image head 本来就是 simple：低步数下调度器档位是成败关键（见 reference 那份的记录），不该靠继承 head 的值碰巧对上。"
+  }
+}

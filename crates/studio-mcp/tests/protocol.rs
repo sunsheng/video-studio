@@ -206,7 +206,8 @@ fn the_six_stages_before_comfyui_run_end_to_end_over_mcp() {
     let (pack, _) = h.call("studio.stage_output", json!({ "stage": "prompt_pack" }));
     let shots = pack["prompt_pack"]["shots"].as_array().unwrap();
     assert_eq!(shots.len(), 5);
-    assert_eq!(shots[0]["workflow"], "minimax_h3/t2v");
+    // 核心系列的图现场组装，逐镜头声明的是 head 而不是整图基线名。
+    assert_eq!(shots[0]["head"], "reference");
 
     let (tl, _) = h.call("studio.timeline", json!({ "limit": 100 }));
     let kinds: Vec<&str> = tl

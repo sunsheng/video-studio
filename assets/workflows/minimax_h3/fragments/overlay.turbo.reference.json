@@ -1,0 +1,25 @@
+{
+  "lora": {
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+      "lora_name": "minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors",
+      "strength_model": 1.0
+    }
+  },
+  "_studio": {
+    "kind": "overlay",
+    "id": "reference",
+    "from": "/object_info/LoraLoaderModelOnly + /object_info 的 loras 清单（文件名逐字抄）",
+    "source_run": "turbo-confirm 2026-09-05（真机出片，两个种子，640x384x22f，画面与 20 步基准可比）",
+    "bindings_verified": true,
+    "wires_from_backbone": {
+      "lora.inputs.model": ["load_unet", 0]
+    },
+    "backbone_overrides": {
+      "sigmashift.inputs.model": ["lora", 0],
+      "scheduler.inputs.steps": 4,
+      "scheduler.inputs.scheduler": "simple"
+    },
+    "note": "reference head 配 ref2v_turbo_4step。**调度器必须从 beta 换成 simple**：真机对比里 beta + 4 步出来的画面是坏的（色带、光晕、底部有幻觉出来的字形），换 simple 之后与 20 步基准可比。beta 是 reference head 在 20 步下的配套档位，步数一降就不成立了——所以这里覆盖掉它。LoRA 插在 load_unet 与 sigmashift 之间；实测把它换到 sigmashift 之后画面完全一样，两种接法在 ComfyUI 里可交换，取前者只是因为「先落定权重再谈调度」读起来顺。真正决定成败的是调度器，不是这个顺序。"
+  }
+}

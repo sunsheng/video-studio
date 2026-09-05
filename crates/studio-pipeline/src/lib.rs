@@ -3,16 +3,19 @@
 //! 这一层把控制面的决策变成实际动作：向 ComfyUI 提交、用 ffmpeg 拼接、
 //! 用 ffprobe 核对。**运行本程序的机器不需要 GPU**——推理全在 ComfyUI 那侧。
 
+pub mod assets;
 pub mod subtitles;
 pub mod workflow;
 
 use serde_json::{json, Map, Value};
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use studio_comfy::Comfy;
 use studio_core::contract::{AnswerOption, Confirmation, SelectionType};
-use studio_core::{CapabilitySet, Outputs, Result, StageId, StudioError, WorkflowCapability};
+use studio_core::{
+    CapabilitySet, Fragment, FragmentSet, Outputs, Result, StageId, StudioError, WorkflowCapability,
+};
 use studio_engine::executor::{ExecContext, StageExecutor};
 use studio_media::Media;
 use workflow::Workflow;
@@ -125,19 +128,24 @@ impl StageExecutor for Pipeline {
         }
     }
 
-    /// 扫一遍基线目录，把每条基线的 `_studio.bindings` 投影成能力面。
+    /// 扫一遍基线目录，把每条基线的 `_studio.bindings` 投影成能力面，
+    /// 顺带把有 `fragments/` 子目录的系列读成片段库。
     ///
     /// 引擎拿它在提交 `prompt_pack` 时对账。读不出来的基线直接跳过——
     /// 目录本身缺失或损坏是部署问题，会在渲染时以
     /// `model_contract_violation` 报出来，不该在提交阶段变成一堆噪声。
     fn capabilities(&self) -> Option<CapabilitySet> {
         let mut out = Vec::new();
+        let mut fragments: BTreeMap<String, FragmentSet> = BTreeMap::new();
         let families = std::fs::read_dir(&self.baselines).ok()?;
         for family in families.flatten() {
             if !family.file_type().is_ok_and(|t| t.is_dir()) {
                 continue;
             }
             let family_name = family.file_name().to_string_lossy().to_string();
+            if let Some(set) = load_fragment_set(&family.path().join("fragments")) {
+                fragments.insert(family_name.clone(), set);
+            }
             let Ok(modes) = std::fs::read_dir(family.path()) else {
                 continue;
             };
@@ -168,12 +176,106 @@ impl StageExecutor for Pipeline {
                 });
             }
         }
-        if out.is_empty() {
+        if out.is_empty() && fragments.is_empty() {
             return None;
         }
         out.sort_by(|a, b| a.name.cmp(&b.name));
-        Some(CapabilitySet::new(out))
+        Some(CapabilitySet::new(out).with_fragments(fragments))
     }
+}
+
+/// 读一个系列的 `fragments/` 目录。目录不存在说明这个系列走整图基线，
+/// 不是错误。单份片段读不出来就跳过——半份片段库会被
+/// [`CapabilitySet::with_fragments`] 挡在门外，不会悄悄生效。
+fn load_fragment_set(dir: &std::path::Path) -> Option<FragmentSet> {
+    let entries = std::fs::read_dir(dir).ok()?;
+    let mut set = FragmentSet::default();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let where_ = path.file_name().map(|n| n.to_string_lossy().to_string());
+        let Ok((kind, frag)) = Fragment::parse(&text, where_.as_deref().unwrap_or("?")) else {
+            continue;
+        };
+        set.insert(kind, frag);
+    }
+    Some(set)
+}
+
+/// 把镜头按接续依赖分波：同一波之间没有依赖，可以随便并发；
+/// 下一波要等上一波全部出片，因为它得从那些产物里裁尾段。
+///
+/// 依赖只可能指向更靠前的镜头（`studio-core` 的 V9 在提交时就挡住了环），
+/// 所以一遍扫过去按「引用到的最大波次 + 1」定波，不需要拓扑排序。
+/// 没有接续引用时全部落在第 0 波，跟以前的行为一模一样。
+fn dependency_waves(shots: &[Value]) -> Vec<Vec<usize>> {
+    let mut wave_of: BTreeMap<String, usize> = BTreeMap::new();
+    let mut assigned: Vec<usize> = Vec::with_capacity(shots.len());
+
+    for shot in shots {
+        let mut wave = 0usize;
+        let refs = shot["references"].as_array().into_iter().flatten();
+        let guides = shot["guides"].as_array().into_iter().flatten();
+        // 首尾帧同样可能接上一镜——`head: image` 做接续就是把上一镜的尾帧
+        // 填进 first_frame。漏算它，这一镜会跟被接的那一镜排进同一波，
+        // 等到解析素材时那一镜还没出片。
+        let frames = ["first_frame", "last_frame"]
+            .into_iter()
+            .filter_map(|k| shot.get(k));
+        for asset_id in refs
+            .chain(guides)
+            .filter_map(|item| item["asset_id"].as_str())
+            .chain(frames.filter_map(|v| v.as_str()))
+        {
+            let Some(seg) = studio_core::assembly::parse_shot_segment(asset_id) else {
+                continue;
+            };
+            // 指向不存在或更靠后的镜头在提交时就被 V9 挡了；真走到这里
+            // 只当它没有依赖，让后面的解析报一条说得清的错。
+            if let Some(w) = wave_of.get(seg.shot_id) {
+                wave = wave.max(w + 1);
+            }
+        }
+        if let Some(id) = shot["shot_id"].as_str() {
+            wave_of.insert(id.to_string(), wave);
+        }
+        assigned.push(wave);
+    }
+
+    let count = assigned.iter().max().map(|m| m + 1).unwrap_or(0);
+    let mut waves = vec![Vec::new(); count];
+    for (idx, w) in assigned.iter().enumerate() {
+        waves[*w].push(idx);
+    }
+    waves
+}
+
+/// 取最接近的 `step` 倍数，至少一个 `step`。
+fn round_to(v: i64, step: i64) -> i64 {
+    ((v + step / 2) / step).max(1) * step
+}
+
+/// preview 要覆盖的目标尺寸；render 用提示词包原样的宽高，返回 `None`
+/// 表示「不覆盖，结果里也不需要单独报宽高」。
+fn preview_dims(shot: &Value, mode: GenerateMode) -> Option<(i64, i64)> {
+    if mode != GenerateMode::Preview {
+        return None;
+    }
+    let dim = |k: &str| {
+        shot.get(k)
+            .and_then(|v| v.as_i64())
+            .unwrap_or(PREVIEW_SHORT_EDGE)
+    };
+    Some(scale_to_short_edge(
+        dim("width"),
+        dim("height"),
+        PREVIEW_SHORT_EDGE,
+    ))
 }
 
 fn wrap(stage: StageId, v: Value) -> Outputs {
@@ -213,6 +315,10 @@ impl Pipeline {
     /// 实测单镜十来分钟，串行渲染 8 镜可能超过一个半小时；8 路并发理论上
     /// 十几分钟就能全部跑完。产出仍按镜头在提示词包里的原始顺序落回
     /// `shots` 数组——`post` 阶段拼接靠的是这个顺序，不是谁先完工。
+    ///
+    /// **接续镜要排队**：引用了 `sh01.tail` 的镜头得等 sh01 渲完才有东西可裁，
+    /// 所以先按依赖分波（[`dependency_waves`]），波内并发、波与波串行。
+    /// 没有接续引用时只有一波，跟以前完全一样。
     fn generate(
         &self,
         ctx: &ExecContext<'_>,
@@ -228,41 +334,88 @@ impl Pipeline {
         comfy.ensure_reachable()?;
 
         let total = shots.len();
-        let queue: Mutex<VecDeque<usize>> = Mutex::new((0..total).collect());
+        let waves = dependency_waves(shots);
+        let plan = ctx
+            .inputs
+            .get(StageId::VisualAssets.output_key())
+            .cloned()
+            .unwrap_or_else(|| json!({}));
         let results: Mutex<Vec<Option<Value>>> = Mutex::new(vec![None; total]);
-        let failure: Mutex<Option<StudioError>> = Mutex::new(None);
-        let worker_count = ctx.settings.comfy_concurrency().min(total.max(1));
+        let mut rendered: BTreeMap<String, assets::RenderedShot> = BTreeMap::new();
 
-        std::thread::scope(|scope| {
-            for _ in 0..worker_count {
-                let queue = &queue;
-                let results = &results;
-                let failure = &failure;
-                let comfy = &comfy;
-                scope.spawn(move || loop {
-                    if ctx.is_cancelled() || failure.lock().unwrap().is_some() {
-                        return;
-                    }
-                    let idx = queue.lock().unwrap().pop_front();
-                    let Some(idx) = idx else { return };
-                    let shot = &shots[idx];
-                    match self.generate_shot(ctx, comfy, idx, total, shot, mode) {
-                        Ok(v) => results.lock().unwrap()[idx] = Some(v),
-                        Err(e) => {
-                            let mut f = failure.lock().unwrap();
-                            if f.is_none() {
-                                *f = Some(e);
-                            }
+        if waves.len() > 1 {
+            ctx.say(format!(
+                "{total} 个镜头分 {} 波跑：接续镜要等它引用的那一镜先出片",
+                waves.len()
+            ));
+        }
+
+        for wave in waves {
+            if ctx.is_cancelled() {
+                return Err(StudioError::internal("渲染被中断"));
+            }
+            // 每一波都拿上一波的产物重建解析器——接续镜要从那里裁尾段。
+            let resolver = assets::AssetResolver::new(
+                ctx.bundle,
+                ctx.settings,
+                plan.clone(),
+                rendered.clone(),
+            );
+            let queue: Mutex<VecDeque<usize>> = Mutex::new(wave.iter().copied().collect());
+            let failure: Mutex<Option<StudioError>> = Mutex::new(None);
+            let worker_count = ctx.settings.comfy_concurrency().min(wave.len().max(1));
+
+            std::thread::scope(|scope| {
+                for _ in 0..worker_count {
+                    let queue = &queue;
+                    let results = &results;
+                    let failure = &failure;
+                    let comfy = &comfy;
+                    let resolver = &resolver;
+                    scope.spawn(move || loop {
+                        if ctx.is_cancelled() || failure.lock().unwrap().is_some() {
                             return;
                         }
-                    }
-                });
-            }
-        });
+                        let idx = queue.lock().unwrap().pop_front();
+                        let Some(idx) = idx else { return };
+                        let shot = &shots[idx];
+                        match self.generate_shot(ctx, comfy, resolver, idx, total, shot, mode) {
+                            Ok(v) => results.lock().unwrap()[idx] = Some(v),
+                            Err(e) => {
+                                let mut f = failure.lock().unwrap();
+                                if f.is_none() {
+                                    *f = Some(e);
+                                }
+                                return;
+                            }
+                        }
+                    });
+                }
+            });
 
-        if let Some(e) = failure.into_inner().unwrap() {
-            return Err(e);
+            if let Some(e) = failure.into_inner().unwrap() {
+                return Err(e);
+            }
+            // 这一波的产物进登记表，供下一波的接续镜裁尾段。
+            let done = results.lock().unwrap();
+            for idx in wave {
+                let Some(v) = done[idx].as_ref() else {
+                    continue;
+                };
+                let (Some(id), Some(path)) = (v["shot_id"].as_str(), v["path"].as_str()) else {
+                    continue;
+                };
+                rendered.insert(
+                    id.to_string(),
+                    assets::RenderedShot {
+                        path: path.to_string(),
+                        duration_seconds: v["duration_seconds"].as_f64().unwrap_or(0.0),
+                        fps: shots[idx]["fps"].as_f64().unwrap_or(24.0),
+                    },
+                );
+            }
         }
+
         if ctx.is_cancelled() {
             return Err(StudioError::internal("渲染被中断"));
         }
@@ -270,7 +423,7 @@ impl Pipeline {
             .into_inner()
             .unwrap()
             .into_iter()
-            .map(|v| v.expect("队列排空后每个下标都该有结果或已提前返回错误"))
+            .map(|v| v.expect("每一波排空后该波的下标都有结果，否则已提前返回错误"))
             .collect())
     }
 
@@ -281,52 +434,47 @@ impl Pipeline {
         &self,
         ctx: &ExecContext<'_>,
         comfy: &Comfy,
+        resolver: &assets::AssetResolver<'_>,
         idx: usize,
         total: usize,
         shot: &Value,
         mode: GenerateMode,
     ) -> Result<Value> {
         let shot_id = shot["shot_id"].as_str().unwrap_or("shot").to_string();
-        let wf_name =
-            shot["workflow"]
-                .as_str()
-                .ok_or_else(|| StudioError::ModelContractViolation {
-                    detail: format!("{shot_id} 没有指定 workflow"),
-                })?;
 
-        let wf = ctx
-            .step("load_baseline")
-            .shot(&shot_id)
-            .with("workflow", json!(wf_name))
-            .done(Workflow::load(&self.baselines, wf_name).and_then(|w| {
-                w.require_verified()?;
-                Ok(w)
-            }))?;
-        let mut params = Map::new();
-        if let Some(o) = shot.as_object() {
-            for (k, v) in o {
-                params.insert(k.clone(), v.clone());
-            }
-        }
-        // 只有 preview 才覆盖尺寸；render 用提示词包原样的宽高，
-        // dims 留 None 表示「结果里不需要单独报宽高」。
-        let dims = if mode == GenerateMode::Preview {
-            let width = shot
-                .get("width")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(PREVIEW_SHORT_EDGE);
-            let height = shot
-                .get("height")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(PREVIEW_SHORT_EDGE);
-            let (pw, ph) = scale_to_short_edge(width, height, PREVIEW_SHORT_EDGE);
-            params.insert("width".to_string(), json!(pw));
-            params.insert("height".to_string(), json!(ph));
-            Some((pw, ph))
+        let dims = preview_dims(shot, mode);
+
+        // 两种形状：片段化的系列写 head，现场组装；其余系列写 workflow，
+        // 加载整图基线再填参数。哪一种由提示词包自己说了算。
+        let graph = if shot.get("head").is_some() {
+            self.assemble_shot(ctx, comfy, resolver, &shot_id, shot, mode)?
         } else {
-            None
+            let wf_name =
+                shot["workflow"]
+                    .as_str()
+                    .ok_or_else(|| StudioError::ModelContractViolation {
+                        detail: format!("{shot_id} 既没写 head 也没写 workflow，不知道该怎么出图"),
+                    })?;
+            let wf = ctx
+                .step("load_baseline")
+                .shot(&shot_id)
+                .with("workflow", json!(wf_name))
+                .done(Workflow::load(&self.baselines, wf_name).and_then(|w| {
+                    w.require_verified()?;
+                    Ok(w)
+                }))?;
+            let mut params = Map::new();
+            if let Some(o) = shot.as_object() {
+                for (k, v) in o {
+                    params.insert(k.clone(), v.clone());
+                }
+            }
+            if let Some((pw, ph)) = dims {
+                params.insert("width".to_string(), json!(pw));
+                params.insert("height".to_string(), json!(ph));
+            }
+            wf.apply(&params)?
         };
-        let graph = wf.apply(&params)?;
 
         // 落一份可以直接 curl 复现的请求体：节点故障时不用整套跑起来就能单独调试
         // 这一镜——`curl -X POST <node>/prompt -H "Content-Type: application/json"
@@ -361,6 +509,112 @@ impl Pipeline {
             }
         }
         Err(last_err.unwrap_or_else(|| StudioError::internal(format!("{shot_id} 渲染重试耗尽"))))
+    }
+
+    /// 片段化的系列：把声明翻译成节点图。
+    ///
+    /// 素材要先落到 ComfyUI 那侧才能在图里引用，所以顺序是
+    /// **解析 → 上传 → 把声明里的 asset_id 换成上传后的文件名 → 组装**。
+    /// 组装器只认名字，不关心素材从哪来。
+    fn assemble_shot(
+        &self,
+        ctx: &ExecContext<'_>,
+        comfy: &Comfy,
+        resolver: &assets::AssetResolver<'_>,
+        shot_id: &str,
+        shot: &Value,
+        mode: GenerateMode,
+    ) -> Result<Value> {
+        let mut decl: studio_core::ShotDeclaration =
+            serde_json::from_value(shot.clone()).map_err(|e| {
+                StudioError::ModelContractViolation {
+                    detail: format!("{shot_id} 的声明读不出来：{e}"),
+                }
+            })?;
+        if let Some((pw, ph)) = preview_dims(shot, mode) {
+            // 片段化的系列要求画幅是 32 的倍数（V8）。短边缩放算出来的
+            // 长边多半不是——`768x1344` 缩到 480 得到 840，不是 32 的倍数。
+            // 不修就等于我们自己写进 remedy 的那句话：ComfyUI 会四舍五入，
+            // 实际出图尺寸跟登记的对不上。
+            decl.width = round_to(pw, 32);
+            decl.height = round_to(ph, 32);
+        }
+
+        let family = ctx.inputs[StageId::VisualAssets.output_key()]["core_model_family"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        let set =
+            self.fragment_set(&family)
+                .ok_or_else(|| StudioError::ModelContractViolation {
+                    detail: format!(
+                        "{shot_id} 用的是声明式形状，但这台机器上没有 {family} 的片段库。\
+                     片段库在 assets/workflows/{family}/fragments/ 下，\
+                     缺骨架或没有已核验的 head 都会让它整个不可用"
+                    ),
+                })?;
+
+        // 参考、锚点、首尾帧全都要上传。同一份素材多镜共用时只传一次。
+        let mut ids: Vec<String> = decl.references.iter().map(|r| r.asset_id.clone()).collect();
+        ids.extend(decl.guides.iter().map(|g| g.asset_id.clone()));
+        ids.extend(decl.first_frame.clone());
+        ids.extend(decl.last_frame.clone());
+        let mut remote: BTreeMap<String, String> = BTreeMap::new();
+        for id in ids {
+            if remote.contains_key(&id) {
+                continue;
+            }
+            let name = ctx
+                .step("upload_asset")
+                .shot(shot_id)
+                .with("asset_id", json!(id))
+                .done(resolver.upload(comfy, &id))?;
+            remote.insert(id, name);
+        }
+        let rename = |id: &String| remote.get(id).cloned().unwrap_or_else(|| id.clone());
+        for r in &mut decl.references {
+            r.asset_id = rename(&r.asset_id);
+        }
+        for g in &mut decl.guides {
+            g.asset_id = rename(&g.asset_id);
+        }
+        decl.first_frame = decl.first_frame.as_ref().map(rename);
+        decl.last_frame = decl.last_frame.as_ref().map(rename);
+
+        // preview 换一套更便宜的组合：挂 head 配套的 turbo LoRA、steps 降到
+        // LoRA 的步数。预览门要看的只是构图与内容。叠加层没核验时组装器会
+        // 自己退回普通组合，并在 notes 里说明——不会悄悄跑出不可信的东西。
+        let combination = match (mode, ctx.settings.comfy_preview_turbo()) {
+            (GenerateMode::Preview, true) => studio_core::assembly::Combination::PreviewTurbo,
+            _ => studio_core::assembly::Combination::Standard,
+        };
+
+        let out = ctx
+            .step("assemble")
+            .shot(shot_id)
+            .with("head", json!(decl.head))
+            .with("combination", json!(format!("{combination:?}")))
+            .done(studio_core::assembly::assemble_as(
+                &set,
+                &decl,
+                &format!("studio/{shot_id}"),
+                combination,
+            ))?;
+        for note in &out.notes {
+            ctx.say(format!("{shot_id}：{note}"));
+        }
+        ctx.step("assembled")
+            .shot(shot_id)
+            .with("fragments", json!(out.used))
+            .with("notes", json!(out.notes))
+            .done(Ok::<(), StudioError>(()))?;
+        Ok(out.graph)
+    }
+
+    /// 这个系列的片段库，没有就说明它走整图基线。
+    fn fragment_set(&self, family: &str) -> Option<FragmentSet> {
+        let set = load_fragment_set(&self.baselines.join(family).join("fragments"))?;
+        set.is_usable().then_some(set)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -738,8 +992,9 @@ mod render_tests {
         };
 
         let shot = shot("sh01");
+        let resolver = assets::AssetResolver::new(&bundle, &settings, json!({}), BTreeMap::new());
         let result = pipeline
-            .generate_shot(&ctx, &comfy, 0, 1, &shot, GenerateMode::Render)
+            .generate_shot(&ctx, &comfy, &resolver, 0, 1, &shot, GenerateMode::Render)
             .unwrap();
         assert_eq!(result["node"], json!(good.url), "重试应当打回同一个入口");
         assert_eq!(result["shot_id"], json!("sh01"));
@@ -812,6 +1067,118 @@ mod render_tests {
         assert_eq!(got["duration_seconds"], json!(42.0 / 30.0));
     }
 
+    /// 声明式的镜头走组装那条路：**用仓库里真实的片段库**拼出图，
+    /// 提交给假节点，把产物下回来。这一条守的是 S5 那段接线本身——
+    /// 组装器单测归单测，它有没有真的接到渲染链路上是另一回事。
+    #[test]
+    fn a_declarative_shot_is_assembled_and_rendered_end_to_end() {
+        let bundle_dir = tempfile::tempdir().unwrap();
+        let node = healthy_node();
+        let (bundle, settings) = scaffold(bundle_dir.path(), &node.url);
+
+        // 基线目录直接指向仓库的 assets/workflows，这样片段库是真的那一份。
+        let pipeline = Pipeline::new(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/workflows"),
+        );
+        let recorder = ExecRecorder::at(bundle.root());
+        // 无参考、无锚点的一镜：不需要任何素材上传，链路本身能单独验。
+        let shot = json!({
+            "shot_id": "sh01", "head": "reference", "positive": "船头切开湖面",
+            "width": 768, "height": 1344, "length_frames": 56, "fps": 24, "seed": 1
+        });
+        let ctx = ExecContext {
+            bundle: &bundle,
+            settings: &settings,
+            inputs: json!({
+                "asset_plan": { "core_model_family": "minimax_h3", "assets": [] },
+                "prompt_pack": { "shots": [shot] }
+            }),
+            progress: &ProgressNote::default(),
+            recorder: &recorder,
+            cancelled: &AtomicBool::new(false),
+        };
+
+        let outputs = pipeline.render(&ctx).unwrap();
+        let got = &outputs["render"]["shots"][0];
+        assert_eq!(got["shot_id"], json!("sh01"));
+        assert_eq!(got["path"], json!("media/sh01.mp4"));
+
+        // 落盘的 debug 请求体就是提交出去的那张图——组装的结果可复现。
+        let body = std::fs::read_to_string(bundle.resolve("debug/sh01.request.json").unwrap())
+            .expect("应当落一份可以直接 curl 复现的请求体");
+        let sent: Value = serde_json::from_str(&body).unwrap();
+        let graph = &sent["prompt"];
+        assert_eq!(graph["h3_ref"]["inputs"]["prompt"], json!("船头切开湖面"));
+        assert_eq!(graph["h3_ref"]["inputs"]["length"], json!(56));
+        assert_eq!(
+            graph["save_video"]["inputs"]["filename_prefix"],
+            json!("studio/sh01")
+        );
+        // head 的配套约束覆盖到了骨架上：reference head 配 ref2va 权重 + beta。
+        assert_eq!(graph["scheduler"]["inputs"]["scheduler"], json!("beta"));
+        assert!(graph["load_unet"]["inputs"]["unet_name"]
+            .as_str()
+            .unwrap()
+            .contains("ref2va"));
+    }
+
+    /// 没有接续引用时只有一波——分波逻辑不该给普通的包平白加上串行。
+    #[test]
+    fn shots_without_continuation_all_run_in_one_wave() {
+        let shots = vec![shot("sh01"), shot("sh02"), shot("sh03")];
+        assert_eq!(dependency_waves(&shots), vec![vec![0, 1, 2]]);
+    }
+
+    /// 接续镜要等它引用的那一镜出片，所以落到下一波。
+    #[test]
+    fn a_continuation_shot_lands_in_the_next_wave() {
+        let mut sh02 = shot("sh02");
+        sh02["guides"] = json!([{ "kind": "image", "at_frame": 0, "asset_id": "sh01.tail" }]);
+        let mut sh03 = shot("sh03");
+        sh03["guides"] = json!([{ "kind": "image", "at_frame": 0, "asset_id": "sh02.tail" }]);
+        // sh04 谁也不接，跟 sh01 同一波。
+        let shots = vec![shot("sh01"), sh02, sh03, shot("sh04")];
+        assert_eq!(
+            dependency_waves(&shots),
+            vec![vec![0, 3], vec![1], vec![2]],
+            "一条接续链排成三波，无关的镜头留在第一波一起跑"
+        );
+    }
+
+    /// image head 靠 first_frame 接上一镜，分波必须算上它。
+    /// 漏算的话这一镜会跟被接的那一镜同波跑，等解析素材时那一镜还没出片。
+    #[test]
+    fn a_frame_slot_continuation_also_creates_a_wave() {
+        let mut sh02 = shot("sh02");
+        sh02["head"] = json!("image");
+        sh02["first_frame"] = json!("sh01.tail");
+        assert_eq!(
+            dependency_waves(&[shot("sh01"), sh02]),
+            vec![vec![0], vec![1]]
+        );
+    }
+
+    /// 预览尺寸要落在 32 的网格上：768x1344 短边缩到 480 得到 840，
+    /// 不是 32 的倍数——不修就等于我们自己写进 remedy 的那句话，
+    /// ComfyUI 四舍五入之后实际尺寸跟登记的对不上。
+    #[test]
+    fn preview_dimensions_are_rounded_onto_the_grid() {
+        assert_eq!(scale_to_short_edge(768, 1344, 480), (480, 840));
+        assert_eq!(round_to(840, 32), 832);
+        assert_eq!(round_to(480, 32), 480);
+        assert_eq!(round_to(10, 32), 32, "不能round 成 0");
+    }
+
+    /// 引用的是登记过的资产（`C01`、`C01.front`），不是镜间片段——
+    /// 认错了会平白把整包串行化。
+    #[test]
+    fn registered_asset_references_do_not_create_waves() {
+        let mut s = shot("sh02");
+        s["references"] = json!([{ "kind": "image", "asset_id": "C01" },
+                                 { "kind": "image", "asset_id": "SC02.key_angle" }]);
+        assert_eq!(dependency_waves(&[shot("sh01"), s]), vec![vec![0, 1]]);
+    }
+
     #[test]
     fn scale_to_short_edge_keeps_aspect_and_rounds_to_even() {
         assert_eq!(scale_to_short_edge(1080, 1920, 480), (480, 854));
@@ -837,22 +1204,166 @@ mod real_baselines {
             .expect("仓库里应当有基线可读")
     }
 
+    /// 默认核心系列走片段组装，不走整图基线。
     #[test]
-    fn minimax_takes_no_negative_and_no_references() {
+    fn minimax_is_a_fragment_family() {
         let caps = caps();
-        let t2v = caps
-            .get("minimax_h3/t2v")
-            .expect("默认核心系列的 t2v 应当在");
-        assert!(t2v.verified, "minimax_h3/t2v 应当是已核验的");
-        assert!(t2v.accepts("positive") && t2v.accepts("length_frames"));
+        assert_eq!(caps.fragment_families(), vec!["minimax_h3".to_string()]);
+        let set = caps
+            .fragments_for("minimax_h3")
+            .expect("片段库应当读得出来");
+        assert!(set.backbone.is_some(), "缺骨架的片段库拼不出图");
+        assert_eq!(set.verified_heads(), vec!["image", "reference"]);
+        // 参考、锚点、素材三类片段各自齐全。
+        assert!(set.guides.contains_key("image") && set.guides.contains_key("clip"));
+        for medium in ["image", "video", "audio"] {
+            assert!(set.inputs.contains_key(medium), "缺 {medium} 类输入片段");
+        }
+    }
+
+    /// preview 的 turbo 叠加层：**用真实的片段文件**验它挂上去之后
+    /// LoRA 与步数、调度器都对。调度器尤其要紧——真机对比里
+    /// reference head 的 beta 档在 4 步下出来的画面是坏的（见
+    /// `SOURCE-fragments.md`），overlay 必须把它盖成 simple。
+    #[test]
+    fn the_real_turbo_overlays_swap_in_the_lora_and_the_right_schedule() {
+        use studio_core::assembly::{assemble_as, Combination};
+        let caps = caps();
+        let set = caps.fragments_for("minimax_h3").unwrap();
+        for (head, steps, lora) in [
+            ("reference", 4, "ref2v_turbo_4step"),
+            ("image", 8, "fl2v_turbo_8step"),
+        ] {
+            let mut shot = studio_core::ShotDeclaration {
+                shot_id: "S01".into(),
+                head: head.into(),
+                positive: "p".into(),
+                width: 640,
+                height: 384,
+                length_frames: 22,
+                fps: 24.0,
+                seed: 1,
+                references: Vec::new(),
+                guides: Vec::new(),
+                first_frame: None,
+                last_frame: None,
+            };
+            if head == "image" {
+                shot.first_frame = Some("f.png".into());
+            }
+            let out = assemble_as(set, &shot, "t/S01", Combination::PreviewTurbo)
+                .unwrap_or_else(|e| panic!("{head} 的 turbo 组合拼不起来：{}", e.message()));
+            assert!(out.notes.is_empty(), "{head}: {:?}", out.notes);
+            let g = &out.graph;
+            assert!(g["lora"]["inputs"]["lora_name"]
+                .as_str()
+                .unwrap()
+                .contains(lora));
+            assert_eq!(g["lora"]["inputs"]["model"], json!(["load_unet", 0]));
+            assert_eq!(g["sigmashift"]["inputs"]["model"], json!(["lora", 0]));
+            assert_eq!(g["scheduler"]["inputs"]["steps"], json!(steps));
+            assert_eq!(
+                g["scheduler"]["inputs"]["scheduler"],
+                json!("simple"),
+                "{head}：低步数下调度器档位是成败关键，overlay 必须显式写死"
+            );
+        }
+    }
+
+    /// 能力面对账的数据源换了，规则没换：这个系列一样不吃 negative。
+    #[test]
+    fn the_fragment_family_still_takes_no_negative() {
+        let caps = caps();
+        let params = caps.fragments_for("minimax_h3").unwrap().shot_params();
+        for want in [
+            "positive",
+            "width",
+            "height",
+            "length_frames",
+            "fps",
+            "seed",
+        ] {
+            assert!(params.contains(&want.to_string()), "缺 {want} 绑定");
+        }
         assert!(
-            !t2v.accepts("negative"),
-            "这条基线没有 negative 绑定——写了会被静默丢弃，能力面必须如实反映"
+            !params.contains(&"negative".to_string()),
+            "片段库没有 negative 绑定——写了会被静默丢弃，能力面必须如实反映"
         );
         assert!(
-            !t2v.accepts("references"),
-            "还没有图片输入通道，能力面不能假装有"
+            !params.contains(&"output_prefix".to_string()),
+            "产物落在哪是控制面决定的，不该出现在 Agent 要写的参数里"
         );
+    }
+
+    /// 三种典型镜头都能从**真实的片段文件**拼回一张完整的图。
+    /// 这一条守的是片段库本身：切错了、元数据缺了，这里立刻红。
+    #[test]
+    fn the_three_typical_shots_assemble_from_the_real_fragments() {
+        let caps = caps();
+        let set = caps.fragments_for("minimax_h3").unwrap();
+        let base = studio_core::ShotDeclaration {
+            shot_id: "S01".into(),
+            head: "reference".into(),
+            positive: "她走上球场".into(),
+            width: 640,
+            height: 384,
+            length_frames: 22,
+            fps: 24.0,
+            seed: 1,
+            references: Vec::new(),
+            guides: Vec::new(),
+            first_frame: None,
+            last_frame: None,
+        };
+        let img_ref = |id: &str| studio_core::assembly::Reference {
+            kind: studio_core::assembly::Medium::Image,
+            asset_id: id.into(),
+            with_audio: false,
+        };
+
+        // 1 秒空镜：image head，给首帧。
+        let mut empty = base.clone();
+        empty.head = "image".into();
+        empty.first_frame = Some("scene_wide.png".into());
+        // 接续镜：reference head + 两条参考 + 两个链式 guide。
+        let mut continued = base.clone();
+        continued.references = vec![img_ref("char_front.png"), img_ref("scene_wide.png")];
+        continued.guides = vec![
+            studio_core::assembly::Guide {
+                kind: studio_core::assembly::GuideKind::Image,
+                at_frame: 0,
+                asset_id: "char_front.png".into(),
+            },
+            studio_core::assembly::Guide {
+                kind: studio_core::assembly::GuideKind::Image,
+                at_frame: -1,
+                asset_id: "scene_wide.png".into(),
+            },
+        ];
+        // 群戏：五条参考。
+        let mut crowd = base.clone();
+        crowd.references = (0..5).map(|_| img_ref("char_front.png")).collect();
+
+        for (name, shot) in [("空镜", empty), ("接续镜", continued), ("群戏", crowd)] {
+            let out = studio_core::assembly::assemble(set, &shot, "test/S01")
+                .unwrap_or_else(|e| panic!("{name}组装失败：{}", e.message()));
+            let graph = out.graph.as_object().unwrap();
+            // 骨架留空的三处必须都被填上，否则提交给 ComfyUI 会被判非法。
+            for path in [
+                "guider.inputs.conditioning",
+                "sampler.inputs.latent_image",
+                "save_video.inputs.filename_prefix",
+            ] {
+                let (node, field) = path.split_once(".inputs.").unwrap();
+                assert!(
+                    graph[node]["inputs"].get(field).is_some(),
+                    "{name}：{path} 没填上"
+                );
+            }
+            // 确定性：同一份声明拼两次逐字节相同。
+            let again = studio_core::assembly::assemble(set, &shot, "test/S01").unwrap();
+            assert_eq!(out.graph, again.graph, "{name}的组装结果不确定");
+        }
     }
 
     #[test]
@@ -871,7 +1382,7 @@ mod real_baselines {
     fn unverified_baselines_are_excluded_from_the_choices() {
         let caps = caps();
         let names = caps.verified_names();
-        assert!(names.contains(&"minimax_h3/t2v".to_string()));
+        assert!(names.contains(&"ltx2_5/t2v".to_string()));
         for unverified in ["wan2_2/i2v", "wan2_2/flf2v", "wan_animate2/i2v"] {
             assert!(
                 !names.contains(&unverified.to_string()),
@@ -882,12 +1393,22 @@ mod real_baselines {
     }
 
     /// 随包分发的黄金样例必须过得了自己这一关——它是 Agent 照着抄的范文。
+    fn exemplar_assets() -> Vec<String> {
+        studio_core::fixtures::outputs(StageId::VisualAssets)[StageId::VisualAssets.output_key()]
+            ["assets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|a| a["asset_id"].as_str().map(String::from))
+            .collect()
+    }
+
     #[test]
     fn the_golden_exemplar_passes_the_real_capability_check() {
         let outputs = studio_core::fixtures::outputs(StageId::PromptPack);
         caps()
-            .check_prompt_pack(&outputs)
-            .expect("黄金样例应当与真实基线的能力面对得上");
+            .check_prompt_pack(&outputs, &exemplar_assets())
+            .expect("黄金样例应当与真实片段库对得上");
     }
 
     /// 反过来验一次：给样例加一条 negative，就该被挡下。
@@ -895,8 +1416,21 @@ mod real_baselines {
     fn adding_a_negative_to_the_exemplar_is_rejected() {
         let mut outputs = studio_core::fixtures::outputs(StageId::PromptPack);
         outputs["prompt_pack"]["shots"][0]["negative"] = json!("文字, 水印");
-        let e = caps().check_prompt_pack(&outputs).unwrap_err();
+        let e = caps()
+            .check_prompt_pack(&outputs, &exemplar_assets())
+            .unwrap_err();
         assert_eq!(e.code(), "schema_violation");
         assert!(e.message().contains("negative"), "{}", e.message());
+    }
+
+    /// 样例是片段化系列的，写 workflow 就是形状用错。
+    #[test]
+    fn adding_a_workflow_to_the_exemplar_is_rejected() {
+        let mut outputs = studio_core::fixtures::outputs(StageId::PromptPack);
+        outputs["prompt_pack"]["shots"][0]["workflow"] = json!("minimax_h3/t2v");
+        let e = caps()
+            .check_prompt_pack(&outputs, &exemplar_assets())
+            .unwrap_err();
+        assert!(e.message().contains("现场组装"), "{}", e.message());
     }
 }

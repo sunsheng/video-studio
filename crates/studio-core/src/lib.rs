@@ -6,6 +6,7 @@
 //!
 //! 上层 crate 负责把这里的决策落到 SQLite 与文件系统。
 
+pub mod assembly;
 pub mod capability;
 pub mod contract;
 pub mod error;
@@ -18,6 +19,7 @@ pub mod schema;
 pub mod stage;
 pub mod state;
 
+pub use assembly::{Fragment, FragmentKind, FragmentSet, ShotDeclaration, ShotSegment};
 pub use capability::{CapabilitySet, WorkflowCapability, INJECTABLE_PARAMS};
 pub use contract::{
     ActionKind, AnswerOption, Blocked, Confirmation, Decision, DecisionKind, Envelope, Event,

@@ -1,0 +1,25 @@
+{
+  "load": {
+    "class_type": "LoadAudio",
+    "inputs": {}
+  },
+  "_studio": {
+    "kind": "input",
+    "id": "audio",
+    "from": "/object_info/LoadAudio",
+    "source_run": "audio-channel 2026-09-05（真机出片：1kHz 纯音经 audio 锚点进图，输出音频里 1kHz 能量 4000 倍于邻频——素材确实进去了并主导了结果）",
+    "bindings_verified": true,
+    "bindings": {
+      "filename": [
+        "load.inputs.audio"
+      ]
+    },
+    "outputs": {
+      "audio": [
+        "load",
+        0
+      ]
+    },
+    "note": "素材经 /upload/image 上传，那个端点收 wav，实测过。**这条只证明「音频进得去」**：audio 锚点验通了，而同一段音频挂到 `ref_audios` 上没有任何可测的影响——那个槽位单独标了 verified: false。另外实测到锚点的影响不止锚定的那 0.5 秒：整镜 1.625 秒里 1kHz 都在，所以 audio 锚点是给整镜的声音定调，不是只钉住某一刻。"
+  }
+}

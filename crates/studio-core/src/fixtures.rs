@@ -426,24 +426,36 @@ pub fn outputs(stage: StageId) -> Outputs {
                     "typography": "画面中不出现任何文字、标志或水印"
                 },
                 "shots": [
-                    { "shot_id": "sh01", "workflow": "minimax_h3/t2v", "width": 1080, "height": 1920,
-                      "length_frames": 42, "fps": 30, "seed": 101001, "references": ["C01", "SC01"],
+                    { "shot_id": "sh01", "head": "reference", "width": 768, "height": 1344,
+                      "length_frames": 56, "fps": 24, "seed": 101001,
+                      "references": [{ "kind": "image", "asset_id": "C01" },
+                                     { "kind": "image", "asset_id": "SC01" }],
                       "positive": "船头切开清透湖面，一位20岁东亚女性，长黑发及胸，白色无袖连衣裙，低帮白色板鞋，奶油色小斜挎包，以约30度侧脸快速入画并转头露出笑容。船行的风把碎发吹到她嘴角，她抬手把碎发别到耳后。层叠群岛与远山在后景。上午冷白自然光，柔光顺照，低对比。[Push in] 镜头缓慢前推。一镜到底，不切场景，人物保持在画面中央，画面中不出现任何文字、标志或水印。",
                       "audio": "环境声：湖水拍打船身的持续哗声，低频风声。拟音：碎发拂过脸颊、衣料轻响。无对白，无音乐。" },
-                    { "shot_id": "sh02", "workflow": "minimax_h3/t2v", "width": 1080, "height": 1920,
-                      "length_frames": 60, "fps": 30, "seed": 101002, "references": ["C01", "SC02"],
+                    { "shot_id": "sh02", "head": "reference", "width": 768, "height": 1344,
+                      "length_frames": 39, "fps": 24, "seed": 101002,
+                      "references": [{ "kind": "image", "asset_id": "C01" },
+                                     { "kind": "image", "asset_id": "SC02" }],
+                      "guides": [{ "kind": "image", "at_frame": 0, "asset_id": "sh01.tail" }],
                       "positive": "一位20岁东亚女性，长黑发及胸，白色无袖连衣裙，低帮白色板鞋，奶油色小斜挎包，沿湖边木质步道轻快小跑两步。湖风从左侧推来，裙摆和发梢一起向右扬；落地时脚踝先内扣再蹬直，重心前倾半步。顺光明亮，低对比，背景是湖面与远岛。[Tracking shot] 镜头横向跟移，与她同速。一镜到底，不切场景，人物保持在画面中央，画面中不出现任何文字、标志或水印。",
                       "audio": "环境声：开阔湖面的风声。拟音：板鞋踩在木板上的两声闷响、裙摆抖动。无对白，无音乐。" },
-                    { "shot_id": "sh03", "workflow": "minimax_h3/t2v", "width": 1080, "height": 1920,
-                      "length_frames": 72, "fps": 30, "seed": 101003, "references": ["C01", "SC03", "P01"],
+                    { "shot_id": "sh03", "head": "reference", "width": 768, "height": 1344,
+                      "length_frames": 56, "fps": 24, "seed": 101003,
+                      "references": [{ "kind": "image", "asset_id": "C01" },
+                                     { "kind": "image", "asset_id": "SC03" },
+                                     { "kind": "image", "asset_id": "P01" }],
                       "positive": "一位20岁东亚女性，长黑发及胸，白色无袖连衣裙，低帮白色板鞋，奶油色小斜挎包，在观景台举起一部无品牌手机取景，眯了一下眼，拇指在快门键上停半秒后按下。正午硬光，手机屏幕反着湖面的白，高对比。[Pan right] 镜头向右缓慢横摇，从她的侧脸摇到湖中群岛。一镜到底，不切场景，画面中不出现任何文字、标志或水印。",
                       "audio": "环境声：观景台上的风与零星人声。拟音：手机快门声，随后远处游船汽笛。无对白，无音乐。" },
-                    { "shot_id": "sh04", "workflow": "minimax_h3/t2v", "width": 1080, "height": 1920,
-                      "length_frames": 60, "fps": 30, "seed": 101004, "references": ["C01", "P01"],
+                    { "shot_id": "sh04", "head": "reference", "width": 768, "height": 1344,
+                      "length_frames": 39, "fps": 24, "seed": 101004,
+                      "references": [{ "kind": "image", "asset_id": "C01" },
+                                     { "kind": "image", "asset_id": "P01" }],
                       "positive": "近景：一位20岁东亚女性，长黑发及胸，白色无袖连衣裙，低帮白色板鞋，奶油色小斜挎包，举起一只无品牌透明冷饮杯，与画外伸入的另一只杯子轻碰。杯壁的冷凝水滑到虎口，指节收紧握住杯身，笑的时候肩膀轻轻一耸。下午暖金侧光，背景的湖岛虚化。[Static shot] 固定机位，镜头不移动。一镜到底，不切场景，画面中不出现任何文字、标志或水印。",
                       "audio": "环境声：湖风与远处水声。拟音：两只玻璃杯轻碰的一声脆响、短促笑声。无对白，无音乐。" },
-                    { "shot_id": "sh05", "workflow": "minimax_h3/t2v", "width": 1080, "height": 1920,
-                      "length_frames": 66, "fps": 30, "seed": 101005, "references": ["C01", "SC03"],
+                    { "shot_id": "sh05", "head": "reference", "width": 768, "height": 1344,
+                      "length_frames": 56, "fps": 24, "seed": 101005,
+                      "references": [{ "kind": "image", "asset_id": "C01" },
+                                     { "kind": "image", "asset_id": "SC03" }],
                       "positive": "夕阳逆光下，一位20岁东亚女性，长黑发及胸，白色无袖连衣裙，低帮白色板鞋，奶油色小斜挎包，转身回头向镜头挥手，先动眼神再动脖子，抬手挥到肩高。逆光把发丝勾出暖金边，风把裙摆吹成一道弧，湖面与远山在身后。[Pedestal up] 镜头缓慢升高。一镜到底，不切场景，画面中不出现任何文字、标志或水印。",
                       "audio": "环境声：傍晚的风与远处水浪低频。拟音：衣料摩擦、手臂划过空气。无对白，无音乐。" }
                 ]
@@ -665,13 +677,13 @@ mod tests {
     fn prompts_for_minimax_carry_constraints_positively() {
         let pack = outputs(StageId::PromptPack);
         for shot in pack["prompt_pack"]["shots"].as_array().unwrap() {
-            let workflow = shot["workflow"].as_str().unwrap();
-            if !workflow.starts_with("minimax_h3/") {
+            // 片段化的系列用 head 而不是 workflow，两者互斥。
+            let Some(head) = shot["head"].as_str() else {
                 continue;
-            }
+            };
             assert!(
                 shot.get("negative").is_none(),
-                "{} 用的是 {workflow}，这条基线不吃 negative",
+                "{} 用的是 head {head}，minimax_h3 不吃 negative",
                 shot["shot_id"]
             );
             let positive = shot["positive"].as_str().unwrap();
