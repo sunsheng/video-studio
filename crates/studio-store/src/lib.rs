@@ -10,7 +10,7 @@
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
-use studio_core::contract::{AnswerOption, Question, SelectionType};
+use studio_core::contract::{AnswerOption, Decision, DecisionKind, Question, SelectionType};
 use studio_core::{Event, LoadedStage, Outputs, Result, StageId, StageState, StudioError};
 
 const SCHEMA_VERSION: i64 = 1;
@@ -47,8 +47,73 @@ impl Store {
         conn.busy_timeout(std::time::Duration::from_secs(5))
             .map_err(oops)?;
         let store = Store { conn };
+        store.ensure_decisions_table()?;
         store.verify_integrity()?;
         Ok(store)
+    }
+
+    /// 决定档案的表。`IF NOT EXISTS`，所以老 bundle 用新程序打开时自动补上，
+    /// 不需要迁移脚本、不需要版本号跳变。见 `docs/decisions/ADR-0003`。
+    ///
+    /// 它不进完整性摘要：档案是追加型历史，篡改它不会让状态机走到不一致的
+    /// 地方（摘要覆盖的是 stages 与 questions）。
+    fn ensure_decisions_table(&self) -> Result<()> {
+        self.conn
+            .execute_batch(
+                "CREATE TABLE IF NOT EXISTS decisions (
+                     id     INTEGER PRIMARY KEY AUTOINCREMENT,
+                     at     TEXT NOT NULL,
+                     stage  TEXT NOT NULL,
+                     kind   TEXT NOT NULL,
+                     detail TEXT NOT NULL
+                 );",
+            )
+            .map_err(oops)
+    }
+
+    /// 记一条决定。**只追加**：不改、不删，undo 也不回退它。
+    pub fn record_decision(&self, stage: StageId, kind: DecisionKind, detail: &str) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT INTO decisions (at, stage, kind, detail) VALUES (?1, ?2, ?3, ?4)",
+                params![now(), stage.as_str(), kind.as_str(), detail],
+            )
+            .map_err(oops)?;
+        Ok(())
+    }
+
+    /// 最近 `limit` 条决定，**新的在前**。同一件事上后面的压过前面的。
+    pub fn decisions(&self, limit: usize) -> Result<Vec<Decision>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT at, stage, kind, detail FROM decisions ORDER BY id DESC LIMIT ?1")
+            .map_err(oops)?;
+        let rows = stmt
+            .query_map(params![limit as i64], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                ))
+            })
+            .map_err(oops)?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (at, stage, kind, detail) = row.map_err(oops)?;
+            let (Some(stage), Some(kind)) = (StageId::parse(&stage), DecisionKind::parse(&kind))
+            else {
+                // 表被外部写坏了：跳过这一条，不要让整份档案取不出来。
+                continue;
+            };
+            out.push(Decision {
+                at,
+                stage,
+                kind,
+                detail,
+            });
+        }
+        Ok(out)
     }
 
     /// 新建库并写入初始状态：第一个阶段处于草稿。
@@ -111,6 +176,7 @@ impl Store {
         .map_err(oops)?;
 
         let store = Store { conn };
+        store.ensure_decisions_table()?;
         let t = now();
         for (k, v) in [
             ("title", title),

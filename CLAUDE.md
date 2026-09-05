@@ -114,19 +114,31 @@ npm install -g @openai/codex
 
 ```toml
 model_provider = "envproxy"
+model = "gpt-5.6-sol"    # 要写全名，别写别名 gpt-5.6
 
 [model_providers.envproxy]
 name = "envproxy"
-base_url = "<$OPENAI_BASE_URL 的值>"
+base_url = "<$OPENAI_BASE_URL 的值>"   # 注意带上 /v1
 env_key = "OPENAI_API_KEY"
 wire_api = "responses"   # 这个版本不认 "chat" 了
 ```
+
+**`model` 要写具体型号，不要写别名。** `gpt-5.6` 是 `gpt-5.6-sol` 的别名
+（`/v1/models` 里它的 display_name 就是 "GPT-5.6 (Sol)"），两者是同一个模型，
+但 Codex 的模型元数据表里只有全名——写别名会每次都报
+`Model metadata for 'gpt-5.6' not found. Defaulting to fallback metadata`，
+然后用兜底元数据跑。用 `gpt-5.6-sol` / `gpt-5.6-terra` / `gpt-5.5` 都没有这个问题。
+换网关之后先 `curl $OPENAI_BASE_URL/models` 看清有哪些型号名，挑全名写。
+
+`base_url` 要带 `/v1`，不带会 404（`codex doctor` 的可达性探测仍会说 reachable，
+它探的是别的路径，不能替代这一步）。
 
 配好之后 `codex` / `codex exec` / `codex review` / `codex doctor`
 都不用再带 `-c` 覆盖参数，直接跑。`codex doctor` 显示
 `reachability mode: provider auth` 且对应 provider 的 endpoint
 `reachable` 就算装配成功；这是判断「本机能不能跑 Codex」的标准，
-不要只看默认 provider 报 401 就下结论。
+不要只看默认 provider 报 401 就下结论。跑一次 `codex exec` 确认输出里
+**没有** `Model metadata ... not found` 这类警告，才算真配好。
 
 冒烟测 MCP 工具（比如让 Codex 调 `studio.status`）：这个 Codex 版本
 不会自动读 bundle 里 `studio-cli init` 生成的 `.codex/config.toml`

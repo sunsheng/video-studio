@@ -19,7 +19,26 @@
           "type": "string"
         },
         "character_lock": {
-          "description": "角色连续性锁定：外观、服装、机位签名、安全约束"
+          "additionalProperties": true,
+          "description": "角色连续性锁定。**这里定的字符串是后面两个阶段的唯一来源**：视觉资产的 consistency_lock.character 和提示词包的 identity_lock.character 必须与它逐字相同",
+          "properties": {
+            "camera_signature": {
+              "description": "机位签名：这个角色主要以什么角度出现，全片保持一致",
+              "type": "string"
+            },
+            "identity_lock": {
+              "description": "身份锁：一次写定、后续逐字复制的那段外观描述。年龄、性别、发型发长、上衣、下装、鞋、随身物，一句话写完。写「同一位女孩」这类指代等于没锁——模型看不到上一镜",
+              "type": "string"
+            },
+            "safety": {
+              "description": "安全约束：不做什么动作、不靠近什么位置",
+              "type": "string"
+            }
+          },
+          "required": [
+            "identity_lock"
+          ],
+          "type": "object"
         },
         "shot_count": {
           "description": "镜头数",
@@ -32,19 +51,92 @@
             "description": "一个镜头",
             "properties": {
               "action_chain": {
-                "description": "动作链：起 -> 承 -> 收",
+                "description": "动作链：起 -> 承 -> 收。写可见的身体动作，不写内心状态",
                 "type": "string"
               },
               "angle": {
                 "description": "机位角度",
+                "enum": [
+                  "eye_level",
+                  "low",
+                  "high",
+                  "overhead",
+                  "dutch",
+                  "over_shoulder",
+                  "pov"
+                ],
                 "type": "string"
+              },
+              "audio": {
+                "additionalProperties": true,
+                "description": "这一镜的声音。核心系列多为音视频联合生成，这里写的内容会进提示词，留空等于放弃原生音频",
+                "properties": {
+                  "ambient": {
+                    "description": "环境声：这个空间本来就有的声音",
+                    "type": "string"
+                  },
+                  "dialogue": {
+                    "additionalProperties": true,
+                    "description": "对白。没有就整个省略，不要填空串",
+                    "properties": {
+                      "language": {
+                        "description": "语言与口音，例如「普通话」",
+                        "type": "string"
+                      },
+                      "speaker": {
+                        "description": "说话人",
+                        "type": "string"
+                      },
+                      "text": {
+                        "description": "台词原文",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "speaker",
+                      "text"
+                    ],
+                    "type": "object"
+                  },
+                  "foley": {
+                    "description": "拟音：这一镜的动作发出的声音",
+                    "type": "string"
+                  },
+                  "music": {
+                    "description": "音乐；本镜无音乐填 none",
+                    "type": "string"
+                  }
+                },
+                "required": [],
+                "type": "object"
               },
               "background": {
                 "description": "背景",
                 "type": "string"
               },
               "camera_motion": {
-                "description": "镜头运动。每镜只保留一个主运动",
+                "description": "镜头运动。**每镜只能有一个**——两个以上的运动会让生成结果失控。这些取值与视频模型的运镜指令一一对应，提示词阶段直接翻译，所以写在表里的词才有效，自由发挥的描述没有效果",
+                "enum": [
+                  "static",
+                  "push_in",
+                  "pull_out",
+                  "pan_left",
+                  "pan_right",
+                  "tilt_up",
+                  "tilt_down",
+                  "truck_left",
+                  "truck_right",
+                  "pedestal_up",
+                  "pedestal_down",
+                  "zoom_in",
+                  "zoom_out",
+                  "tracking",
+                  "handheld_shake"
+                ],
+                "type": "string"
+              },
+              "color_tone": {
+                "description": "色调。用可复现的说法：冷白、暖金、青橙、低饱和、漂白旁路。「高级感」这类词对模型无效",
                 "type": "string"
               },
               "duration_seconds": {
@@ -69,8 +161,32 @@
                 "description": "尾帧",
                 "type": "string"
               },
-              "lighting_color": {
-                "description": "灯光与色调",
+              "lighting_key": {
+                "description": "光型：光怎么打在主体上",
+                "enum": [
+                  "soft",
+                  "hard",
+                  "top",
+                  "side",
+                  "back",
+                  "rim",
+                  "silhouette",
+                  "bottom"
+                ],
+                "type": "string"
+              },
+              "lighting_source": {
+                "description": "光源：光从哪来",
+                "enum": [
+                  "daylight",
+                  "moonlight",
+                  "practical",
+                  "firelight",
+                  "fluorescent",
+                  "overcast",
+                  "mixed",
+                  "artificial"
+                ],
                 "type": "string"
               },
               "midground": {
@@ -81,16 +197,34 @@
                 "description": "这个镜头的作用",
                 "type": "string"
               },
+              "shot_function": {
+                "description": "这一镜的职能。三者都不占的镜头不该存在，删掉它",
+                "enum": [
+                  "change_emotion",
+                  "advance_action",
+                  "raise_pressure"
+                ],
+                "type": "string"
+              },
               "shot_id": {
                 "description": "稳定标识，例如 sh01",
                 "type": "string"
               },
               "shot_size": {
                 "description": "景别",
+                "enum": [
+                  "extreme_wide",
+                  "wide",
+                  "medium_wide",
+                  "medium",
+                  "medium_close",
+                  "close",
+                  "extreme_close"
+                ],
                 "type": "string"
               },
               "sound": {
-                "description": "声音",
+                "description": "声音的一句话概述（保留字段，细节写在 audio 里）",
                 "type": "string"
               },
               "start": {
@@ -101,6 +235,15 @@
               "subject": {
                 "description": "主体",
                 "type": "string"
+              },
+              "three_facts": {
+                "description": "三个物理事实，各一条且必须可拍：环境压力（风、雨、人流、温度、光线变化）、身体微动作（手指、呼吸、重心、视线）、声音锚点（这一镜能听见的具体声源）。写「氛围感」「很美」这类不可拍的词等于没写",
+                "items": {
+                  "description": "一条可拍的物理事实",
+                  "type": "string"
+                },
+                "minItems": 3,
+                "type": "array"
               },
               "transition_to_next": {
                 "description": "转场方式",
@@ -113,6 +256,8 @@
               "end",
               "duration_seconds",
               "purpose",
+              "shot_function",
+              "three_facts",
               "shot_size",
               "camera_motion",
               "subject",

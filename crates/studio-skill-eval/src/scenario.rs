@@ -1,6 +1,6 @@
 //! 脚本场景：确定性、不需要任何 LLM，能直接进 `cargo test --workspace`。
 //!
-//! 跟 Agent 场景（见 ADR-0003）的边界很清楚：这里的每一步调用序列都是
+//! 跟 Agent 场景（见 ADR-0004）的边界很清楚：这里的每一步调用序列都是
 //! 场景脚本自己定的，不是某个 LLM 读了 SKILL.md 之后自己决定的——验证的
 //! 是协议层、状态机、门逻辑没有回归，不是 skill 文档措辞好不好。
 
@@ -152,7 +152,7 @@ pub fn golden_six_stage_with_revise() -> ScenarioResult {
 
 const CONCURRENT_OPEN_DESCRIPTION: &str = "两个真实的 studiod 子进程打开同一个 \
     bundle：第二个必须拿到 project_busy、附上第一个进程真实的 PID，且这条 \
-    remedy 不能点名任何二进制——这是 ADR-0003 记录的那次真实缺陷（remedy \
+    remedy 不能点名任何二进制——这是 ADR-0004 记录的那次真实缺陷（remedy \
     文案里直接写着 `studiod init`）的回归防护。";
 
 /// 两个真实进程打开同一个 bundle：第二个必须拿到 `project_busy`，附上

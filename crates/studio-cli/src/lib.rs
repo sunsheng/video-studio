@@ -11,4 +11,5 @@ pub mod exec_report;
 pub mod html;
 pub mod list;
 pub mod pack;
+pub mod quality;
 pub mod rollout;

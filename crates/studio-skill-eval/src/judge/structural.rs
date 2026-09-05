@@ -105,7 +105,7 @@ pub fn stages_reached(records: &[TraceRecord], expected: &[StageId]) -> Verdict 
 }
 
 /// `blocked_by.remedy` 不点名二进制——它是 Agent 卡住时第一个会读的
-/// 通道，比生成的静态文档更容易被当场照着做（ADR-0003 记录的那次真实
+/// 通道，比生成的静态文档更容易被当场照着做（ADR-0004 记录的那次真实
 /// 缺陷）。`trace.jsonl` 只记调用的形状、不记产物内容，所以这条判断
 /// 只能直接在信封（`studio.status`/`tools/call` 的返回值）上做，不是
 /// 通过 [`TraceRecord`] 汇总——调用点自己传一个信封 `Value` 进来。

@@ -13,18 +13,26 @@ description: 从可行性、受众匹配和发布风险筛选 brief，给出推�
 
 ## 职责
 
-- 评估可行性：模型可控性、制作成本、需要牺牲什么。
-- 评估受众匹配：钩子强度、观看收益、留存设计。
+- **逐个**评估上一阶段给出的每个方案，不要只写推荐的那个——用户要看的是比较，不是结论。
+- 每个方案都评三样：可行性（模型可控性、制作成本）、受众匹配（钩子强度、观看收益、留存）、风险。
 - 把发布风险分成可规避、不可接受、需用户决定三类。
-- 给出一个明确推荐，并说清楚推荐它牺牲了什么。
+- 给出一个明确推荐（`recommendation.concept_id` 指向候选之一），并说清楚推荐它牺牲了什么。
+
+## 方法
+
+职责说的是**交什么**，下面这几份说的是**怎么想**——什么算好、怎么避开已知的坑、写好的长什么样。动手之前读，别凭感觉写。
+
+- `.agents/doctrine/story/concepts.md`
+- `.agents/doctrine/story/hook.md`
+
+这些文件就在这部作品的目录里，用你的文件读取工具直接读——路径照抄，不要凭印象猜。（`.studio/` 是控制面私有的，那个不要碰。）
 
 ## 输入输出
 
 本阶段的产物放在 `outputs` 的顶层键 `selection` 下。**提交前先调 `studio.schema("selection")`** 取回完整契约，不要凭印象填字段。必填项是：
 
+- `selection.candidates`
 - `selection.recommendation`
-- `selection.feasibility`
-- `selection.audience_fit`
 - `selection.tradeoffs`
 - `selection.acceptance_metrics`
 
@@ -40,8 +48,19 @@ description: 从可行性、受众匹配和发布风险筛选 brief，给出推�
 
 任何工具返回的 `blocked_by` 都带着 `remedy`，照它做。schema 不合规时 `message` 会精确指到出错的字段路径，例如 `script.story_arc[1].duration_seconds`。
 
+## 提交前自检
+
+逐条过。过不了就别提交——退回来重做比往下走便宜得多。
+
+- [ ] 每个方案都单独评过，没有只写推荐那个
+- [ ] recommendation 指向的 concept_id 确实在候选里
+- [ ] 推荐说清了牺牲什么，不是只讲优点
+- [ ] 风险分成可规避 / 需用户决定 / 不可接受三类
+
 ## 注意
 
+- 确认门在这里把你的候选列表原样摆给用户选。用户可能不选你推荐的那个——这是设计如此，不是异常。
+- 被选中的方案会记进产物的 `_gate_choice`，后面的阶段照它写，不要回头改主意。
 - 确认门问的是方向，不是细节。细节留到剧本阶段再改。
 
 ## Studio MCP
@@ -59,3 +78,4 @@ description: 从可行性、受众匹配和发布风险筛选 brief，给出推�
 - `studio.export`
 - `studio.comfy.exclude_node`
 - `studio.retry_stage`
+- `studio.self_review`

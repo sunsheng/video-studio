@@ -8,6 +8,7 @@
 //! `assets/schema/*.json` 随包分发，Agent 用 `studio.schema(stage)` 直接取回。
 
 use crate::error::{Result, StudioError, Violation};
+use crate::lexicon;
 use crate::stage::StageId;
 use crate::Outputs;
 use serde_json::{json, Value};
@@ -270,7 +271,12 @@ pub fn validate(stage: StageId, outputs: &Outputs) -> Result<()> {
             key,
             format!("阶段 {stage} 的产物必须放在顶层键 {key} 下"),
         )),
-        Some(v) => stage_schema(stage).check(v, key, &mut violations),
+        Some(v) => {
+            stage_schema(stage).check(v, key, &mut violations);
+            // 形状之外的结构约束：schema 的 enum 表达不了「角色卡必须有
+            // 这五个视图」「非主视图必须指向锚点」这类条件依赖。
+            structural(stage, v, key, &mut violations);
+        }
     }
     if violations.is_empty() {
         Ok(())
@@ -301,10 +307,39 @@ pub fn stage_schema(stage: StageId) -> Schema {
                     "delivery_spec",
                     text("交付规格，例如 1080x1920, 30fps, H.264/AAC"),
                 ),
-                ("hook_0_3s", text("前三秒钩子")),
                 (
-                    "story_beats",
-                    arr("故事节拍，逐镜头一条", text("一个节拍"), 1),
+                    "concepts",
+                    arr(
+                        "**互斥**的创意方案，2–3 个。同一个需求的几种不同拍法：\
+                         平台、受众、时长这些由需求定死的东西共用，\
+                         各方案不同的是切入角度、钩子和节拍。\
+                         只给一个方案，下一阶段的「筛选」就成了自问自答",
+                        obj(
+                            "一个方案",
+                            vec![
+                                ("concept_id", text("稳定标识，例如 c1")),
+                                ("logline", text("这个方案的一句话概括")),
+                                (
+                                    "angle",
+                                    text("切入角度：同一件事，这个方案从哪儿讲起"),
+                                ),
+                                (
+                                    "hook_0_3s",
+                                    text("前三秒钩子。要具体到画面，不能写「用悬念抓住观众」"),
+                                ),
+                                (
+                                    "story_beats",
+                                    arr("故事节拍，逐镜头一条", text("一个节拍"), 1),
+                                ),
+                                (
+                                    "tradeoff",
+                                    text("选它要牺牲什么。三个方案的牺牲不该是同一件事"),
+                                ),
+                            ],
+                            vec!["concept_id", "logline", "angle", "hook_0_3s", "story_beats"],
+                        ),
+                        2,
+                    ),
                 ),
                 (
                     "success_metrics",
@@ -341,44 +376,71 @@ pub fn stage_schema(stage: StageId) -> Schema {
                 "duration_seconds",
                 "shot_count",
                 "aspect_ratio",
-                "story_beats",
+                "concepts",
                 "success_metrics",
             ],
         ),
 
         StageId::Selection => obj(
-            "从可行性、受众匹配和发布风险筛选方案",
+            "从可行性、受众匹配和发布风险里挑一个方案，并说清代价",
             vec![
-                ("recommendation", text("推荐方案的标识")),
                 (
-                    "feasibility",
-                    obj(
-                        "可行性",
-                        vec![
-                            ("score", text("high / medium / low")),
-                            ("rationale", text("判断依据")),
-                            ("model_control", text("模型可控性说明")),
-                            ("production_cost", text("制作成本")),
-                        ],
-                        vec!["score", "rationale"],
+                    "candidates",
+                    arr(
+                        "逐个评估 idea 阶段给出的方案。**每个都要评**——\
+                         只评推荐的那个，等于没有比较",
+                        obj(
+                            "一个方案的评估",
+                            vec![
+                                ("concept_id", text("对应 idea 的 concept_id")),
+                                (
+                                    "feasibility",
+                                    obj(
+                                        "可行性",
+                                        vec![
+                                            ("score", one_of("高 / 中 / 低", vec!["high", "medium", "low"])),
+                                            ("rationale", text("判断依据：模型可控性、制作成本")),
+                                        ],
+                                        vec!["score", "rationale"],
+                                    ),
+                                ),
+                                (
+                                    "audience_fit",
+                                    obj(
+                                        "受众匹配",
+                                        vec![
+                                            ("hook_strength", one_of("钩子强度", vec!["strong", "medium", "weak"])),
+                                            ("rationale", text("为什么这个钩子对这批受众有效")),
+                                        ],
+                                        vec!["hook_strength"],
+                                    ),
+                                ),
+                                ("risks", arr("这个方案特有的风险", text("一条"), 0)),
+                                (
+                                    "verdict",
+                                    one_of(
+                                        "结论：推荐 / 可选 / 不建议",
+                                        vec!["recommended", "viable", "not_advised"],
+                                    ),
+                                ),
+                            ],
+                            vec!["concept_id", "feasibility", "audience_fit", "verdict"],
+                        ),
+                        2,
                     ),
                 ),
                 (
-                    "audience_fit",
-                    obj(
-                        "受众匹配",
-                        vec![
-                            ("hook_strength", text("钩子强度")),
-                            ("benefit", text("观看收益")),
-                            ("retention_plan", text("留存设计")),
-                        ],
-                        vec!["hook_strength"],
-                    ),
+                    "recommendation",
+                    text("推荐哪个方案，写 concept_id。它必须是 candidates 里 verdict 为 recommended 的那个"),
+                ),
+                (
+                    "tradeoffs",
+                    text("推荐它**牺牲了什么**。只讲优点的推荐等于没推荐"),
                 ),
                 (
                     "publishing_risks",
                     obj(
-                        "发布风险分级",
+                        "发布风险分级（针对推荐方案）",
                         vec![
                             ("avoidable", arr("可规避", text("一条"), 0)),
                             ("unacceptable", arr("不可接受", text("一条"), 0)),
@@ -387,13 +449,11 @@ pub fn stage_schema(stage: StageId) -> Schema {
                         vec![],
                     ),
                 ),
-                ("tradeoffs", text("取舍说明")),
                 ("acceptance_metrics", arr("验收标准", text("一条"), 1)),
             ],
             vec![
+                "candidates",
                 "recommendation",
-                "feasibility",
-                "audience_fit",
                 "tradeoffs",
                 "acceptance_metrics",
             ],
@@ -412,6 +472,14 @@ pub fn stage_schema(stage: StageId) -> Schema {
                     "timing_rule",
                     text("时长分配规则。按内容智能分配时在这里说明依据"),
                 ),
+                (
+                    "hook_at_seconds",
+                    num_min(
+                        "钩子在第几秒成立。短视频里这个数越小越好，\
+                         超过 3 秒基本等于没有钩子",
+                        0.0,
+                    ),
+                ),
                 ("language", text("口播语言；无口播填 none")),
                 (
                     "story_arc",
@@ -421,6 +489,16 @@ pub fn stage_schema(stage: StageId) -> Schema {
                             "一拍",
                             vec![
                                 ("beat_id", text("稳定标识，例如 beat_01")),
+                                (
+                                    "beat_type",
+                                    one_of(
+                                        "这一拍在结构里的位置。短视频的骨架是\
+                                         hook（勾住）→ setup（交代）→ develop（推进）→ \
+                                         turn（转折）→ payoff（兑现）→ resolve（收束），\
+                                         不必每种都有，但每一拍都要说清自己是哪一种",
+                                        lexicon::BEAT_TYPES.to_vec(),
+                                    ),
+                                ),
                                 ("start", num_min("起点（秒）", 0.0)),
                                 ("end", num_min("终点（秒）", 0.0)),
                                 ("duration_seconds", num_min("时长（秒）", 0.1)),
@@ -430,6 +508,7 @@ pub fn stage_schema(stage: StageId) -> Schema {
                             ],
                             vec![
                                 "beat_id",
+                                "beat_type",
                                 "start",
                                 "end",
                                 "duration_seconds",
@@ -491,7 +570,28 @@ pub fn stage_schema(stage: StageId) -> Schema {
                 ("timing_basis", text("时长依据。不平均切分时说明为什么")),
                 (
                     "character_lock",
-                    any("角色连续性锁定：外观、服装、机位签名、安全约束"),
+                    obj(
+                        "角色连续性锁定。**这里定的字符串是后面两个阶段的唯一来源**：\
+                         视觉资产的 consistency_lock.character 和提示词包的 \
+                         identity_lock.character 必须与它逐字相同",
+                        vec![
+                            (
+                                "identity_lock",
+                                text(
+                                    "身份锁：一次写定、后续逐字复制的那段外观描述。\
+                                     年龄、性别、发型发长、上衣、下装、鞋、随身物，\
+                                     一句话写完。写「同一位女孩」这类指代等于没锁——\
+                                     模型看不到上一镜",
+                                ),
+                            ),
+                            (
+                                "camera_signature",
+                                text("机位签名：这个角色主要以什么角度出现，全片保持一致"),
+                            ),
+                            ("safety", text("安全约束：不做什么动作、不靠近什么位置")),
+                        ],
+                        vec!["identity_lock"],
+                    ),
                 ),
                 (
                     "shots",
@@ -505,18 +605,93 @@ pub fn stage_schema(stage: StageId) -> Schema {
                                 ("end", num_min("终点（秒）", 0.0)),
                                 ("duration_seconds", num_min("时长（秒）", 0.1)),
                                 ("purpose", text("这个镜头的作用")),
-                                ("shot_size", text("景别")),
-                                ("angle", text("机位角度")),
-                                ("camera_motion", text("镜头运动。每镜只保留一个主运动")),
-                                ("lighting_color", text("灯光与色调")),
+                                (
+                                    "shot_function",
+                                    one_of(
+                                        "这一镜的职能。三者都不占的镜头不该存在，删掉它",
+                                        lexicon::SHOT_FUNCTIONS.to_vec(),
+                                    ),
+                                ),
+                                (
+                                    "three_facts",
+                                    arr(
+                                        "三个物理事实，各一条且必须可拍：\
+                                         环境压力（风、雨、人流、温度、光线变化）、\
+                                         身体微动作（手指、呼吸、重心、视线）、\
+                                         声音锚点（这一镜能听见的具体声源）。\
+                                         写「氛围感」「很美」这类不可拍的词等于没写",
+                                        text("一条可拍的物理事实"),
+                                        3,
+                                    ),
+                                ),
+                                ("shot_size", one_of("景别", lexicon::SHOT_SIZES.to_vec())),
+                                ("angle", one_of("机位角度", lexicon::ANGLES.to_vec())),
+                                (
+                                    "camera_motion",
+                                    one_of(
+                                        "镜头运动。**每镜只能有一个**——两个以上的运动会让生成结果失控。\
+                                         这些取值与视频模型的运镜指令一一对应，提示词阶段直接翻译，\
+                                         所以写在表里的词才有效，自由发挥的描述没有效果",
+                                        lexicon::CAMERA_MOTIONS.to_vec(),
+                                    ),
+                                ),
+                                (
+                                    "lighting_source",
+                                    one_of("光源：光从哪来", lexicon::LIGHTING_SOURCES.to_vec()),
+                                ),
+                                (
+                                    "lighting_key",
+                                    one_of(
+                                        "光型：光怎么打在主体上",
+                                        lexicon::LIGHTING_KEYS.to_vec(),
+                                    ),
+                                ),
+                                (
+                                    "color_tone",
+                                    text(
+                                        "色调。用可复现的说法：冷白、暖金、青橙、低饱和、\
+                                         漂白旁路。「高级感」这类词对模型无效",
+                                    ),
+                                ),
                                 ("subject", text("主体")),
                                 ("foreground", text("前景")),
                                 ("midground", text("中景")),
                                 ("background", text("背景")),
-                                ("action_chain", text("动作链：起 -> 承 -> 收")),
+                                (
+                                    "action_chain",
+                                    text("动作链：起 -> 承 -> 收。写可见的身体动作，不写内心状态"),
+                                ),
                                 ("first_frame", text("首帧")),
                                 ("last_frame", text("尾帧")),
-                                ("sound", text("声音")),
+                                (
+                                    "audio",
+                                    obj(
+                                        "这一镜的声音。核心系列多为音视频联合生成，\
+                                         这里写的内容会进提示词，留空等于放弃原生音频",
+                                        vec![
+                                            ("ambient", text("环境声：这个空间本来就有的声音")),
+                                            ("foley", text("拟音：这一镜的动作发出的声音")),
+                                            (
+                                                "dialogue",
+                                                obj(
+                                                    "对白。没有就整个省略，不要填空串",
+                                                    vec![
+                                                        ("speaker", text("说话人")),
+                                                        ("text", text("台词原文")),
+                                                        (
+                                                            "language",
+                                                            text("语言与口音，例如「普通话」"),
+                                                        ),
+                                                    ],
+                                                    vec!["speaker", "text"],
+                                                ),
+                                            ),
+                                            ("music", text("音乐；本镜无音乐填 none")),
+                                        ],
+                                        vec![],
+                                    ),
+                                ),
+                                ("sound", text("声音的一句话概述（保留字段，细节写在 audio 里）")),
                                 ("transition_to_next", text("转场方式")),
                             ],
                             vec![
@@ -525,6 +700,8 @@ pub fn stage_schema(stage: StageId) -> Schema {
                                 "end",
                                 "duration_seconds",
                                 "purpose",
+                                "shot_function",
+                                "three_facts",
                                 "shot_size",
                                 "camera_motion",
                                 "subject",
@@ -556,43 +733,135 @@ pub fn stage_schema(stage: StageId) -> Schema {
                 ),
                 (
                     "consistency_lock",
-                    any("一致性锁定：角色、机位、环境、安全、排版"),
+                    obj(
+                        "一致性锁定。`character` 从分镜的 character_lock.identity_lock \
+                         **原样复制**，不要在这里重写一遍",
+                        vec![
+                            (
+                                "character",
+                                text("身份锁，与分镜的 character_lock.identity_lock 逐字相同"),
+                            ),
+                            ("camera", text("机位签名")),
+                            ("environment", text("环境锁定：地点、天气、时段")),
+                            ("typography", text("排版禁止项：字幕、Logo、水印、可读文字")),
+                        ],
+                        vec!["character"],
+                    ),
                 ),
                 (
-                    "requests",
+                    "assets",
                     arr(
-                        "资产请求",
+                        "资产清单。**每个跨镜头复用的角色、场景、道具都要有一项**，\
+                         每一项下面挂多个视图——一张大头照锁不住服装，\
+                         一张全身照锁不住脸",
                         obj(
                             "一项资产",
                             vec![
-                                ("asset_id", text("稳定标识，例如 C01 / SC01")),
+                                ("asset_id", text("稳定标识，例如 C01 / SC01 / P01")),
                                 (
                                     "asset_kind",
-                                    one_of(
-                                        "资产类型",
-                                        vec![
-                                            "character_card",
-                                            "scene_card",
-                                            "prop_card",
-                                            "safety_reference",
-                                            "style_reference",
-                                        ],
+                                    one_of("资产类型", lexicon::ASSET_KINDS.to_vec()),
+                                ),
+                                (
+                                    "identity_prompt",
+                                    text(
+                                        "这张卡的外观锁，**一次写定**：\
+                                         发型、脸型、肤色、瞳色、服装、体型、年龄段、\
+                                         标志性特征。下面每个视图的 prompt 都要逐字带上它，\
+                                         不复述、不改写。角色卡的这一段要与 \
+                                         consistency_lock.character 一致",
                                     ),
                                 ),
-                                ("prompt", text("生成提示词")),
-                                ("width", int("宽")),
-                                ("height", int("高")),
                                 ("applies_to", arr("作用于哪些镜头", text("shot_id"), 0)),
-                                ("references", arr("依赖的其它资产", text("asset_id"), 0)),
                                 (
-                                    "status",
-                                    one_of(
-                                        "状态",
-                                        vec!["planned", "generating", "ready", "failed"],
+                                    "views",
+                                    arr(
+                                        "视图清单。必需视图缺一个就不放行，\
+                                         各类必需哪些见方法文档 consistency/character-sheet.md",
+                                        obj(
+                                            "一个视图",
+                                            vec![
+                                                (
+                                                    "view",
+                                                    one_of(
+                                                        "视图 id。取值随 asset_kind 而定：\
+                                                         角色卡用 front_full 那一组，\
+                                                         场景卡用 establishing 那一组，\
+                                                         道具卡用 front 那一组",
+                                                        lexicon::ALL_VIEWS.to_vec(),
+                                                    ),
+                                                ),
+                                                (
+                                                    "is_anchor",
+                                                    Schema::Bool {
+                                                        desc: "是不是主视图。每张卡**有且仅有一个**，\
+                                                               且必须是该类型的固定主视图。\
+                                                               主视图先出、单独出，其余视图都以它为参考图",
+                                                    },
+                                                ),
+                                                (
+                                                    "aspect",
+                                                    text(
+                                                        "目标比例，例如 9:16 / 1:1 / 16:9。\
+                                                         同一张卡的所有视图用同一套规格——\
+                                                         一张竖一张方会让人误以为是不同批次生成的",
+                                                    ),
+                                                ),
+                                                (
+                                                    "prompt",
+                                                    text(
+                                                        "本视图的提示词：identity_prompt 逐字 + \
+                                                         本视图特有的机位/表情描述 + 画幅比例。\
+                                                         统一约束：中性灰底、均匀柔光、无阴影投射、\
+                                                         不裁切。卡片是**测量用的参考素材**，\
+                                                         不是好看的剧照",
+                                                    ),
+                                                ),
+                                                (
+                                                    "derived_from",
+                                                    text(
+                                                        "本视图以哪个视图为参考图。\
+                                                         **非主视图必填**，值就是那张卡的主视图 id；\
+                                                         主视图自己不填。没有锚点就没有参考图可用，\
+                                                         出来的是长得像但不是同一个人",
+                                                    ),
+                                                ),
+                                                (
+                                                    "status",
+                                                    one_of(
+                                                        "状态。**提交时一律 planned**，\
+                                                         其余取值由控制面回填",
+                                                        vec![
+                                                            "planned",
+                                                            "generating",
+                                                            "ready",
+                                                            "failed",
+                                                        ],
+                                                    ),
+                                                ),
+                                                (
+                                                    "path",
+                                                    text(
+                                                        "落盘位置，控制面回填。\
+                                                         bundle 内相对路径，\
+                                                         形如 media/assets/<asset_id>/<view>.png",
+                                                    ),
+                                                ),
+                                                (
+                                                    "provenance",
+                                                    any(
+                                                        "哪个后端、哪条基线、什么尺寸、什么种子出的。\
+                                                         控制面回填，可审计",
+                                                    ),
+                                                ),
+                                            ],
+                                            vec!["view", "is_anchor", "aspect", "prompt", "status"],
+                                        ),
+                                        1,
                                     ),
                                 ),
                             ],
-                            vec!["asset_id", "asset_kind", "prompt", "status"],
+                            vec!["asset_id", "asset_kind", "identity_prompt", "views"],
                         ),
                         1,
                     ),
@@ -602,7 +871,7 @@ pub fn stage_schema(stage: StageId) -> Schema {
                 "backend",
                 "core_model_family",
                 "consistency_lock",
-                "requests",
+                "assets",
             ],
         ),
 
@@ -610,6 +879,26 @@ pub fn stage_schema(stage: StageId) -> Schema {
             "逐镜头 prompt 与 ComfyUI workflow 参数",
             vec![
                 ("core_model_family", text("核心模型系列")),
+                (
+                    "identity_lock",
+                    obj(
+                        "身份锁。从视觉资产的 consistency_lock **原样复制**——\
+                         提交时会逐字比对，也会逐镜检查每条 positive 是不是真的带上了它",
+                        vec![
+                            (
+                                "character",
+                                text(
+                                    "与分镜 character_lock.identity_lock、\
+                                     视觉资产 consistency_lock.character 逐字相同的那段外观描述。\
+                                     每一镜的 positive 里必须原样出现",
+                                ),
+                            ),
+                            ("environment", text("环境锁定，同样逐字复用")),
+                            ("typography", text("排版禁止项")),
+                        ],
+                        vec!["character"],
+                    ),
+                ),
                 (
                     "shots",
                     arr(
@@ -620,16 +909,64 @@ pub fn stage_schema(stage: StageId) -> Schema {
                                 ("shot_id", text("对应分镜的 shot_id")),
                                 (
                                     "workflow",
-                                    text("使用的已验证 workflow 名，例如 minimax_h3/t2v"),
+                                    text(
+                                        "使用的已验证 workflow 名，例如 minimax_h3/t2v。\
+                                         每条基线吃的参数不同，写之前先看这个系列的能力卡——\
+                                         提交时会按这台机器上基线的能力面逐项对账，\
+                                         多写、少写、用未核验的基线都会被挡下",
+                                    ),
                                 ),
-                                ("positive", text("正向提示词")),
-                                ("negative", text("负向提示词")),
+                                (
+                                    "positive",
+                                    text(
+                                        "正向提示词。一条提示词只描述**一个可读镜头**：\
+                                         一个主体、一个可见动作、一个受控环境、一个运镜。\
+                                         句首放最重要的视觉元素。\
+                                         禁止 cinematic / 电影感 / 史诗般 / 大片质感 / 4K / \
+                                         高质量这类对模型无效的词",
+                                    ),
+                                ),
+                                (
+                                    "negative",
+                                    text(
+                                        "负向提示词。**不是每条基线都支持**——不支持的基线上\
+                                         写了会被**挡下**（提交时按能力面对账，报 schema_violation），\
+                                         该把约束改写成正向的连续性约束\
+                                         （「一镜到底」「主体全程居中」「不切场景」）。\
+                                         先看能力卡",
+                                    ),
+                                ),
+                                (
+                                    "audio",
+                                    text(
+                                        "这一镜要出的声音：环境声、拟音、对白（放引号并注明语言）、\
+                                         音乐。核心系列多为音视频联合生成，留空等于放弃原生音频。\
+                                         内容照抄分镜的 audio，不要在这里另编",
+                                    ),
+                                ),
                                 ("width", int("宽")),
                                 ("height", int("高")),
-                                ("length_frames", int("帧数")),
+                                (
+                                    "length_frames",
+                                    int("帧数。有的基线按秒收时长，用 duration_seconds"),
+                                ),
+                                (
+                                    "duration_seconds",
+                                    num_min("时长（秒）。按帧数收时长的基线用 length_frames", 0.1),
+                                ),
                                 ("fps", int("帧率")),
                                 ("seed", int("随机种子。固定以便复现")),
-                                ("references", arr("引用的视觉资产", text("asset_id"), 0)),
+                                (
+                                    "references",
+                                    arr(
+                                        "引用的视觉资产。可以照常写——它声明这一镜用到哪些资产，\
+                                         基线补上图片输入绑定后会自动生效。但**当前所有基线都还没绑\
+                                         图片输入**，写在这里的 asset_id 暂时进不了渲染请求，\
+                                         一致性目前只能靠 positive 里逐字复用同一段外观描述",
+                                        text("asset_id"),
+                                        0,
+                                    ),
+                                ),
                             ],
                             vec![
                                 "shot_id",
@@ -645,7 +982,7 @@ pub fn stage_schema(stage: StageId) -> Schema {
                     ),
                 ),
             ],
-            vec!["core_model_family", "shots"],
+            vec!["core_model_family", "identity_lock", "shots"],
         ),
 
         StageId::Preview => obj(
@@ -713,12 +1050,14 @@ pub fn stage_schema(stage: StageId) -> Schema {
         ),
 
         StageId::Review => obj(
-            "验收报告（由控制面产出）",
+            "验收报告。**技术验收**由控制面产出（下面的 checks 与 passed）；\
+             **内容验收**由 Agent 事后用 studio.self_review 补上（content_review），\
+             它不改变 passed——片子已经出来了，内容评价改变不了它是否完整",
             vec![
                 (
                     "passed",
                     Schema::Bool {
-                        desc: "是否通过"
+                        desc: "技术验收是否通过。只看 kind 为 technical 的检查项"
                     },
                 ),
                 (
@@ -729,17 +1068,231 @@ pub fn stage_schema(stage: StageId) -> Schema {
                             "一项",
                             vec![
                                 ("name", text("检查项")),
+                                (
+                                    "kind",
+                                    one_of(
+                                        "这一项是谁判的：technical 来自 ffprobe 实测，\
+                                         content 来自内容自评",
+                                        vec!["technical", "content"],
+                                    ),
+                                ),
                                 ("passed", Schema::Bool { desc: "结果" }),
                                 ("detail", text("依据。必须来自实际媒体元数据，不能是推断")),
                             ],
-                            vec!["name", "passed", "detail"],
+                            vec!["name", "kind", "passed", "detail"],
                         ),
                         1,
+                    ),
+                ),
+                (
+                    "content_review",
+                    obj(
+                        "内容自评。由 studio.self_review 写入，Agent 不在这里提交",
+                        vec![
+                            (
+                                "items",
+                                arr(
+                                    "逐维度一条",
+                                    obj(
+                                        "一条自评",
+                                        vec![
+                                            (
+                                                "criterion",
+                                                one_of(
+                                                    "评价维度。固定五条，不可增删",
+                                                    crate::rubric::CRITERIA
+                                                        .iter()
+                                                        .map(|(c, _)| *c)
+                                                        .collect(),
+                                                ),
+                                            ),
+                                            (
+                                                "verdict",
+                                                one_of(
+                                                    "结论",
+                                                    crate::rubric::VERDICTS.to_vec(),
+                                                ),
+                                            ),
+                                            (
+                                                "at_seconds",
+                                                num_min("可指认的时间点（秒）", 0.0),
+                                            ),
+                                            (
+                                                "evidence",
+                                                text(
+                                                    "在那个时间点上看见/听见了什么，\
+                                                     以及它为什么支持这个结论",
+                                                ),
+                                            ),
+                                        ],
+                                        vec!["criterion", "verdict", "at_seconds", "evidence"],
+                                    ),
+                                    5,
+                                ),
+                            ),
+                            ("summary", text("一句话：最强的一点和最弱的一点")),
+                        ],
+                        vec!["items", "summary"],
                     ),
                 ),
             ],
             vec!["passed", "checks"],
         ),
+    }
+}
+
+/// 条件依赖类的结构约束。JSON Schema 的子集表达不了它们，但它们和字段
+/// 缺失一样是硬错误——放过去，下游拿到的就是一份看起来完整、实际锁不住
+/// 任何东西的资产计划。
+fn structural(stage: StageId, v: &Value, key: &str, out: &mut Vec<Violation>) {
+    if stage != StageId::VisualAssets {
+        return;
+    }
+    let Some(assets) = v.get("assets").and_then(|a| a.as_array()) else {
+        return;
+    };
+    let lock = v
+        .get("consistency_lock")
+        .and_then(|c| c.get("character"))
+        .and_then(|c| c.as_str())
+        .unwrap_or_default();
+    for (i, asset) in assets.iter().enumerate() {
+        let at = |suffix: &str| format!("{key}.assets[{i}]{suffix}");
+        let kind = asset
+            .get("asset_kind")
+            .and_then(|k| k.as_str())
+            .unwrap_or_default();
+        let identity = asset
+            .get("identity_prompt")
+            .and_then(|p| p.as_str())
+            .unwrap_or_default();
+        // 角色卡的身份锁必须**逐字包含**视频那段身份锁。卡片可以更细
+        // （脸型、肤色、瞳色是出图才需要的），但不能是另一段近义改写——
+        // 那样卡片上的人和成片里的人就不是同一个人了。
+        if kind == "character_card" && !lock.is_empty() && !identity.contains(lock) {
+            out.push(Violation::new(
+                at(".identity_prompt"),
+                format!(
+                    "没有逐字包含 consistency_lock.character。\
+                     卡片可以写得更细，但那段身份锁要原样在里面：「{lock}」"
+                ),
+            ));
+        }
+
+        let allowed = lexicon::views_for(kind);
+        if allowed.is_empty() {
+            // 参照类资产（safety_reference / style_reference）不强制多视图。
+            continue;
+        }
+        let views = asset
+            .get("views")
+            .and_then(|x| x.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let names: Vec<&str> = views
+            .iter()
+            .filter_map(|x| x.get("view").and_then(|n| n.as_str()))
+            .collect();
+
+        for want in lexicon::required_views(kind) {
+            if !names.contains(want) {
+                out.push(Violation::new(
+                    at(".views"),
+                    format!(
+                        "{kind} 缺必需视图 {want}。多角度不是形容词：\
+                         少一个角度就少一处可比对的参照，下游只能靠猜"
+                    ),
+                ));
+            }
+        }
+        for (j, name) in names.iter().enumerate() {
+            if !allowed.contains(name) {
+                out.push(Violation::new(
+                    at(&format!(".views[{j}].view")),
+                    format!(
+                        "{name} 不是 {kind} 的视图。合法取值：{}",
+                        allowed.join("、")
+                    ),
+                ));
+            }
+        }
+
+        let anchor_name = lexicon::anchor_view(kind).unwrap_or_default();
+        let anchors: Vec<usize> = views
+            .iter()
+            .enumerate()
+            .filter(|(_, x)| x.get("is_anchor").and_then(|b| b.as_bool()) == Some(true))
+            .map(|(j, _)| j)
+            .collect();
+        match anchors.len() {
+            1 => {
+                let j = anchors[0];
+                let got = views[j].get("view").and_then(|n| n.as_str()).unwrap_or("");
+                if got != anchor_name {
+                    out.push(Violation::new(
+                        at(&format!(".views[{j}].is_anchor")),
+                        format!("{kind} 的主视图必须是 {anchor_name}，不是 {got}"),
+                    ));
+                }
+            }
+            0 => out.push(Violation::new(
+                at(".views"),
+                format!(
+                    "没有主视图。{kind} 的主视图是 {anchor_name}，\
+                     它先出、单独出，其余视图都以它为参考图"
+                ),
+            )),
+            n => out.push(Violation::new(
+                at(".views"),
+                format!(
+                    "有 {n} 个主视图。每张卡有且仅有一个——\
+                     并行出多个「主」视图，出来的是几个长得像但不是同一个人的角色"
+                ),
+            )),
+        }
+
+        let mut aspects = std::collections::BTreeSet::new();
+        for (j, view) in views.iter().enumerate() {
+            let name = view.get("view").and_then(|n| n.as_str()).unwrap_or("");
+            let is_anchor = view.get("is_anchor").and_then(|b| b.as_bool()) == Some(true);
+            let derived = view.get("derived_from").and_then(|d| d.as_str());
+            if let Some(a) = view.get("aspect").and_then(|a| a.as_str()) {
+                aspects.insert(a.to_string());
+            }
+            if is_anchor {
+                if derived.is_some_and(|d| !d.is_empty()) {
+                    out.push(Violation::new(
+                        at(&format!(".views[{j}].derived_from")),
+                        "主视图自己不参考任何视图，这里不要填",
+                    ));
+                }
+                continue;
+            }
+            match derived {
+                None => out.push(Violation::new(
+                    at(&format!(".views[{j}].derived_from")),
+                    format!(
+                        "非主视图必须指向锚点视图（{anchor_name}）。\
+                         没有锚点就没有参考图可用，出来的是长得像但不是同一个人"
+                    ),
+                )),
+                Some(d) if d != anchor_name => out.push(Violation::new(
+                    at(&format!(".views[{j}].derived_from")),
+                    format!("{name} 应当以 {anchor_name} 为参考图，写的却是 {d}"),
+                )),
+                Some(_) => {}
+            }
+        }
+        if aspects.len() > 1 {
+            out.push(Violation::new(
+                at(".views"),
+                format!(
+                    "同一张卡出现了多种画幅（{}）。一张竖一张方会让人\
+                     误以为是不同批次生成的",
+                    aspects.into_iter().collect::<Vec<_>>().join("、")
+                ),
+            ));
+        }
     }
 }
 
@@ -834,15 +1387,15 @@ mod tests {
                 "timing_rule": "按动作复杂度和信息量分配，合计 10 秒",
                 "language": "none",
                 "story_arc": [
-                    { "beat_id": "beat_01", "start": 0,   "end": 1.4,  "duration_seconds": 1.4,
+                    { "beat_id": "beat_01", "beat_type": "hook", "start": 0,   "end": 1.4,  "duration_seconds": 1.4,
                       "purpose": "地点钩子", "visual": "船头掠过清透湖面", "audio": "湖水轻拍船身" },
-                    { "beat_id": "beat_02", "start": 1.4, "end": 3.4,  "duration_seconds": 2.0,
+                    { "beat_id": "beat_02", "beat_type": "setup", "start": 1.4, "end": 3.4,  "duration_seconds": 2.0,
                       "purpose": "人物动作", "visual": "沿步道轻快小跑", "audio": "轻快脚步与风声" },
-                    { "beat_id": "beat_03", "start": 3.4, "end": 5.8,  "duration_seconds": 2.4,
+                    { "beat_id": "beat_03", "beat_type": "develop", "start": 3.4, "end": 5.8,  "duration_seconds": 2.4,
                       "purpose": "景色展开", "visual": "观景台举起手机取景", "audio": "快门声" },
-                    { "beat_id": "beat_04", "start": 5.8, "end": 7.8,  "duration_seconds": 2.0,
+                    { "beat_id": "beat_04", "beat_type": "payoff", "start": 5.8, "end": 7.8,  "duration_seconds": 2.0,
                       "purpose": "互动快乐", "visual": "举起冷饮轻碰杯", "audio": "碰杯声" },
-                    { "beat_id": "beat_05", "start": 7.8, "end": 10.0, "duration_seconds": 2.2,
+                    { "beat_id": "beat_05", "beat_type": "resolve", "start": 7.8, "end": 10.0, "duration_seconds": 2.2,
                       "purpose": "情绪收束", "visual": "回头挥手", "audio": "环境声收尾" }
                 ],
                 "segments": [
@@ -902,6 +1455,85 @@ mod fixture_tests {
             let outputs = fixtures::outputs(stage);
             validate(stage, &outputs).unwrap_or_else(|e| panic!("阶段 {stage} 的样例不合规：{e}"));
         }
+    }
+
+    fn plan() -> Outputs {
+        fixtures::outputs(StageId::VisualAssets)
+    }
+
+    fn refuses(o: &Outputs, needle: &str) {
+        let e = validate(StageId::VisualAssets, o)
+            .expect_err(&format!("这份计划应当被挡下（{needle}）"));
+        assert!(
+            e.message().contains(needle),
+            "错误没说到点子上（要找 {needle}）：{}",
+            e.message()
+        );
+    }
+
+    /// 少一个角度就少一处可比对的参照——这是「多角度」这个要求的全部意义。
+    #[test]
+    fn a_character_card_missing_a_required_view_is_refused() {
+        let mut o = plan();
+        o["asset_plan"]["assets"][0]["views"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|v| v["view"] != "back");
+        refuses(&o, "缺必需视图 back");
+    }
+
+    /// 并行出多个「主」视图，出来的是几个长得像但不是同一个人的角色。
+    #[test]
+    fn two_anchors_on_one_card_is_refused() {
+        let mut o = plan();
+        o["asset_plan"]["assets"][0]["views"][1]["is_anchor"] = json!(true);
+        refuses(&o, "有 2 个主视图");
+    }
+
+    #[test]
+    fn a_non_anchor_view_without_an_anchor_to_derive_from_is_refused() {
+        let mut o = plan();
+        o["asset_plan"]["assets"][0]["views"][2]
+            .as_object_mut()
+            .unwrap()
+            .remove("derived_from");
+        refuses(&o, "非主视图必须指向锚点视图");
+    }
+
+    #[test]
+    fn mixing_aspects_within_one_card_is_refused() {
+        let mut o = plan();
+        o["asset_plan"]["assets"][0]["views"][4]["aspect"] = json!("1:1");
+        refuses(&o, "多种画幅");
+    }
+
+    /// 卡片可以写得更细，但不能是另一段近义改写——那样卡上的人和成片里
+    /// 的人就不是同一个人了。
+    #[test]
+    fn a_card_identity_that_paraphrases_the_lock_is_refused() {
+        let mut o = plan();
+        o["asset_plan"]["assets"][0]["identity_prompt"] =
+            json!("20岁女生，黑长发，白裙子，白板鞋，小挎包，鹅蛋脸");
+        refuses(&o, "没有逐字包含 consistency_lock.character");
+    }
+
+    #[test]
+    fn a_scene_view_on_a_character_card_is_refused() {
+        let mut o = plan();
+        o["asset_plan"]["assets"][0]["views"][1]["view"] = json!("establishing");
+        refuses(&o, "不是 character_card 的视图");
+    }
+
+    /// 参照类资产不强制多视图——它们本来就只有一张图。
+    #[test]
+    fn a_style_reference_needs_no_views() {
+        let mut o = plan();
+        o["asset_plan"]["assets"][0]["asset_kind"] = json!("style_reference");
+        o["asset_plan"]["assets"][0]["views"] = json!([
+            { "view": "front_full", "is_anchor": true, "aspect": "9:16",
+              "prompt": "一张色调参照", "status": "planned" }
+        ]);
+        assert!(validate(StageId::VisualAssets, &o).is_ok());
     }
 
     /// 剧本各拍时长必须真的合计 10 秒——样例本身就该是一份说得通的作品。

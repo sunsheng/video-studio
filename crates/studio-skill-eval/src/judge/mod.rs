@@ -6,7 +6,7 @@
 //! 完整的报告结构；`studio-skill-eval` 不能反向依赖 `studio-cli`。
 //!
 //! 语义层面的裁判（LLM 读 SKILL.md 的职责条款去评产物质量）留给 Agent
-//! 场景，见 ADR-0003。
+//! 场景，见 ADR-0004。
 
 pub mod structural;
 

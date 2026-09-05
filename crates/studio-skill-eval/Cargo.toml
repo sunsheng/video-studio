@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "video-studio 的 skill 评估：像测代码一样测 AGENTS.md / SKILL.md。只被 studio-cli 依赖，不出现在 Codex/Agent 的执行环境里，见 docs/decisions/ADR-0003。"
+description = "video-studio 的 skill 评估：像测代码一样测 AGENTS.md / SKILL.md。只被 studio-cli 依赖，不出现在 Codex/Agent 的执行环境里，见 docs/decisions/ADR-0004。"
 
 [dependencies]
 studio-core = { path = "../studio-core", features = ["fixtures"] }

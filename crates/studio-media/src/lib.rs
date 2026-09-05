@@ -352,8 +352,10 @@ mod tests {
         assert!(!e.remedy().is_empty());
         if e.code() == "tool_unavailable" {
             assert!(e.remedy().contains("FFPROBE_PATH"));
-            assert!(e.remedy().contains("提醒用户"));
-            assert!(!e.remedy().contains("studiod"));
+            // 配置是人的动作，重试才是 Agent 的动作——remedy 给的是后者，
+            // 而不是一个二进制的命令行。见 docs/decisions/ADR-0002。
+            assert!(e.remedy().contains("studio.retry_stage"), "{}", e.remedy());
+            assert!(!e.remedy().contains("studiod"), "{}", e.remedy());
         }
     }
 

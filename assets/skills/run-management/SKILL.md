@@ -18,6 +18,14 @@ description: 解释当前作品的状态，走修订与恢复路径。
 - 用户提出修改意见就调 studio.revise——它不会失败，也不需要先解除什么占用。
 - 作品的历史看 studio.timeline，某一步的产物看 studio.stage_output。
 
+## 方法
+
+职责说的是**交什么**，下面这几份说的是**怎么想**——什么算好、怎么避开已知的坑、写好的长什么样。动手之前读，别凭感觉写。
+
+- `.agents/doctrine/failure/modes.md`
+
+这些文件就在这部作品的目录里，用你的文件读取工具直接读——路径照抄，不要凭印象猜。（`.studio/` 是控制面私有的，那个不要碰。）
+
 ## 失败与恢复
 
 任何工具返回的 `blocked_by` 都带着 `remedy`，照它做。schema 不合规时 `message` 会精确指到出错的字段路径，例如 `script.story_arc[1].duration_seconds`。
@@ -42,3 +50,4 @@ description: 解释当前作品的状态，走修订与恢复路径。
 - `studio.export`
 - `studio.comfy.exclude_node`
 - `studio.retry_stage`
+- `studio.self_review`

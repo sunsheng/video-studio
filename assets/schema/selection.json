@@ -6,7 +6,7 @@
   "properties": {
     "selection": {
       "additionalProperties": true,
-      "description": "从可行性、受众匹配和发布风险筛选方案",
+      "description": "从可行性、受众匹配和发布风险里挑一个方案，并说清代价",
       "properties": {
         "acceptance_metrics": {
           "description": "验收标准",
@@ -17,58 +17,96 @@
           "minItems": 1,
           "type": "array"
         },
-        "audience_fit": {
-          "additionalProperties": true,
-          "description": "受众匹配",
-          "properties": {
-            "benefit": {
-              "description": "观看收益",
-              "type": "string"
+        "candidates": {
+          "description": "逐个评估 idea 阶段给出的方案。**每个都要评**——只评推荐的那个，等于没有比较",
+          "items": {
+            "additionalProperties": true,
+            "description": "一个方案的评估",
+            "properties": {
+              "audience_fit": {
+                "additionalProperties": true,
+                "description": "受众匹配",
+                "properties": {
+                  "hook_strength": {
+                    "description": "钩子强度",
+                    "enum": [
+                      "strong",
+                      "medium",
+                      "weak"
+                    ],
+                    "type": "string"
+                  },
+                  "rationale": {
+                    "description": "为什么这个钩子对这批受众有效",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "hook_strength"
+                ],
+                "type": "object"
+              },
+              "concept_id": {
+                "description": "对应 idea 的 concept_id",
+                "type": "string"
+              },
+              "feasibility": {
+                "additionalProperties": true,
+                "description": "可行性",
+                "properties": {
+                  "rationale": {
+                    "description": "判断依据：模型可控性、制作成本",
+                    "type": "string"
+                  },
+                  "score": {
+                    "description": "高 / 中 / 低",
+                    "enum": [
+                      "high",
+                      "medium",
+                      "low"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "score",
+                  "rationale"
+                ],
+                "type": "object"
+              },
+              "risks": {
+                "description": "这个方案特有的风险",
+                "items": {
+                  "description": "一条",
+                  "type": "string"
+                },
+                "minItems": 0,
+                "type": "array"
+              },
+              "verdict": {
+                "description": "结论：推荐 / 可选 / 不建议",
+                "enum": [
+                  "recommended",
+                  "viable",
+                  "not_advised"
+                ],
+                "type": "string"
+              }
             },
-            "hook_strength": {
-              "description": "钩子强度",
-              "type": "string"
-            },
-            "retention_plan": {
-              "description": "留存设计",
-              "type": "string"
-            }
+            "required": [
+              "concept_id",
+              "feasibility",
+              "audience_fit",
+              "verdict"
+            ],
+            "type": "object"
           },
-          "required": [
-            "hook_strength"
-          ],
-          "type": "object"
-        },
-        "feasibility": {
-          "additionalProperties": true,
-          "description": "可行性",
-          "properties": {
-            "model_control": {
-              "description": "模型可控性说明",
-              "type": "string"
-            },
-            "production_cost": {
-              "description": "制作成本",
-              "type": "string"
-            },
-            "rationale": {
-              "description": "判断依据",
-              "type": "string"
-            },
-            "score": {
-              "description": "high / medium / low",
-              "type": "string"
-            }
-          },
-          "required": [
-            "score",
-            "rationale"
-          ],
-          "type": "object"
+          "minItems": 2,
+          "type": "array"
         },
         "publishing_risks": {
           "additionalProperties": true,
-          "description": "发布风险分级",
+          "description": "发布风险分级（针对推荐方案）",
           "properties": {
             "avoidable": {
               "description": "可规避",
@@ -102,18 +140,17 @@
           "type": "object"
         },
         "recommendation": {
-          "description": "推荐方案的标识",
+          "description": "推荐哪个方案，写 concept_id。它必须是 candidates 里 verdict 为 recommended 的那个",
           "type": "string"
         },
         "tradeoffs": {
-          "description": "取舍说明",
+          "description": "推荐它**牺牲了什么**。只讲优点的推荐等于没推荐",
           "type": "string"
         }
       },
       "required": [
+        "candidates",
         "recommendation",
-        "feasibility",
-        "audience_fit",
         "tradeoffs",
         "acceptance_metrics"
       ],

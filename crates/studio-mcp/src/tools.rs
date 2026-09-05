@@ -26,7 +26,7 @@ fn stage_arg(desc: &str) -> Value {
     })
 }
 
-pub const TOOLS: [ToolSpec; 11] = [
+pub const TOOLS: [ToolSpec; 12] = [
     ToolSpec {
         name: "studio.status",
         description:
@@ -188,6 +188,51 @@ pub const TOOLS: [ToolSpec; 11] = [
             })
         },
     },
+    ToolSpec {
+        name: "studio.self_review",
+        description: "验收的另一半：对成片做内容自评。技术验收（时长、画幅、镜头数、音轨）\
+                      由控制面用 ffprobe 实测，它只证明片子是完整的；这个工具收的是\
+                      「它好不好看」。固定五个维度各给一条结论，每条都要带一个\
+                      **可指认的时间点**和在那一刻看见/听见了什么。\
+                      它不改变技术验收的 passed，但不交这一份，作品就不算收尾。",
+        input_schema: || {
+            let criteria: Vec<&str> = studio_core::rubric::CRITERIA
+                .iter()
+                .map(|(c, _)| *c)
+                .collect();
+            let desc = studio_core::rubric::CRITERIA
+                .iter()
+                .map(|(c, d)| format!("{c}：{d}"))
+                .collect::<Vec<_>>()
+                .join("；");
+            json!({
+                "type": "object",
+                "properties": {
+                    "items": {
+                        "type": "array",
+                        "description": format!("逐维度一条，五条齐全。{desc}"),
+                        "minItems": 5,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "criterion": { "type": "string", "enum": criteria },
+                                "verdict": { "type": "string", "enum": studio_core::rubric::VERDICTS },
+                                "at_seconds": { "type": "number", "minimum": 0,
+                                                "description": "可指认的时间点，必须落在成片时长之内" },
+                                "evidence": { "type": "string",
+                                              "description": "在那个时间点上看见/听见了什么，以及它为什么支持这个结论。写「还不错」会被退回" }
+                            },
+                            "required": ["criterion", "verdict", "at_seconds", "evidence"],
+                            "additionalProperties": false
+                        }
+                    },
+                    "summary": { "type": "string", "description": "一句话：最强的一点和最弱的一点" }
+                },
+                "required": ["items", "summary"],
+                "additionalProperties": false
+            })
+        },
+    },
 ];
 
 pub fn tool_list() -> Value {
@@ -252,7 +297,7 @@ mod tests {
             assert!(n.starts_with("studio."), "{n} 缺少 studio. 前缀");
             assert!(seen.insert(n), "工具名重复：{n}");
         }
-        assert_eq!(seen.len(), 11);
+        assert_eq!(seen.len(), TOOLS.len());
     }
 
     #[test]

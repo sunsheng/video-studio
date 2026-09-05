@@ -191,8 +191,10 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let e = Bundle::open(d.path()).unwrap_err();
         assert_eq!(e.code(), "not_a_project");
-        assert!(e.remedy().contains("提醒用户"));
-        assert!(!e.remedy().contains("studiod"));
+        // 新建作品是人的动作，不是 Agent 的——remedy 要把它推给用户，
+        // 而不是给出一个 Agent 自己就能跑的命令。见 docs/decisions/ADR-0002。
+        assert!(e.remedy().contains("用户"), "{}", e.remedy());
+        assert!(!e.remedy().contains("studiod"), "{}", e.remedy());
     }
 
     #[test]

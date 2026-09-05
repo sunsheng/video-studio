@@ -19,6 +19,14 @@ description: 提交已确认且通过校验的 workflow，选择健康节点、�
 - 怀疑是某个节点本身有问题（反复失败、迟迟连不上），先调 studio.comfy.exclude_node 把它排除，再重试。
 - 执行失败但内容没问题（节点抖动、连接超时）时调 studio.retry_stage，不要用 studio.revise——那是给内容要改的场景用的。
 
+## 方法
+
+职责说的是**交什么**，下面这几份说的是**怎么想**——什么算好、怎么避开已知的坑、写好的长什么样。动手之前读，别凭感觉写。
+
+- `.agents/doctrine/failure/modes.md`
+
+这些文件就在这部作品的目录里，用你的文件读取工具直接读——路径照抄，不要凭印象猜。（`.studio/` 是控制面私有的，那个不要碰。）
+
 ## 输入输出
 
 本阶段的产物放在 `outputs` 的顶层键 `render` 下。**提交前先调 `studio.schema("render")`** 取回完整契约，不要凭印象填字段。必填项是：
@@ -55,3 +63,4 @@ description: 提交已确认且通过校验的 workflow，选择健康节点、�
 - `studio.export`
 - `studio.comfy.exclude_node`
 - `studio.retry_stage`
+- `studio.self_review`

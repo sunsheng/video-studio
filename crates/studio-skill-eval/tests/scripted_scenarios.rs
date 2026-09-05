@@ -1,5 +1,5 @@
 //! 脚本场景要能直接进 `cargo test --workspace`——这就是它们跟 Agent 场景
-//! 的关键区别（见 ADR-0003）。这里的每个测试都跑一遍真实 studiod 二进制。
+//! 的关键区别（见 ADR-0004）。这里的每个测试都跑一遍真实 studiod 二进制。
 
 use studio_skill_eval::{all_scenarios, run_scenario};
 

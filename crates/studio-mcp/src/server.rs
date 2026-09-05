@@ -295,6 +295,17 @@ impl Server {
                 to_value(p.exclude_comfy_node(&node)?)
             }
             "studio.retry_stage" => to_value(p.retry_stage(stage_arg(args)?)?),
+            "studio.self_review" => {
+                let review: studio_core::SelfReview = serde_json::from_value(args.clone())
+                    .map_err(|e| StudioError::SchemaViolation {
+                        stage: StageId::Review,
+                        violations: vec![studio_core::Violation::new(
+                            "content_review",
+                            e.to_string(),
+                        )],
+                    })?;
+                to_value(p.self_review(review)?)
+            }
             other => Err(StudioError::internal(format!("工具 {other} 未接线"))),
         }
     }

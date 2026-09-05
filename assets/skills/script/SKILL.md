@@ -18,6 +18,17 @@ description: 创建短视频的故事结构、节奏与声音时间线。
 - 同时给出声音时间线：有口播就写台词，没有就写环境声与拟音的来源。
 - 字幕策略要明确。没有字幕也要写清楚是「本版无字幕」。
 
+## 方法
+
+职责说的是**交什么**，下面这几份说的是**怎么想**——什么算好、怎么避开已知的坑、写好的长什么样。动手之前读，别凭感觉写。
+
+- `.agents/doctrine/story/structure.md`
+- `.agents/doctrine/story/voice.md`
+- `.agents/doctrine/audio/design.md`
+- `.agents/doctrine/exemplars/script.md`
+
+这些文件就在这部作品的目录里，用你的文件读取工具直接读——路径照抄，不要凭印象猜。（`.studio/` 是控制面私有的，那个不要碰。）
+
 ## 输入输出
 
 本阶段的产物放在 `outputs` 的顶层键 `script` 下。**提交前先调 `studio.schema("script")`** 取回完整契约，不要凭印象填字段。必填项是：
@@ -41,6 +52,15 @@ description: 创建短视频的故事结构、节奏与声音时间线。
 
 任何工具返回的 `blocked_by` 都带着 `remedy`，照它做。schema 不合规时 `message` 会精确指到出错的字段路径，例如 `script.story_arc[1].duration_seconds`。
 
+## 提交前自检
+
+逐条过。过不了就别提交——退回来重做比往下走便宜得多。
+
+- [ ] 各拍时长之和精确等于总时长（自己加一遍）
+- [ ] 时长按内容分配，timing_rule 写的是依据不是结果
+- [ ] 每一拍都说得出自己的 beat_type，且不与上一拍重复
+- [ ] 无口播也写清了环境声来源与字幕策略
+
 ## 注意
 
 - 「不要固定 2 秒」这类反馈直接调 studio.revise，然后重新提交。不需要先解除任何占用。
@@ -61,3 +81,4 @@ description: 创建短视频的故事结构、节奏与声音时间线。
 - `studio.export`
 - `studio.comfy.exclude_node`
 - `studio.retry_stage`
+- `studio.self_review`

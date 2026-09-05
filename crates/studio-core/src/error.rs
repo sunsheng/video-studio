@@ -44,6 +44,11 @@ pub enum StudioError {
         stage: StageId,
         violations: Vec<Violation>,
     },
+    /// 产物形状合规，但内容达不到质量线。
+    QualityViolation {
+        stage: StageId,
+        findings: Vec<Violation>,
+    },
     /// 状态机不允许这个动作。
     InvalidTransition {
         stage: StageId,
@@ -101,6 +106,7 @@ impl StudioError {
     pub fn code(&self) -> &'static str {
         match self {
             StudioError::SchemaViolation { .. } => "schema_violation",
+            StudioError::QualityViolation { .. } => "quality_violation",
             StudioError::InvalidTransition { .. } => "invalid_transition",
             StudioError::ConfirmationRequired { .. } => "confirmation_required",
             StudioError::GatePending { .. } => "gate_pending",
@@ -125,6 +131,11 @@ impl StudioError {
         match self {
             StudioError::SchemaViolation { stage, .. } => format!(
                 "调 studio.schema(\"{stage}\") 取回该阶段的输出契约，按上面列出的路径修正后重新 studio.submit_stage。"
+            ),
+            StudioError::QualityViolation { stage, .. } => format!(
+                "形状是对的，内容不达标。按上面每条括号里的规则名，去 .agents/doctrine/quality/checklist.md \
+                 找对应的写法，改完重新 studio.submit_stage。\
+                 别绕过——{stage} 这一层放过去的东西，后面每一镜都会照抄。"
             ),
             StudioError::InvalidTransition { allowed, .. } => {
                 if allowed.is_empty() {
@@ -159,21 +170,18 @@ impl StudioError {
                 };
                 format!(
                     "本作品已被{who}打开。一个 bundle 同时只能有一个会话：\
-                     关掉那个会话后调 studio.status() 重新确认状态即可继续。\
-                     如果用户是想同时另开一部新作品，这超出你的能力范围，\
-                     提醒用户自己在终端新建一个目录，不要代劳。"
+                     关掉那个会话后重试。要同时做另一部作品，请用户在终端另建一个作品目录。"
                 )
             }
             StudioError::NotAProject { path } => format!(
-                "{path} 不是一部作品，这个会话没有可用的工具。这超出你的能力范围，\
-                 提醒用户自己在终端新建一个作品目录，然后在那个目录里重新打开你，不要代劳。"
+                "{path} 不是一部作品。请用户在终端新建一部作品，再在那个目录里打开会话。"
             ),
             StudioError::ComfyUnavailable { tried } => format!(
                 "没有健康的 ComfyUI 节点（试过 {}）。在 .env 里配好 COMFY_NODES 后，\
                  调 studio.status() 确认当前卡在 preview 还是 render，再对它调 \
                  studio.retry_stage(<该阶段>) 让控制面重新尝试——它会先停掉可能还在跑的 \
-                 worker，也会当场重新读取 `.env`，不需要重启 MCP 进程，也不需要任何命令行 \
-                 介入；节点恢复前不要降级换模型。",
+                 worker，也会当场重新读取 `.env`，不需要重启 MCP 进程，\
+                 也不需要在这部作品之外做任何事；节点恢复前不要降级换模型。",
                 if tried.is_empty() { "无".to_string() } else { tried.join("、") }
             ),
             StudioError::ComfyFailed { node, detail } => format!(
@@ -186,15 +194,15 @@ impl StudioError {
             ),
             StudioError::ModelContractViolation { detail } => format!(
                 "固定模型契约不满足（{detail}）。这是硬停止，不允许静默替换成 pruned/量化变体。\
-                 这超出你的能力范围，提醒用户自己体检确认缺哪个文件、该放到哪个节点上；\
+                 把上面这段原样告诉用户，请他们在装有推理节点的机器上补齐缺的模型文件；\
                  补齐后调 studio.revise(\"render\", <说明>) 重做。用户明确批准降级前不要换系列。"
             ),
             StudioError::ArtifactMissing { path } => format!(
                 "登记过的产物 {path} 不在磁盘上。调 studio.revise(stage, <原因>) 重做产出该文件的阶段。"
             ),
             StudioError::ToolUnavailable { tool, looked_in } => format!(
-                "找不到 {tool}（找过：{}）。在 bundle 或程序目录的 .env 里配 {}_PATH 指向可执行文件，\
-                 或把它放进 PATH；这超出你的能力范围，提醒用户自己配好后确认一下即可。",
+                "找不到 {tool}（找过：{}）。请用户在 bundle 或程序目录的 .env 里配 {}_PATH \
+                 指向可执行文件，或把它放进 PATH；配好之后调 studio.retry_stage(<卡住的阶段>) 重试。",
                 if looked_in.is_empty() { "PATH".to_string() } else { looked_in.join("、") },
                 tool.to_uppercase()
             ),
@@ -214,8 +222,8 @@ impl StudioError {
             },
             StudioError::Internal { detail } => format!(
                 "内部错误（{detail}）。调 studio.status() 确认状态是否完好；\
-                 若状态可用则重试该操作，否则把这条错误详情原样转告用户，\
-                 让用户自己联系维护者——不要去读 .studio/ 下的任何文件。"
+                 若状态可用则重试该操作，否则把上面这段原样报告给用户——\
+                 日志在控制面的私有目录里，由用户去取，你不要去读。"
             ),
         }
     }
@@ -230,6 +238,14 @@ impl StudioError {
                     .collect::<Vec<_>>()
                     .join("; ");
                 format!("阶段 {stage} 的产物不符合契约：{list}")
+            }
+            StudioError::QualityViolation { stage, findings } => {
+                let list = findings
+                    .iter()
+                    .map(|v| v.to_string())
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                format!("阶段 {stage} 的产物没过质量闸：{list}")
             }
             StudioError::InvalidTransition {
                 stage,
@@ -288,8 +304,12 @@ impl fmt::Display for StudioError {
 impl std::error::Error for StudioError {}
 
 /// 全部错误码 —— `emit-assets` 用它生成文档里的错误表。
-pub const ERROR_CODES: [(&str, &str); 17] = [
+pub const ERROR_CODES: [(&str, &str); 18] = [
     ("schema_violation", "产物不符合阶段 schema，附字段路径"),
+    (
+        "quality_violation",
+        "形状合规但内容不达标（禁用词、身份锁不一致等），附规则名与路径",
+    ),
     ("invalid_transition", "状态机不允许，附当前状态与合法动作"),
     ("confirmation_required", "有门的阶段提交时没带确认问题"),
     ("gate_pending", "确认门还挂着，不能推进"),
@@ -323,6 +343,13 @@ mod tests {
             StudioError::SchemaViolation {
                 stage: StageId::Script,
                 violations: vec![Violation::new("script.title", "缺失")],
+            },
+            StudioError::QualityViolation {
+                stage: StageId::Storyboard,
+                findings: vec![Violation::new(
+                    "storyboard.shots[0].three_facts[0]",
+                    "[thin_fact] 太短",
+                )],
             },
             StudioError::InvalidTransition {
                 stage: StageId::Script,
@@ -419,7 +446,7 @@ mod tests {
     fn remedy_points_at_a_tool_or_command() {
         for e in one_of_each() {
             let r = e.remedy();
-            let actionable = r.contains("studio.") || r.contains(".env") || r.contains("提醒用户");
+            let actionable = r.contains("studio.") || r.contains(".env") || r.contains("用户");
             assert!(
                 actionable,
                 "{} 的 remedy 没给出可执行的下一步：{r}",
@@ -428,17 +455,18 @@ mod tests {
         }
     }
 
-    /// ADR-0002 的核心规则不只管生成的静态文档——`blocked_by.remedy` 是
-    /// Agent 卡住时第一个读到的文本，比 AGENTS.md 更容易被当场照着做。
-    /// 一旦这里点名了二进制，沙箱允许 shell 时 Agent 就有了绕过 MCP 的路径。
+    /// remedy 是**回给 Agent** 的，所以和随包文档受同一条约束：不提二进制名。
+    /// 只要 Agent 知道命令名和语法，沙箱允许 shell 时它就有能力自己跑，绕过 MCP。
+    /// 见 docs/decisions/ADR-0002。而且这两个二进制不在 Agent 的执行环境里，
+    /// 让它去跑一个不存在的命令，等于给了一条走不通的补救路径。
     #[test]
-    fn no_remedy_names_the_cli_binaries() {
+    fn remedies_never_name_the_binaries() {
         for e in one_of_each() {
             let r = e.remedy();
             for leak in ["studiod", "studio-cli"] {
                 assert!(
                     !r.contains(leak),
-                    "{} 的 remedy 泄露了二进制名 {leak}：{r}",
+                    "{} 的 remedy 提到了二进制名 {leak}：{r}",
                     e.code()
                 );
             }

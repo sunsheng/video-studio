@@ -1,4 +1,4 @@
-# ADR-0003：Skill 评估——像代码一样测试 AGENTS.md / SKILL.md
+# ADR-0004：Skill 评估——像代码一样测试 AGENTS.md / SKILL.md
 
 ## 背景
 

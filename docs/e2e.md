@@ -24,7 +24,7 @@ provider（`codex doctor` 通过、`codex exec` 能正常应答），就可以�
 前六个阶段，停在 `render`
 （`waiting_on: system`）。这比 `studio-skill-eval` 的脚本场景更真实：验证的是
 Codex 读了 AGENTS.md / SKILL.md 之后会不会正确使用工具面，这是脚本模拟不了
-的（见 [ADR-0003](decisions/ADR-0003-skill-evaluation.md) 里"脚本场景"与
+的（见 [ADR-0004](decisions/ADR-0004-skill-evaluation.md) 里"脚本场景"与
 "Agent 场景"的边界）。步骤同下面「在生产环境怎么跑」一节，只是走到第 7 步
 就停，不必往下走。
 
@@ -165,7 +165,7 @@ MCP server 每次工具调用往 `.studio/trace.jsonl` 追加一行，只记调�
 
 ## 换机器之后先跑协议层冒烟
 
-`studio-skill-eval` 的脚本场景（见 [ADR-0003](decisions/ADR-0003-skill-evaluation.md)）
+`studio-skill-eval` 的脚本场景（见 [ADR-0004](decisions/ADR-0004-skill-evaluation.md)）
 不用 Codex，直接跟真实编译出的 `studiod` 二进制说 JSON-RPC 走完六个阶段
 （中间重放一次「不要固定 2 秒」的修订）。它**不能替代**端到端——真正的
 端到端要验证的是 Codex 读了 AGENTS.md 和 SKILL.md 之后会不会正确使用工具面，

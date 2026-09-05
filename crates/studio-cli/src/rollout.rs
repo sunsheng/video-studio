@@ -50,6 +50,8 @@ pub struct Rollout {
     pub calls: CodexCalls,
     /// 读到过哪些 SKILL.md——这是唯一能观测 skill 是否被用上的办法。
     pub skills_read: Vec<String>,
+    /// 读到过哪些方法层文档与模型能力卡。同上，这是观测它们有没有被用上的唯一办法。
+    pub doctrine_read: Vec<String>,
     /// 疑似绕过 MCP 的动作：碰 `.studio/`、直接跑 studiod 子命令、改 stages/。
     pub bypasses: Vec<String>,
 }
@@ -61,6 +63,7 @@ pub fn parse(path: &Path) -> std::io::Result<Rollout> {
         ..Default::default()
     };
     let mut skills: BTreeSet<String> = BTreeSet::new();
+    let mut doctrine: BTreeSet<String> = BTreeSet::new();
 
     for line in text.lines() {
         let Ok(v) = serde_json::from_str::<Value>(line) else {
@@ -105,11 +108,24 @@ pub fn parse(path: &Path) -> std::io::Result<Rollout> {
                     _ => {}
                 },
                 Some("reasoning") => r.reasoning_blocks += 1,
-                Some("custom_tool_call") | Some("function_call") => {
-                    let input = payload.get("input").and_then(|s| s.as_str()).unwrap_or("");
-                    classify(input, &mut r.calls);
-                    collect_skills(input, &mut skills);
-                    if let Some(b) = sniff_bypass(input) {
+                Some("custom_tool_call") | Some("function_call") | Some("local_shell_call") => {
+                    // 参数字段各版本叫法不同：老的用 `input`，新的用 `arguments`。
+                    // 只认一个，另一种版本的会话就会整份静默落进 `other`——
+                    // 更糟的是 `bypasses` 会恒为空，「全程没有绕过 MCP」变成假通过。
+                    let args = payload
+                        .get("input")
+                        .or_else(|| payload.get("arguments"))
+                        .and_then(|s| s.as_str())
+                        .unwrap_or("");
+                    let name = payload.get("name").and_then(|s| s.as_str()).unwrap_or("");
+                    let namespace = payload
+                        .get("namespace")
+                        .and_then(|s| s.as_str())
+                        .unwrap_or("");
+                    classify(name, namespace, args, &mut r.calls);
+                    collect_skills(args, &mut skills);
+                    collect_doctrine(args, &mut doctrine);
+                    if let Some(b) = sniff_bypass(args) {
                         if !r.bypasses.contains(&b) {
                             r.bypasses.push(b);
                         }
@@ -121,6 +137,7 @@ pub fn parse(path: &Path) -> std::io::Result<Rollout> {
         }
     }
     r.skills_read = skills.into_iter().collect();
+    r.doctrine_read = doctrine.into_iter().collect();
     Ok(r)
 }
 
@@ -143,7 +160,41 @@ fn take_tokens(payload: &Value, t: &mut Tokens) {
     t.total = g("total_tokens");
 }
 
-fn classify(input: &str, c: &mut CodexCalls) {
+/// 按工具**名字**分类，不看参数内容。
+///
+/// 早先这里是拿参数做子串匹配的，两头都出错：作品目录叫
+/// `<名字>.studio/`，于是每一条 `cat .../千岛湖.studio/...` 都因为含
+/// `studio.` 被算成 MCP 调用；而 `exec_command` 只出现在工具名里、
+/// 不出现在参数里，真正的 shell 调用一次都统计不到。
+/// 名字和 namespace 是准确的，有就用它们。
+fn classify(name: &str, namespace: &str, args: &str, c: &mut CodexCalls) {
+    if name.is_empty() && namespace.is_empty() {
+        // 没有名字的老格式，只能退回参数启发式。
+        return classify_by_args(args, c);
+    }
+    let mcp = namespace.starts_with("mcp__") || name.starts_with("mcp__");
+    let studio = namespace.contains("video_studio")
+        || namespace.contains("video-studio")
+        || name.starts_with("studio_")
+        || name.starts_with("studio.");
+    // 有的版本把 MCP 调用包在通用的 exec 壳里，真正的工具名在参数里。
+    // 认 `mcp__` 前缀，不认光秃秃的 `studio.`——作品目录本身就叫
+    // `<名字>.studio/`，那样会把每一条读文件的命令都算成 MCP 调用。
+    let wrapped_studio_mcp = !mcp && args.contains("mcp__") && args.contains("studio");
+    if studio || wrapped_studio_mcp {
+        c.studio_mcp += 1;
+    } else if mcp {
+        c.other_mcp += 1;
+    } else if name.contains("exec") || name.contains("shell") || name.contains("write_stdin") {
+        c.shell += 1;
+    } else if name.contains("web") || name.contains("search") {
+        c.web += 1;
+    } else {
+        c.other += 1;
+    }
+}
+
+fn classify_by_args(input: &str, c: &mut CodexCalls) {
     if input.contains("studio.") || input.contains("studio_") && input.contains("mcp") {
         c.studio_mcp += 1;
     } else if input.contains("mcp__") {
@@ -172,6 +223,28 @@ fn collect_skills(input: &str, out: &mut BTreeSet<String>) {
             out.insert(name.clone());
         }
         idx = start.max(idx + 1);
+    }
+}
+
+/// 读到过哪些方法层文档。形如 `.agents/doctrine/<路径>.md`、`.agents/models/<系列>.md`。
+///
+/// 方法层是按需加载的：一份都没读到，说明 Agent 是凭感觉写的，
+/// 那么产出干巴就不该赖到文档头上——它压根没被打开。
+fn collect_doctrine(input: &str, out: &mut BTreeSet<String>) {
+    for prefix in ["doctrine/", "models/"] {
+        let mut idx = 0;
+        while let Some(pos) = input[idx..].find(prefix) {
+            let start = idx + pos;
+            let rest = &input[start..];
+            let path: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '/' | '.'))
+                .collect();
+            if path.ends_with(".md") {
+                out.insert(path);
+            }
+            idx = start + prefix.len();
+        }
     }
 }
 
@@ -233,6 +306,67 @@ mod tests {
             "input":"sed -n '1,200p' .agents/skills/script/SKILL.md; cat .agents/skills/director/SKILL.md"}})]);
         let r = parse(&p).unwrap();
         assert_eq!(r.skills_read, vec!["director", "script"]);
+    }
+
+    /// 新版 Codex 的 `function_call` 用 `arguments` 装参数、用 `name` 和
+    /// `namespace` 标身份。只认 `input` 的话，整份会话会静默落进 `other`：
+    /// 读没读文档看不见，绕没绕过 MCP 也看不见。
+    #[test]
+    fn the_arguments_field_is_read_and_tools_are_classified_by_name() {
+        let (_d, p) = write(vec![
+            json!({"type":"response_item","payload":{
+                "type":"function_call","name":"studio_status",
+                "namespace":"mcp__video_studio","arguments":"{}"}}),
+            json!({"type":"response_item","payload":{
+                "type":"function_call","name":"exec_command",
+                "arguments":"{\"cmd\":\"cat .agents/skills/director/SKILL.md\",\"workdir\":\"/x/千岛湖.studio\"}"}}),
+        ]);
+        let r = parse(&p).unwrap();
+        assert_eq!(r.calls.studio_mcp, 1, "MCP 调用要按名字认出来");
+        assert_eq!(
+            r.calls.shell, 1,
+            "exec_command 只出现在工具名里，不看名字就永远统计不到"
+        );
+        assert_eq!(r.calls.other, 0);
+        assert_eq!(r.skills_read, vec!["director"]);
+    }
+
+    /// 作品目录本身就叫 `<名字>.studio/`，拿参数做子串匹配会把每一条
+    /// 读文件的 shell 命令都误判成 MCP 调用。
+    #[test]
+    fn a_path_containing_dot_studio_is_not_mistaken_for_an_mcp_call() {
+        let (_d, p) = write(vec![json!({"type":"response_item","payload":{
+            "type":"function_call","name":"exec_command",
+            "arguments":"{\"cmd\":\"cat /home/me/千岛湖.studio/AGENTS.md\"}"}})]);
+        let r = parse(&p).unwrap();
+        assert_eq!(r.calls.studio_mcp, 0);
+        assert_eq!(r.calls.shell, 1);
+    }
+
+    /// 方法层是按需加载的，读没读只能从会话记录里看。
+    #[test]
+    fn doctrine_and_model_card_reads_are_detected() {
+        let (_d, p) = write(vec![json!({"type":"response_item","payload":{
+            "type":"function_call","name":"exec_command",
+            "arguments":"{\"cmd\":\"cat .agents/doctrine/camera/grammar.md .agents/doctrine/exemplars/storyboard.md && cat .agents/models/minimax_h3.md\"}"}})]);
+        let r = parse(&p).unwrap();
+        assert_eq!(
+            r.doctrine_read,
+            vec![
+                "doctrine/camera/grammar.md",
+                "doctrine/exemplars/storyboard.md",
+                "models/minimax_h3.md",
+            ]
+        );
+    }
+
+    /// 老格式没有 name/namespace，只能退回参数启发式——别把它退化掉。
+    #[test]
+    fn the_legacy_input_field_still_works() {
+        let (_d, p) = write(vec![json!({"type":"response_item","payload":{
+            "type":"custom_tool_call","input":"exec_command cat foo"}})]);
+        let r = parse(&p).unwrap();
+        assert_eq!(r.calls.shell, 1);
     }
 
     /// 重写这个项目就是为了让这种事不再发生，报告里必须点名。
