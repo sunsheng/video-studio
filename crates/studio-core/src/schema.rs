@@ -1393,11 +1393,17 @@ fn structural(stage: StageId, v: &Value, key: &str, out: &mut Vec<Violation>) {
             // 身份锁整个包了进去——于是道具卡那四个视图用 `contains` 查是「通过」的，
             // 而它们画的全是角色。技能清单里写的本来就是「以 identity_prompt
             // 逐字开头」，按它来。
+            //
+            // 两边都按空白归一化再比。**误拒比漏判更难查**：这条校验挡下来的
+            // 计划 Agent 会重试，而它看不出「我明明抄对了」和「首尾多了个空格」
+            // 的区别，于是在一份本来正确的计划上反复撞墙。空白差异不是这条规则
+            // 要管的事。
             let prompt = view
                 .get("prompt")
                 .and_then(|p| p.as_str())
                 .unwrap_or("")
                 .trim_start();
+            let identity = identity.trim();
             if !identity.is_empty() && !prompt.starts_with(identity) {
                 out.push(Violation::new(
                     at(&format!(".views[{j}].prompt")),
