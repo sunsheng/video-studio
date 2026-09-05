@@ -144,6 +144,45 @@ pub enum ActionKind {
     SelfReview,
 }
 
+/// 用户做过的一个决定。见 `docs/decisions/ADR-0003`。
+///
+/// **追加即历史**：记下就不改、不删，`studio.undo` 也不回退它。
+/// 按时间倒序给出，同一件事上后面的压过前面的。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Decision {
+    pub at: String,
+    pub stage: StageId,
+    pub kind: DecisionKind,
+    /// 用户的原话（否决）或选中选项的标签（选择）。控制面不做改写。
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DecisionKind {
+    /// 用户否决了当时的产物，detail 是他说的原话。
+    Rejected,
+    /// 用户在确认门上选了这一项。
+    Chose,
+}
+
+impl DecisionKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DecisionKind::Rejected => "rejected",
+            DecisionKind::Chose => "chose",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<DecisionKind> {
+        match s {
+            "rejected" => Some(DecisionKind::Rejected),
+            "chose" => Some(DecisionKind::Chose),
+            _ => None,
+        }
+    }
+}
+
 /// 下一步该做什么。Agent 只看这个字段就够了。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NextAction {
@@ -157,6 +196,10 @@ pub struct NextAction {
     pub required_outputs: Vec<String>,
     /// 传给 `studio.schema` 的阶段名。
     pub schema_ref: String,
+    /// 用户此前否决过什么、在门上选过什么，最近的在前。
+    /// 不必翻 timeline，也不指望上下文没被压缩掉。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub decisions: Vec<Decision>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

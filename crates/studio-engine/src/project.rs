@@ -261,6 +261,7 @@ impl Project {
             inputs: self.inputs_for(stage)?,
             required_outputs: vec![stage.output_key().to_string()],
             schema_ref: stage.to_string(),
+            decisions: self.store.decisions(DECISION_LIMIT)?,
         })
     }
 
@@ -282,6 +283,7 @@ impl Project {
             inputs,
             required_outputs: vec!["content_review".to_string()],
             schema_ref: "review".to_string(),
+            decisions: self.store.decisions(DECISION_LIMIT)?,
         })
     }
 
@@ -294,6 +296,8 @@ impl Project {
             inputs: self.inputs_for(stage)?,
             required_outputs: vec![stage.output_key().to_string()],
             schema_ref: stage.to_string(),
+            // 等控制面跑的时候 Agent 不写东西，档案给了也没用。
+            decisions: Vec::new(),
         })
     }
 
@@ -544,6 +548,9 @@ impl Project {
                     &format!("已确认 {}：选择了「{label}」", q.question_id),
                     None,
                 )?;
+                // 门上选了哪一项也是「用户要什么」的一部分，进决定档案。
+                self.store
+                    .record_decision(q.stage, studio_core::DecisionKind::Chose, &label)?;
                 self.status()
             }
         }
@@ -661,6 +668,10 @@ impl Project {
             None,
         )?;
         self.store.append_event(stage, "revised", message, None)?;
+        // 用户的原话逐字进档案：他在这个阶段说过的话，到下游阶段仍然有效。
+        // 见 docs/decisions/ADR-0003。
+        self.store
+            .record_decision(stage, studio_core::DecisionKind::Rejected, message)?;
         self.rewind_after(stage)?;
         self.status()
     }
@@ -948,6 +959,10 @@ impl Project {
 }
 
 const STAGE_TOTAL: usize = 10;
+
+/// 回给 Agent 的决定档案条数上限。默认注入的东西必须有硬上限——
+/// 整套架构的原则是渐进披露，见 `docs/decisions/ADR-0003`。
+const DECISION_LIMIT: usize = 20;
 
 fn loaded_outputs(l: &LoadedStage) -> Option<&Outputs> {
     match l {

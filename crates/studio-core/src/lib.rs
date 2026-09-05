@@ -20,8 +20,8 @@ pub mod state;
 
 pub use capability::{CapabilitySet, WorkflowCapability, INJECTABLE_PARAMS};
 pub use contract::{
-    ActionKind, AnswerOption, Blocked, Confirmation, Envelope, Event, NextAction, Outcome,
-    Progress, ProjectInfo, ProjectStatus, Question, SelectionType, WaitingOn,
+    ActionKind, AnswerOption, Blocked, Confirmation, Decision, DecisionKind, Envelope, Event,
+    NextAction, Outcome, Progress, ProjectInfo, ProjectStatus, Question, SelectionType, WaitingOn,
 };
 pub use error::{Result, StudioError, Violation};
 pub use quality::{Finding, Metric, Severity};

@@ -446,3 +446,71 @@ fn export_refuses_before_post_is_done() {
     let e = p.export().unwrap_err();
     assert_eq!(e.code(), "stage_not_ready");
 }
+
+/// 用户在剧本阶段说过的话，到分镜阶段仍然拿得到。
+///
+/// 这是「越用越准」原本缺的那一环：revise 的 message 以前用完即弃，
+/// 同一句话每个阶段都要说一遍。见 `docs/decisions/ADR-0003`。
+#[test]
+fn what_the_user_said_in_one_stage_is_still_there_in_the_next() {
+    let (_d, p) = new_project();
+    advance(&p, StageId::Idea);
+    advance(&p, StageId::Selection);
+
+    // 剧本被打回一次，用户给了具体意见。
+    p.submit_stage(
+        fixtures::outputs(StageId::Script),
+        Some(fixtures::summary(StageId::Script)),
+        fixtures::confirmation(StageId::Script),
+    )
+    .unwrap();
+    p.revise(StageId::Script, "不要固定2秒，要根据镜头内容智能分配")
+        .unwrap();
+    advance(&p, StageId::Script);
+
+    // 到了分镜阶段，那句话还在 next_action 里。
+    let env = p.status().unwrap();
+    assert_eq!(env.project.stage, StageId::Storyboard);
+    let decisions = &env.next_action.as_ref().unwrap().decisions;
+    assert!(
+        decisions
+            .iter()
+            .any(|d| d.detail.contains("不要固定2秒")
+                && d.kind == studio_core::DecisionKind::Rejected),
+        "用户在剧本阶段的原话必须带到下游：{decisions:#?}"
+    );
+    // 选题门上挑的那个方案同样在档案里。
+    assert!(
+        decisions
+            .iter()
+            .any(|d| d.kind == studio_core::DecisionKind::Chose && d.stage == StageId::Selection),
+        "门上选了哪个方案也是「用户要什么」：{decisions:#?}"
+    );
+    // 新的在前。
+    let ats: Vec<&str> = decisions.iter().map(|d| d.at.as_str()).collect();
+    let mut sorted = ats.clone();
+    sorted.sort_unstable_by(|a, b| b.cmp(a));
+    assert_eq!(ats, sorted, "档案按时间倒序");
+}
+
+/// undo 恢复的是阶段产物，不是「用户没说过那句话」。
+#[test]
+fn undo_does_not_erase_what_the_user_said() {
+    let (_d, p) = new_project();
+    advance(&p, StageId::Idea);
+    p.submit_stage(
+        fixtures::outputs(StageId::Selection),
+        Some(fixtures::summary(StageId::Selection)),
+        fixtures::confirmation(StageId::Selection),
+    )
+    .unwrap();
+    p.revise(StageId::Selection, "三个方案都太温吞了，要更冒险的")
+        .unwrap();
+    p.undo().unwrap();
+
+    let before = p.store().decisions(20).unwrap();
+    assert!(
+        before.iter().any(|d| d.detail.contains("太温吞")),
+        "撤销那次修订不等于他改了口味——真要改口味他会再说一句新的：{before:#?}"
+    );
+}
