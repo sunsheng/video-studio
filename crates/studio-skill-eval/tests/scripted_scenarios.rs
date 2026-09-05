@@ -24,7 +24,7 @@ fn concurrent_open_reports_busy_with_pid_passes() {
 
 #[test]
 fn the_registry_lists_every_scripted_scenario() {
-    let ids: Vec<&str> = all_scenarios().into_iter().map(|(id, _)| id).collect();
+    let ids: Vec<&str> = all_scenarios().into_iter().map(|m| m.id).collect();
     assert!(ids.contains(&"golden_six_stage_with_revise"));
     assert!(ids.contains(&"concurrent_open_reports_busy_with_pid"));
 }

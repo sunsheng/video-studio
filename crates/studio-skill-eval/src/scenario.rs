@@ -30,22 +30,32 @@ fn finish(scenario_id: &str, description: &str, verdicts: Vec<Verdict>) -> Scena
 /// 一个脚本场景的入口函数。
 pub type ScenarioFn = fn() -> ScenarioResult;
 
+/// 场景的名字信息，跟"跑一遍"分开——`list` 只需要前者，不该为了报个
+/// 名字就把场景真的跑一遍（起子进程、建临时 bundle、走一圈 MCP 调用）。
+pub struct ScenarioMeta {
+    pub id: &'static str,
+    pub description: &'static str,
+    pub run: ScenarioFn,
+}
+
 /// 全部内置脚本场景。
-pub fn all() -> Vec<(&'static str, ScenarioFn)> {
+pub fn all() -> Vec<ScenarioMeta> {
     vec![
-        (
-            "golden_six_stage_with_revise",
-            golden_six_stage_with_revise as ScenarioFn,
-        ),
-        (
-            "concurrent_open_reports_busy_with_pid",
-            concurrent_open_reports_busy_with_pid as ScenarioFn,
-        ),
+        ScenarioMeta {
+            id: "golden_six_stage_with_revise",
+            description: GOLDEN_SIX_STAGE_DESCRIPTION,
+            run: golden_six_stage_with_revise as ScenarioFn,
+        },
+        ScenarioMeta {
+            id: "concurrent_open_reports_busy_with_pid",
+            description: CONCURRENT_OPEN_DESCRIPTION,
+            run: concurrent_open_reports_busy_with_pid as ScenarioFn,
+        },
     ]
 }
 
 pub fn run(id: &str) -> Option<ScenarioResult> {
-    all().into_iter().find(|(i, _)| *i == id).map(|(_, f)| f())
+    all().into_iter().find(|m| m.id == id).map(|m| (m.run)())
 }
 
 const GOLDEN_SIX_STAGE_DESCRIPTION: &str = "取自 2026-09-03 那次真实事故的重放：\

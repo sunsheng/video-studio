@@ -508,9 +508,8 @@ fn cmd_unpack(archive: &Path, into: &Path) -> Result<(), String> {
 }
 
 fn cmd_skill_eval_list() -> Result<(), String> {
-    for (id, _) in all_scenarios() {
-        let r = run_scenario(id).expect("刚从 all_scenarios() 里拿到的 id 一定存在");
-        println!("  {id:<40} {}", r.description);
+    for m in all_scenarios() {
+        println!("  {:<40} {}", m.id, m.description);
     }
     Ok(())
 }
@@ -537,7 +536,7 @@ fn render_scenario_result(r: &ScenarioResult) -> String {
 
 fn cmd_skill_eval_run(scenario: &str, out: Option<PathBuf>) -> Result<(), String> {
     let r = run_scenario(scenario).ok_or_else(|| {
-        let known: Vec<&str> = all_scenarios().into_iter().map(|(id, _)| id).collect();
+        let known: Vec<&str> = all_scenarios().into_iter().map(|m| m.id).collect();
         format!(
             "没有叫 {scenario} 的场景。已注册的场景：{}",
             known.join("、")

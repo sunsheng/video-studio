@@ -10,19 +10,21 @@
 
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdout, Command, Stdio};
 use studio_core::StageId;
 
-/// 编译出的 `studiod` 二进制路径。
+/// 编译出的 `studiod` 二进制路径，缺失时现场构建一次。
 ///
 /// `studio-skill-eval` 跟 `studiod` 是平级 crate，不能像 `crates/studiod/
 /// tests/smoke.rs` 那样用 `CARGO_BIN_EXE_studiod`——那个环境变量只在
 /// "二进制和测试属于同一个包"时由 Cargo 提供。这里改成从当前测试/调用
-/// 进程自己的路径反推整个 workspace 共用的 `target/<profile>/` 目录：
-/// 只要跑过一次 `cargo build -p studiod`（或者任何一次
-/// `cargo test --workspace`，它会先把整个 workspace 构建完），二进制就
-/// 已经落在同一个目录里。
+/// 进程自己的路径反推整个 workspace 共用的 `target/<profile>/` 目录。
+///
+/// 两个 crate 之间没有依赖边，单独跑 `cargo test -p studio-skill-eval`
+/// 时 Cargo 不会顺带构建 `studiod`——之前这里只会 panic 提示"先手动
+/// `cargo build -p studiod`"，等于文档写的单条命令并不能真的独立跑通。
+/// 现在缺失时现场编译一次，让文档里的命令名副其实。
 pub fn studiod_binary() -> PathBuf {
     let mut dir = std::env::current_exe().expect("current_exe() 应该总能拿到");
     dir.pop(); // 去掉当前二进制自己的文件名
@@ -35,13 +37,28 @@ pub fn studiod_binary() -> PathBuf {
         "studiod"
     };
     let path = dir.join(name);
+    if !path.is_file() {
+        build_studiod(&dir);
+    }
     assert!(
         path.is_file(),
-        "找不到 {}——先跑一次 `cargo build -p studiod`（或 `cargo test --workspace`，\
-         它会先把整个 workspace 构建完再跑测试）。",
+        "构建后仍然找不到 {}——检查上面 cargo build -p studiod 的输出。",
         path.display()
     );
     path
+}
+
+/// 现场跑一次 `cargo build -p studiod`，profile 跟当前测试二进制的一致
+/// （从 `target/<profile>/` 这段路径反推，release 还是 debug）。
+fn build_studiod(target_dir: &Path) {
+    let release = target_dir.components().any(|c| c.as_os_str() == "release");
+    let mut cmd = Command::new(env!("CARGO"));
+    cmd.args(["build", "-p", "studiod"]);
+    if release {
+        cmd.arg("--release");
+    }
+    let status = cmd.status().expect("拉不起 `cargo build -p studiod`");
+    assert!(status.success(), "`cargo build -p studiod` 失败");
 }
 
 /// 一个真实的 `studiod` 子进程，连着一个临时 bundle。
