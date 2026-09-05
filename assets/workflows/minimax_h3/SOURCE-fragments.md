@@ -42,7 +42,7 @@
 | 片段 | 来源 | 验证状态 |
 |---|---|---|
 | `guide.image.json` `guide.clip.json` `guide.audio.json` | `/object_info/MiniMaxH3AddGuide` | ✅ 两个 AddGuide 串联 + 2 张 AUTOGROW 参考，真机图校验通过（2026-09-05） |
-| `input.video.json` | `/object_info` 的 `LoadVideo` + `GetVideoComponents` | ⚠️ `bindings_verified: false`——节点存在、输出类型对得上，但没跑通过一整镜 |
+| `input.video.json` | `/object_info` 的 `LoadVideo` + `GetVideoComponents` | ✅ 真机出片，clip 锚点与 video 参考各一镜，画面人眼看过（2026-09-05，见下） |
 | `input.audio.json` | `/object_info/LoadAudio` | ⚠️ `bindings_verified: false`——同上 |
 
 `MiniMaxH3AddGuide` 是新节点（[ComfyUI#15439](https://github.com/Comfy-Org/ComfyUI/pull/15439)），
@@ -60,8 +60,30 @@ h3_ref ─[1]──────────────▶ sampler.latent_image
 AddGuide **只输出 CONDITIONING**，所以链式时只有 `positive` 串成链，
 `latent` 一律接 head。
 
-两个 `bindings_verified: false` 的片段带着 `unavailable_reason`，控制面会拒绝
-用它们渲染——跟未核验的整图基线是同一套规矩。真机跑通一整镜后改成 `true`。
+`bindings_verified: false` 的片段带着 `unavailable_reason`，控制面会拒绝用它们
+渲染——跟未核验的整图基线是同一套规矩。真机跑通一整镜后改成 `true`。
+
+`input.video` 已于 2026-09-05 核验（见下），现在还挂着 false 的只剩
+`input.audio`：独立音频参考和 audio 锚点没在真机上跑通过。
+
+## video 通道：核验经过（2026-09-05）
+
+`clip` 锚点与 `kind: video` 参考共用 `LoadVideo` + `GetVideoComponents`。
+两条各真机跑一镜，画面人眼看过：
+
+- **video 参考**：640×384×22 帧，出来是正常的黏土网球场，提示词生效。
+- **clip 锚点**：5 帧锚点接在 39 帧镜头开头。第 0 / 4 帧是锚点内容，
+  第 6 帧起接管成网球场——正是接续要的语义。
+
+素材经 `/upload/image` 上传，**那个端点收 mp4**，不需要另开一条路径。
+
+**第一次跑是错的，而且「通过」了。** 最初用 22 帧锚点挂 22 帧镜头，两条都
+跑完出片、测试全绿——但出来的整段就是锚点本身，提示词一个字都没生效。
+等长的锚点把整镜钉死了。这个配置证明不了通道能用，按它翻 `bindings_verified`
+就是拿一个无意义的绿色当证据。改成短锚点重跑才看到真行为。
+
+教训跟 turbo 那次同源：**机器说"跑完了、有产出"，跟"验的是不是你以为的那件事"
+是两回事。** 这一条写成了 V5 的后半句（锚点必须短于镜头）。
 
 ## turbo 叠加层：图校验通过 ≠ 画面是对的
 

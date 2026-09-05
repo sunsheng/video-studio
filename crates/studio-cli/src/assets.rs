@@ -156,7 +156,7 @@ const MODEL_CARDS: [ModelCard; 3] = [
                     id: "reference",
                     verified: true,
                     what_for: "挂参考锁身份与风格，起幅由模型定。绝大多数镜头用它。",
-                    references: &[("image", 9, true), ("video", 3, false), ("audio", 3, false)],
+                    references: &[("image", 9, true), ("video", 3, true), ("audio", 3, false)],
                     frames: &[],
                     turbo_steps: Some(4),
                 },
@@ -177,8 +177,9 @@ const MODEL_CARDS: [ModelCard; 3] = [
                 ),
                 (
                     "clip",
-                    false,
-                    "把一段帧序列锚在某一帧，比单帧接得更稳。写 `<上一镜>.tail22` 这种带帧数的",
+                    true,
+                    "把一段帧序列锚在某一帧，比单帧接得更稳。写 `<上一镜>.tail5` 这种带帧数的——\
+                     **锚点必须短于这一镜**，等长的会把整镜钉死",
                 ),
                 ("audio", false, "把一段音频锚在某一帧"),
             ],
@@ -1564,7 +1565,9 @@ mod tests {
             "要列出 head"
         );
         assert!(md.contains("image × 9"), "要给出参考槽位的上限");
-        assert!(md.contains("~~video × 3~~"), "未核验的介质要划掉");
+        // video 通道 2026-09-05 真机核验后不再划掉；audio 还没有，规则由它守着。
+        assert!(md.contains("video × 3"), "已核验的介质不该还划着");
+        assert!(md.contains("~~audio × 3~~"), "未核验的介质要划掉");
     }
 
     /// 帧数网格必须写在卡上，而且数值要跟 studio-core 的常量对得上。

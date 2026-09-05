@@ -247,23 +247,23 @@ fn the_preview_turbo_combination_runs_on_a_real_comfyui() {
 
 /// 未核验的通道要**结构化阻塞**，不能悄悄退化成别的东西。
 ///
-/// `clip` 锚点要的是帧序列，走 LoadVideo；那条通道还没跑通过一整镜。
-/// 以前它被错误地映射到 LoadImage——图能过校验、也能出片，只是锚的是
-/// 一张静帧而不是一段。这条测试守着「宁可挡下，不要静默降级」。
+/// video 通道核验之后，仍未核验的是 audio——规则本身还得有人守着。
+/// `clip` 锚点曾经被错误地映射到 LoadImage：图能过校验、也能出片，只是锚的
+/// 是一张静帧而不是一段。这条测试守着「宁可挡下，不要静默降级」。
 #[test]
 fn an_unverified_input_channel_is_refused_rather_than_downgraded() {
     let Some(env) = setup() else { return };
-    let input_video = env.set.inputs.get("video").expect("片段库缺 input.video");
-    if input_video.verified {
-        eprintln!("跳过：input.video 已经核验过了，这条测试的前提不再成立");
+    let input_audio = env.set.inputs.get("audio").expect("片段库缺 input.audio");
+    if input_audio.verified {
+        eprintln!("跳过：所有输入通道都核验过了，这条测试的前提不再成立");
         return;
     }
 
     let mut shot = base("S09", "reference");
     shot.guides = vec![Guide {
-        kind: GuideKind::Clip,
+        kind: GuideKind::Audio,
         at_frame: 0,
-        asset_id: "S08.tail22".into(),
+        asset_id: "S08.tail5".into(),
     }];
     let err = assemble_as(&env.set, &shot, "x/S09", Combination::Standard)
         .expect_err("未核验的通道不该拼得出图");
@@ -277,10 +277,14 @@ fn an_unverified_input_channel_is_refused_rather_than_downgraded() {
 
 /// 造一段短视频并传上去，返回 ComfyUI 那侧的文件名。
 ///
-/// 帧数落在 `17k+5` 网格上——clip 锚点的长度吃同一套网格（SPEC-0014 V5）。
-fn upload_clip(env: &Env, name: &str) -> String {
+/// `frames` 落在 `17k+5` 网格上——clip 锚点的长度吃同一套网格（SPEC-0014 V5）。
+///
+/// **锚点必须比镜头短。** 等长的锚点等于把整镜钉死，模型只会把它复现出来，
+/// 提示词一个字都不生效——那种配置证明不了这条通道能用。踩过一次：22 帧锚点
+/// 挂 22 帧镜头，出来的就是锚点本身。
+fn upload_clip(env: &Env, name: &str, frames: i64) -> String {
     let local = env.bundle.resolve(&format!("media/{name}.mp4")).unwrap();
-    let seconds = FRAMES as f64 / FPS;
+    let seconds = frames as f64 / FPS;
     let ok = std::process::Command::new("ffmpeg")
         .args(["-hide_banner", "-v", "error", "-y", "-f", "lavfi", "-i"])
         // 渐变色块：帧与帧之间有变化，才看得出接进去的是一段而不是一张静图。
@@ -330,11 +334,16 @@ fn the_video_input_channel_renders_on_a_real_comfyui() {
         env.set.inputs.get_mut("video").unwrap().verified = true;
     }
 
-    let clip = upload_clip(&env, "anchor_clip");
-    eprintln!("锚点视频上传后的文件名：{clip}");
+    // 5 帧锚点接在 39 帧镜头的开头：前 5 帧跟着锚点走，其余由提示词接管。
+    // 两个数都在 17k+5 网格上。
+    const ANCHOR_FRAMES: i64 = 5;
+    const LONG_SHOT: i64 = 39;
+    let clip = upload_clip(&env, "anchor_clip", ANCHOR_FRAMES);
+    eprintln!("锚点视频上传后的文件名：{clip}（{ANCHOR_FRAMES} 帧）");
 
-    // 1. clip 锚点：把一段帧序列锚在第 0 帧。
+    // 1. clip 锚点：把一小段帧序列锚在第 0 帧，镜头其余部分接着往下走。
     let mut anchored = base("V01", "reference");
+    anchored.length_frames = LONG_SHOT;
     anchored.guides = vec![Guide {
         kind: GuideKind::Clip,
         at_frame: 0,

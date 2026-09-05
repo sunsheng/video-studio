@@ -33,8 +33,12 @@ schema 按 `core_model_family` 分派两种形状，不让 Agent 混着写。
 3. **接续镜要排队。** 引用 `sh01.tail` 的镜头得等 sh01 出片才有东西可裁，
    调度改成按依赖分波；上一镜的尾段也不在 `visual_assets` 里，用 ffmpeg 现裁。
 
-还剩：真机跑通一整镜 `clip` 锚点与视频参考，把 `input.video` /
-`input.audio` 的 `bindings_verified` 改成 true——现在这两条通道是结构化
+`input.video` 已于 2026-09-05 真机核验并放开：`clip` 锚点（5 帧接 39 帧镜头）
+与 `kind: video` 参考各跑一镜，画面人眼看过。连带补了 V5 的后半句——**锚点
+必须短于这一镜**，等长的会把整镜钉死，那是第一次跑用等长锚点、测试全绿但
+画面全错才发现的。
+
+还剩 `input.audio`：独立音频参考与 audio 锚点没在真机上跑通过，仍是结构化
 阻塞状态，能力卡上划掉了。
 
 ### 成片超分（issue #13）

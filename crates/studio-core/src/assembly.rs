@@ -1651,6 +1651,39 @@ pub fn validate_shot(
             ));
         }
         check_asset(&mut v, at(&format!("guides[{j}].asset_id")), &g.asset_id);
+
+        // V5：clip 锚点的长度吃同一套 17k+5 网格，而且**必须短于这一镜**。
+        //
+        // 后半句是真机跑出来的：22 帧的锚点挂在 22 帧的镜头上，整镜就是锚点
+        // 本身，提示词一个字都不生效。等长（或更长）的锚点等于把整镜钉死，
+        // 那不是接续，是复制。
+        if let Some(seg) = parse_shot_segment(&g.asset_id) {
+            if let Some(n) = seg.frames {
+                let n = n as i64;
+                if !is_on_frame_grid(n) {
+                    let (lo, hi) = nearest_grid(n);
+                    v.push(Violation::new(
+                        at(&format!("guides[{j}].asset_id")),
+                        format!(
+                            "锚点长度 {n} 帧不在网格上（17k+5：5 / 22 / 39 / 56…）。\
+                             最近的合法值是 {lo} 或 {hi}，写成 {}.tail{lo} 这样。",
+                            seg.shot_id
+                        ),
+                    ));
+                }
+                if n >= shot.length_frames {
+                    v.push(Violation::new(
+                        at(&format!("guides[{j}].asset_id")),
+                        format!(
+                            "锚点 {n} 帧不比这一镜的 {} 帧短——等长的锚点会把整镜钉死，\
+                             模型只会把它复现出来，提示词一个字都不生效。\
+                             接续要的是**开头几帧**跟住上一镜，取短一点（比如 {}.tail5）。",
+                            shot.length_frames, seg.shot_id
+                        ),
+                    ));
+                }
+            }
+        }
     }
 
     // V2 的另一半：首尾帧是 `head: image` 专用的具名槽位。写在没有这两个
@@ -1868,6 +1901,67 @@ mod validation_tests {
         assert!(
             hit.message.contains("C01.front"),
             "要列出可用的：{}",
+            hit.message
+        );
+    }
+
+    /// V5：等长的锚点会把整镜钉死。
+    ///
+    /// 真机跑出来的：22 帧锚点挂 22 帧镜头，出来的整段就是锚点本身，
+    /// 提示词一个字都不生效。那不是接续，是复制。
+    #[test]
+    fn v5_an_anchor_as_long_as_the_shot_is_rejected() {
+        let mut s = shot("reference");
+        s.shot_id = "S03".into();
+        s.length_frames = 22;
+        s.guides = vec![Guide {
+            kind: GuideKind::Clip,
+            at_frame: 0,
+            asset_id: "S02.tail22".into(),
+        }];
+        let v = validate_shot(&fragments(), &s, &assets(), &["S02".into()], 1);
+        let hit = find(&v, "钉死").expect("{v:?}");
+        assert!(hit.message.contains("复现"), "{}", hit.message);
+        assert!(
+            hit.message.contains("tail5"),
+            "要给出照抄就能改的写法：{}",
+            hit.message
+        );
+    }
+
+    /// 短锚点是正常的接续，不该报。
+    #[test]
+    fn v5_a_short_anchor_is_fine() {
+        let mut s = shot("reference");
+        s.shot_id = "S03".into();
+        s.length_frames = 39;
+        s.guides = vec![Guide {
+            kind: GuideKind::Clip,
+            at_frame: 0,
+            asset_id: "S02.tail5".into(),
+        }];
+        assert_eq!(
+            validate_shot(&fragments(), &s, &assets(), &["S02".into()], 1),
+            vec![]
+        );
+    }
+
+    /// 锚点长度同样吃 17k+5 网格。
+    #[test]
+    fn v5_an_anchor_off_the_frame_grid_is_rejected() {
+        let mut s = shot("reference");
+        s.shot_id = "S03".into();
+        s.length_frames = 56;
+        s.guides = vec![Guide {
+            kind: GuideKind::Clip,
+            at_frame: 0,
+            asset_id: "S02.tail10".into(),
+        }];
+        let v = validate_shot(&fragments(), &s, &assets(), &["S02".into()], 1);
+        let hit = find(&v, "锚点长度").expect("{v:?}");
+        assert!(
+            hit.message.contains("5") && hit.message.contains("22"),
+            "{}",
             hit.message
         );
     }

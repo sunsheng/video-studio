@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | 对应 issue | [#14](https://github.com/sunsheng/video-studio/issues/14) |
-| 状态 | 规格已定，待实现 |
+| 状态 | 已实现（PR #19）；V5 的后半句与 V9 是实现时真机补的 |
 | 前置 | 无（不需要 GPU；真机验证部分已完成，见 §2） |
 | 阻塞谁 | [#12](https://github.com/sunsheng/video-studio/issues/12) 的参考绑定、AddGuide、累积锁定全部依赖本规格落地 |
 
@@ -318,7 +318,7 @@ head                   原样保留（h3_ref / h3_i2v）
 | V2 | `head: image` 不接 `references`，`guides` 最多 2 个且 `at_frame` 只能是 0 或 -1；反过来 `first_frame` / `last_frame` 只有带帧槽位的 head 吃 | I2V 只有 first/last |
 | V3 | `guides[].at_frame ∈ [-length_frames, length_frames)` | AddGuide 语义 |
 | V4 | `length_frames` 吃 `17k+5` 网格 | MiniMax H3 帧网格，**现在完全没校验** |
-| V5 | `kind: clip` 的 guide 长度吃 `5 / 22 / 39 / …`（同 `17k+5`） | AddGuide 自动 snap，显式挡下更好排查 |
+| V5 | `kind: clip` 的 guide 长度吃 `5 / 22 / 39 / …`（同 `17k+5`），且**必须短于这一镜** | AddGuide 自动 snap；等长的锚点会把整镜钉死（真机） |
 | V6 | `with_audio: true` 只能出现在 `kind: video` 的 reference 上 | 槽位语义 |
 | V7 | 引用的 `asset_id` 必须在 `visual_assets` 的产物里存在（`references` / `guides` / 首尾帧三处都查） | 跨阶段一致性 |
 | V8 | `width` / `height` 是 32 的倍数，短边 ≤ 768 | MiniMax 原生画布 |
@@ -335,6 +335,11 @@ S02 渲完才存在。所以引用有两个来源：登记过的资产走 V7，�
 其余的算资产引用——`C01.front` 这种带点的视角 id 不会被误认。
 
 V9 挡的是环：引用自己或后面的镜头，那一镜还没渲出来，接不上。
+
+V5 的后半句也是真机补的：22 帧锚点挂在 22 帧镜头上，**出来的整段就是锚点本身**，
+提示词一个字都不生效。等长（或更长）的锚点等于把整镜钉死，那不是接续是复制。
+短锚点才对——5 帧锚点接 39 帧镜头，前 5 帧跟住锚点、其余由提示词接管，
+真机上就是这个行为。
 
 ---
 
