@@ -234,15 +234,21 @@ pub const PROP_VIEW_LABELS: [(&str, &str); 4] = [
 ];
 
 /// 资产类型。
-pub const ASSET_KINDS: [&str; 5] = [
-    "character_card",
-    "scene_card",
-    "prop_card",
-    "safety_reference",
-    "style_reference",
-];
+///
+/// 曾经还有 `safety_reference` 与 `style_reference` 两项，2026-09-05 删掉了。
+/// 它们**没有定义、没有校验、没有下游**：全仓库没有一处解释它们是什么，
+/// `views_for` 对它们返回空所以必需视图为零，而 `asset_kind` 这个字段本身
+/// 根本没有任何下游代码读（`AssetResolver` 按 asset_id + 视图名解析）。
+///
+/// 后果不是「多了个没用的枚举值」这么轻：Agent 看到 schema 里有合法取值，
+/// 只能自己猜它是什么意思，然后照猜出来的意思花 GPU 出图。一次真实的端到端
+/// 里它就这么造了一张「安全立足点参照图」出来，没人消费。
+///
+/// 「安全」这个概念在文字层本来就有正经位置——brief 与分镜里的 `risks` /
+/// `avoidable`。它是漏进视觉资产类型里的。
+pub const ASSET_KINDS: [&str; 3] = ["character_card", "scene_card", "prop_card"];
 
-/// 某类资产的全部合法视图。参照类资产不强制多视图，返回空。
+/// 某类资产的全部合法视图。取值不在 [`ASSET_KINDS`] 里时返回空。
 pub fn views_for(asset_kind: &str) -> &'static [&'static str] {
     match asset_kind {
         "character_card" => &CHARACTER_VIEWS,

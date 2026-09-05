@@ -32,9 +32,7 @@
                 "enum": [
                   "character_card",
                   "scene_card",
-                  "prop_card",
-                  "safety_reference",
-                  "style_reference"
+                  "prop_card"
                 ],
                 "type": "string"
               },

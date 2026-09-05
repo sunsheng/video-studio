@@ -1282,7 +1282,9 @@ fn structural(stage: StageId, v: &Value, key: &str, out: &mut Vec<Violation>) {
 
         let allowed = lexicon::views_for(kind);
         if allowed.is_empty() {
-            // 参照类资产（safety_reference / style_reference）不强制多视图。
+            // 三种卡都有视图，所以走到这里说明 asset_kind 不是合法取值——
+            // 那已经由 schema 的 one_of 报过了，这里跳过，免得再叠一串
+            // 「缺必需视图」的连带错误把真正的原因埋掉。
             continue;
         }
         let views = asset
@@ -1797,16 +1799,28 @@ mod fixture_tests {
         refuses(&o, "不是 character_card 的视图");
     }
 
-    /// 参照类资产不强制多视图——它们本来就只有一张图。
+    /// 删掉的那两个参照类资产不能再被提交。
+    ///
+    /// `safety_reference` / `style_reference` 曾经是合法取值，但**没有定义、
+    /// 没有校验、没有下游**——Agent 只能猜着用，然后照猜出来的意思花 GPU 出图。
+    /// 一次真实的端到端里就这么造了一张没人消费的「安全立足点参照图」。
+    ///
+    /// 现在它们不在 ASSET_KINDS 里，由 schema 的 one_of 直接拒掉。
     #[test]
-    fn a_style_reference_needs_no_views() {
-        let mut o = plan();
-        o["asset_plan"]["assets"][0]["asset_kind"] = json!("style_reference");
-        o["asset_plan"]["assets"][0]["views"] = json!([
-            { "view": "front_full", "is_anchor": true, "aspect": "9:16",
-              "prompt": "一张色调参照", "status": "planned" }
-        ]);
-        assert!(validate(StageId::VisualAssets, &o).is_ok());
+    fn the_undefined_reference_kinds_are_no_longer_accepted() {
+        for kind in ["safety_reference", "style_reference"] {
+            let mut o = plan();
+            o["asset_plan"]["assets"][0]["asset_kind"] = json!(kind);
+            let Err(e) = validate(StageId::VisualAssets, &o) else {
+                panic!("{kind} 已经删掉了，不该还能提交");
+            };
+            assert_eq!(e.code(), "schema_violation", "{kind}");
+            assert!(
+                e.message().contains("character_card"),
+                "{kind} 的错误要列出还剩哪些合法取值：{}",
+                e.message()
+            );
+        }
     }
 
     /// 剧本各拍时长必须真的合计 10 秒——样例本身就该是一份说得通的作品。
