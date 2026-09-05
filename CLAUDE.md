@@ -120,7 +120,8 @@ npm install -g @openai/codex
 
 ```toml
 model_provider = "envproxy"
-model = "gpt-5.6-sol"    # 要写全名，别写别名 gpt-5.6
+model = "gpt-5.6-terra"          # 主力，见下面「选哪个模型」
+model_reasoning_effort = "high"  # 见下面「选哪个 effort」
 
 [model_providers.envproxy]
 name = "envproxy"
@@ -129,12 +130,82 @@ env_key = "OPENAI_API_KEY"
 wire_api = "responses"   # 这个版本不认 "chat" 了
 ```
 
-**`model` 要写具体型号，不要写别名。** `gpt-5.6` 是 `gpt-5.6-sol` 的别名
-（`/v1/models` 里它的 display_name 就是 "GPT-5.6 (Sol)"），两者是同一个模型，
-但 Codex 的模型元数据表里只有全名——写别名会每次都报
+**配置改完用 `--strict-config` 验一次**：
+
+```bash
+codex exec --strict-config --skip-git-repo-check "回答两个字：就绪"
+```
+
+不带这个开关时，**拼错的或不存在的键会被静默忽略**——你以为配了 `high`，
+实际跑的是默认值。这类静默失效正是本项目最不能接受的失败方式，所以配置
+一改就验，看输出里的 `model:` 和 `reasoning effort:` 两行是不是你要的。
+
+#### 选哪个模型
+
+主力 `gpt-5.6-terra`，往下退 `gpt-5.6-sol` → `gpt-5.5`。
+`gpt-6-astra` 实测也可用，但不在网关的型号列表里。
+
+**判断可用与否只看一件事：真发一次请求。**
+
+```bash
+curl -sS -X POST "$OPENAI_BASE_URL/v1/responses" \
+  -H "Authorization: Bearer $OPENAI_API_KEY" -H "Content-Type: application/json" \
+  -d '{"model":"gpt-6-astra","input":"hi"}'
+```
+
+回来是正常 response 就是可用，是 `error` 就退到下一个。
+
+**不要用 `/v1/models` 的列表做判断——它不准。** 2026-09-05 实测：
+`gpt-6-astra` 不在列表里，但直接请求完全正常，响应的 `model` 字段回的也是
+`gpt-6-astra`（网关没有静默改路由）。照列表判断会白白退到更弱的模型。
+
+顺带一条仍然成立的老经验：**`model` 要写具体型号，不要写别名。**
+`gpt-5.6` 是 `gpt-5.6-sol` 的别名，两者是同一个模型，但 Codex 的模型元数据表
+里只有全名——写别名会每次报
 `Model metadata for 'gpt-5.6' not found. Defaulting to fallback metadata`，
-然后用兜底元数据跑。用 `gpt-5.6-sol` / `gpt-5.6-terra` / `gpt-5.5` 都没有这个问题。
-换网关之后先 `curl $OPENAI_BASE_URL/models` 看清有哪些型号名，挑全名写。
+然后用兜底元数据跑。
+
+#### 给 Review 换一个更强的模型
+
+**`review_model` 这个键对 `codex exec review` 不生效。** 官方配置参考写得很
+明确：它是「Optional model override used by `/review`」——只管交互式那个斜杠
+命令。实测跑 `codex exec review` 时打印的仍是主力 `model`。
+
+要让 Review 用更强的模型 / 更高的 effort，**在命令行给**：
+
+```bash
+codex exec review --base main -m gpt-5.6-sol -c model_reasoning_effort="xhigh"
+```
+
+#### 选哪个 effort
+
+**按任务难度动态定，不要固定一个值。**
+
+官方配置参考列的合法值是 `minimal｜low｜medium｜high｜xhigh`，
+**没有 `max`**；但实测 CLI 与网关都接受 `max`。文档与实现不一致时，
+生产配置取保守的一侧——**用 `xhigh` 封顶**，需要 `max` 时先自己验一次。
+
+各模型对低档位的支持（2026-09-05 实测）：
+
+| 模型 | `none` | `minimal` | `low` 及以上 |
+|---|---|---|---|
+| `gpt-6-astra` | ❌ 不支持 | — | ✅ |
+| `gpt-5.6-sol` | ✅ | ✅（归一成 `none`） | ✅ |
+| `gpt-5.6-terra` | ✅ | ✅（归一成 `none`） | ✅ |
+
+**`gpt-6-astra` 不接受 `none`**，而 CLI 不显式配置时默认就是 `none`
+（CLI 没把它真发出去所以没报错，但直接调 API 传 `none` 会被拒）。
+用 astra 时显式写一个 effort，别赌默认值。
+
+按任务挑：
+
+| 任务 | effort |
+|---|---|
+| 冒烟、确认环境通不通、问一句话 | `low` |
+| 走 MCP 端到端验收（照剧本填表、按 remedy 修正） | `high` |
+| Code Review、要读懂跨 crate 契约再下判断的分析 | `xhigh` |
+
+命令行临时覆盖用 `-c model_reasoning_effort="xhigh"`，不必改配置文件。
 
 `base_url` 要带 `/v1`，不带会 404（`codex doctor` 的可达性探测仍会说 reachable，
 它探的是别的路径，不能替代这一步）。
