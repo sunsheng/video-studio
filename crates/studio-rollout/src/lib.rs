@@ -1,8 +1,15 @@
 //! 读 Codex 的会话记录（rollout jsonl）。
 //!
 //! MCP server 只看得见自己被调用了什么，看不见 Codex 那一侧发生了什么——
-//! 用了多少 token、读没读 SKILL.md、有没有绕过 MCP 直接跑 shell。
+//! 用了多少 token、读没读 SKILL.md/doctrine、有没有绕过 MCP 直接跑 shell。
 //! 这些只有 Codex 自己的记录里有。
+//!
+//! 独立成 crate 是因为这份解析踩过真实的坑（见下面 `classify`/
+//! `collect_doctrine` 的注释），`studio-cli`（`e2e report`/`exec report`）
+//! 和 `studio-skill-eval`（`CodexDriver`）两边都要用，共用一份实现，
+//! 不重新发明一遍去踩同样的坑。不依赖 `studio-core`/`studio-engine`——
+//! 解析的是外部 jsonl 格式，跟本项目阶段图无关，见
+//! `docs/decisions/ADR-0004-skill-evaluation.md`。
 //!
 //! 所以端到端报告可以合并两份数据：服务端的 `.studio/trace.jsonl` 给出
 //! 阶段推进与耗时，Codex 的 rollout 给出 token 与绕行行为。

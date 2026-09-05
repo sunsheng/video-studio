@@ -438,7 +438,10 @@ mod tests {
         }
     }
 
-    /// remedy 必须指向一个能调的工具，而不是泛泛而谈。
+    /// remedy 必须指向一个能调的工具，或者（当 Agent 确实无能为力时）
+    /// 明确交给用户去终端处理——这也是一种可执行的下一步，AGENTS.md 自己
+    /// 就用这个措辞（"这超出你的能力范围，提醒用户自己在终端处理"）。
+    /// 不能是既不给工具、也不交给用户的空话。
     #[test]
     fn remedy_points_at_a_tool_or_command() {
         for e in one_of_each() {

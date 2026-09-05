@@ -138,7 +138,8 @@ fn read(dir: &Path) -> Entry {
 
 pub fn render(entries: &[Entry]) -> String {
     if entries.is_empty() {
-        return "没找到作品。\n  新建一部：studiod init ~/videos/我的第一部.studio\n".to_string();
+        return "没找到作品。\n  新建一部：studio-cli init ~/videos/我的第一部.studio\n"
+            .to_string();
     }
     let w_title = entries
         .iter()
@@ -260,7 +261,7 @@ mod tests {
 
     #[test]
     fn empty_scan_tells_you_how_to_make_one() {
-        assert!(render(&[]).contains("studiod init"));
+        assert!(render(&[]).contains("studio-cli init"));
     }
 
     #[test]

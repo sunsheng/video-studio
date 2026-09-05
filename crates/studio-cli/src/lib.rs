@@ -12,4 +12,9 @@ pub mod html;
 pub mod list;
 pub mod pack;
 pub mod quality;
-pub mod rollout;
+
+/// 解析 Codex rollout jsonl——实际实现在 `studio-rollout`（跟
+/// `studio-skill-eval` 共用一份，见 `docs/decisions/ADR-0004-skill-evaluation.md`），
+/// 这里转发是为了不动 `e2e`/`main` 里现有的 `rollout::parse`/`rollout::Rollout`
+/// 调用点。
+pub use studio_rollout as rollout;

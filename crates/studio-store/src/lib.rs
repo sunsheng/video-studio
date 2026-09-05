@@ -1003,4 +1003,50 @@ mod tests {
             StageState::Approved
         );
     }
+
+    /// 完整性摘要只在 `open()` 时核对一次，同一个 `Store` handle 生命周期内
+    /// 不会重新校验——这是刻意的（每次读都重算摘要代价太大）。这意味着
+    /// `load_stage` 自己对 state/outputs 字段的防御性解析是另一层、独立于
+    /// 摘要校验的保护，得单独测：摘要校验测的是「有没有人绕过 MCP 改过
+    /// 文件」，这里测的是「万一字段本身写坏了，会不会 panic 而不是报错」。
+    #[test]
+    fn a_stage_with_an_illegal_state_value_is_reported_not_panicked() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("studio.db");
+        let s = Store::create(&path, "t", "0.1.0").unwrap();
+        let c = Connection::open(&path).unwrap();
+        c.execute(
+            "UPDATE stages SET state = 'not_a_real_state' WHERE stage = 'idea'",
+            [],
+        )
+        .unwrap();
+        let e = s.load_stage(StageId::Idea).unwrap_err();
+        assert_eq!(e.code(), "state_drift");
+        assert!(e.message().contains("非法"));
+    }
+
+    #[test]
+    fn unparseable_outputs_json_is_reported_not_panicked() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("studio.db");
+        let s = Store::create(&path, "t", "0.1.0").unwrap();
+        s.save_stage(
+            StageId::Idea,
+            StageState::Approved,
+            1,
+            Some(&outs("brief")),
+            None,
+            None,
+        )
+        .unwrap();
+        let c = Connection::open(&path).unwrap();
+        c.execute(
+            "UPDATE stages SET outputs_json = '这不是 JSON' WHERE stage = 'idea'",
+            [],
+        )
+        .unwrap();
+        let e = s.load_stage(StageId::Idea).unwrap_err();
+        assert_eq!(e.code(), "state_drift");
+        assert!(e.message().contains("无法解析"));
+    }
 }

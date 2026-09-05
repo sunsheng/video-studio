@@ -911,6 +911,8 @@ dependencies = [
  "studio-mcp",
  "studio-media",
  "studio-pipeline",
+ "studio-rollout",
+ "studio-skill-eval",
  "studio-store",
  "tempfile",
  "toml",
@@ -989,6 +991,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "studio-rollout"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "studio-skill-eval"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "studio-core",
+ "studio-engine",
+ "studio-mcp",
+ "studio-rollout",
+ "tempfile",
+ "ureq",
+ "walkdir",
+]
+
+[[package]]
 name = "studio-store"
 version = "0.1.0"
 dependencies = [
@@ -1006,8 +1032,11 @@ name = "studiod"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "serde_json",
+ "studio-engine",
  "studio-mcp",
  "studio-pipeline",
+ "tempfile",
 ]
 
 [[package]]

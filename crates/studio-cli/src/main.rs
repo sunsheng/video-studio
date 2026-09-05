@@ -9,6 +9,10 @@ use clap::{Parser, Subcommand};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use studio_cli::{assets, doctor, e2e, exec_report, html, list, pack, quality, rollout};
+use studio_skill_eval::driver::codex::CodexDriver;
+use studio_skill_eval::driver::direct_llm::DirectLlmDriver;
+use studio_skill_eval::driver::run_agent_scenario;
+use studio_skill_eval::{agent_scenarios, all_scenarios, run_scenario, ScenarioResult};
 
 #[derive(Parser)]
 #[command(
@@ -94,6 +98,9 @@ enum Command {
     /// 已验证 workflow 基线相关
     #[command(subcommand)]
     Workflows(WorkflowCommand),
+    /// Skill 评估：像测代码一样测 AGENTS.md / SKILL.md，见 ADR-0004
+    #[command(subcommand)]
+    SkillEval(SkillEvalCommand),
 }
 
 #[derive(Subcommand)]
@@ -111,6 +118,31 @@ enum ExecCommand {
         #[arg(long)]
         html: Option<PathBuf>,
     },
+}
+
+#[derive(Subcommand)]
+enum SkillEvalCommand {
+    /// 列出内置场景
+    List,
+    /// 跑一个场景，出 JSON + 人读摘要
+    Run {
+        /// 场景 id，见 `skill-eval list`
+        scenario: String,
+        /// 用哪种驱动跑：scripted（默认，脚本场景专用，确定性）、
+        /// codex（真实 Codex 子进程读 skill 文档自己决策）、direct-llm
+        /// （不依赖 Codex CLI，直连 OpenAI 兼容 API）。后两种只对 Agent
+        /// 场景生效，且不进 CI
+        #[arg(long, default_value = "scripted")]
+        driver: String,
+        /// `--driver direct-llm` 时必填：要用的模型名
+        #[arg(long)]
+        model: Option<String>,
+        /// 写 JSON 结果到文件；不给就只打印摘要
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+    },
+    /// 对比两次场景结果，标出退步项。结果 JSON 不进版本库——本机产物
+    Diff { old: PathBuf, new: PathBuf },
 }
 
 #[derive(Subcommand)]
@@ -203,6 +235,14 @@ fn run(cli: Cli) -> Result<(), String> {
         }) => cmd_e2e(bundle, out, html, rollout),
         Command::Exec(ExecCommand::Report { bundle, out, html }) => cmd_exec(bundle, out, html),
         Command::Workflows(WorkflowCommand::Check { dir }) => cmd_workflows_check(dir),
+        Command::SkillEval(SkillEvalCommand::List) => cmd_skill_eval_list(),
+        Command::SkillEval(SkillEvalCommand::Run {
+            scenario,
+            driver,
+            model,
+            out,
+        }) => cmd_skill_eval_run(&scenario, &driver, model.as_deref(), out),
+        Command::SkillEval(SkillEvalCommand::Diff { old, new }) => cmd_skill_eval_diff(&old, &new),
     }
 }
 
@@ -480,6 +520,157 @@ fn cmd_unpack(archive: &Path, into: &Path) -> Result<(), String> {
     println!("已解出 {} 个文件到 {}", n, into.display());
     println!("提示：换了机器就跑一次 `studio-cli doctor --fix`，把程序路径对上。");
     Ok(())
+}
+
+fn cmd_skill_eval_list() -> Result<(), String> {
+    println!("脚本场景（--driver scripted，默认；确定性，能直接进 cargo test）：");
+    for m in all_scenarios() {
+        println!("  {:<40} {}", m.id, m.description);
+    }
+    println!();
+    println!("Agent 场景（--driver codex|direct-llm；真实 LLM 决策，本机按需跑，不进 CI）：");
+    for (s, _) in agent_scenarios::all() {
+        println!("  {:<40} {}", s.id, s.description);
+    }
+    Ok(())
+}
+
+fn render_scenario_result(r: &ScenarioResult) -> String {
+    let mut s = format!("skill-eval · {}\n\n", r.scenario_id);
+    s.push_str(&format!("  {}\n\n", r.description));
+    for v in &r.verdicts {
+        s.push_str(&format!(
+            "  [{}] {}\n         {}\n",
+            if v.passed { "通过" } else { "未过" },
+            v.name,
+            v.detail
+        ));
+    }
+    s.push('\n');
+    s.push_str(if r.passed {
+        "结论：通过。\n"
+    } else {
+        "结论：未通过，见上面「未过」项。\n"
+    });
+    s
+}
+
+fn unknown_scenario(scenario: &str, agent: bool) -> String {
+    let known: Vec<&str> = if agent {
+        agent_scenarios::all()
+            .into_iter()
+            .map(|(s, _)| s.id)
+            .collect()
+    } else {
+        all_scenarios().into_iter().map(|m| m.id).collect()
+    };
+    format!(
+        "没有叫 {scenario} 的{}场景。已注册的场景：{}",
+        if agent { "Agent " } else { "" },
+        known.join("、")
+    )
+}
+
+fn cmd_skill_eval_run(
+    scenario: &str,
+    driver: &str,
+    model: Option<&str>,
+    out: Option<PathBuf>,
+) -> Result<(), String> {
+    let r = match driver {
+        "scripted" => run_scenario(scenario).ok_or_else(|| unknown_scenario(scenario, false))?,
+        "codex" => {
+            let (s, mut user) =
+                agent_scenarios::find(scenario).ok_or_else(|| unknown_scenario(scenario, true))?;
+            let mut d = CodexDriver::new()?;
+            run_agent_scenario(&s, &mut d, &mut user)
+        }
+        "direct-llm" => {
+            let (s, mut user) =
+                agent_scenarios::find(scenario).ok_or_else(|| unknown_scenario(scenario, true))?;
+            let model = model.ok_or("`--driver direct-llm` 需要同时给 `--model <名字>`")?;
+            let mut d = DirectLlmDriver::from_env(model)?;
+            run_agent_scenario(&s, &mut d, &mut user)
+        }
+        other => {
+            return Err(format!(
+                "不认识的 --driver {other}。可选：scripted / codex / direct-llm。"
+            ))
+        }
+    };
+
+    if let Some(path) = &out {
+        let json = serde_json::to_string_pretty(&r).map_err(|e| e.to_string())?;
+        std::fs::write(path, json).map_err(|e| format!("写结果失败：{e}"))?;
+        println!("结果已写入 {}", path.display());
+    }
+    print!("{}", render_scenario_result(&r));
+    if r.passed {
+        Ok(())
+    } else {
+        Err(String::new())
+    }
+}
+
+fn cmd_skill_eval_diff(old: &Path, new: &Path) -> Result<(), String> {
+    let read = |p: &Path| -> Result<ScenarioResult, String> {
+        let text =
+            std::fs::read_to_string(p).map_err(|e| format!("读 {} 失败：{e}", p.display()))?;
+        serde_json::from_str(&text)
+            .map_err(|e| format!("{} 不是合法的场景结果 JSON：{e}", p.display()))
+    };
+    let old = read(old)?;
+    let new = read(new)?;
+
+    if old.scenario_id != new.scenario_id {
+        println!(
+            "注意：两份结果不是同一个场景（{} vs {}），对比仅供参考。",
+            old.scenario_id, new.scenario_id
+        );
+    }
+
+    let mut regressions = Vec::new();
+    let mut fixes = Vec::new();
+    for nv in &new.verdicts {
+        let Some(ov) = old.verdicts.iter().find(|v| v.name == nv.name) else {
+            continue;
+        };
+        if ov.passed && !nv.passed {
+            regressions.push(format!("{}：{} → {}", nv.name, ov.detail, nv.detail));
+        } else if !ov.passed && nv.passed {
+            fixes.push(nv.name.clone());
+        }
+    }
+
+    println!("skill-eval diff · {}", new.scenario_id);
+    println!(
+        "  旧：{}（{}）",
+        if old.passed { "通过" } else { "未过" },
+        old.scenario_id
+    );
+    println!(
+        "  新：{}（{}）",
+        if new.passed { "通过" } else { "未过" },
+        new.scenario_id
+    );
+    println!();
+    if regressions.is_empty() {
+        println!("  没有退步项。");
+    } else {
+        println!("  退步：");
+        for r in &regressions {
+            println!("    - {r}");
+        }
+    }
+    if !fixes.is_empty() {
+        println!("  修好了：{}", fixes.join("、"));
+    }
+
+    if regressions.is_empty() {
+        Ok(())
+    } else {
+        Err(String::new())
+    }
 }
 
 fn cmd_e2e(

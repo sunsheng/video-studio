@@ -15,7 +15,8 @@ video-studio/
 │                                 # 唯一职能是 serve，由 Codex 自动拉起
 ├── studio-cli / studio-cli.exe  # 人类操作 + 开发者工具：init / doctor /
 │                                 # pack / unpack / list / emit-assets /
-│                                 # e2e report / exec report / workflows check
+│                                 # e2e report / exec report / workflows check /
+│                                 # skill-eval
 ├── assets/{AGENTS.md, skills/, schema/, codex/}
 ├── config.toml             # 出厂默认
 ├── .env.example

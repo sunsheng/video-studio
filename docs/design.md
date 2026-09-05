@@ -145,7 +145,8 @@ typestate 把状态编码进类型参数，转换消耗自身。`Stage<AwaitingC
    一个入口，子命令列表怎么裁都消不掉「Agent 拿到二进制直接绕过 MCP」这
    条路径，只有物理上不存在子命令才行。`init` / `doctor` / `pack` /
    `unpack` / `list` / `emit-assets` / `e2e report` / `exec report` /
-   `workflows check` 都在另一个二进制 `studio-cli` 里，且 `studio-cli`
+   `workflows check` / `skill-eval` 都在另一个二进制 `studio-cli` 里，
+   且 `studio-cli`
    不出现在 Codex/Agent 的执行环境里。见 [ADR-0002](decisions/ADR-0002-studiod-cli-split.md)。
 2. **`workspace_roots` 只含当前 bundle。** 兄弟作品物理不可达。
 3. **`.studio/` 三层保护。** dotdir 约定 + AGENTS.md 明确禁止 + 沙箱写限制，
