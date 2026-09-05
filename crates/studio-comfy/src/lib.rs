@@ -178,7 +178,7 @@ impl Comfy {
                 url: self.node.clone(),
                 reachable: false,
                 queue_depth: usize::MAX,
-                detail: Some(short_error(&e)),
+                detail: Some(short_error(e)),
             },
         }
     }
@@ -205,7 +205,7 @@ impl Comfy {
             .send_json(body)
             .map_err(|e| StudioError::ComfyFailed {
                 node: self.node.clone(),
-                detail: short_error(&e),
+                detail: short_error(e),
             })?;
         let v: Value = resp.into_json().map_err(|e| StudioError::ComfyFailed {
             node: self.node.clone(),
@@ -281,7 +281,7 @@ impl Comfy {
         let url = format!("{}/history/{}", self.node, sub.prompt_id);
         let resp = match self.get(&url).call() {
             Ok(r) => r,
-            Err(e) => return PollOutcome::Unreachable(short_error(&e)),
+            Err(e) => return PollOutcome::Unreachable(short_error(e)),
         };
         let v: Value = match resp.into_json() {
             Ok(v) => v,
@@ -330,7 +330,7 @@ impl Comfy {
             .call()
             .map_err(|e| StudioError::ComfyFailed {
                 node: self.node.clone(),
-                detail: short_error(&e),
+                detail: short_error(e),
             })?;
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent)
@@ -365,7 +365,7 @@ impl Comfy {
             .send_bytes(&body)
             .map_err(|e| StudioError::ComfyFailed {
                 node: self.node.clone(),
-                detail: short_error(&e),
+                detail: short_error(e),
             })?;
         let v: Value = resp.into_json().map_err(|e| StudioError::ComfyFailed {
             node: self.node.clone(),
@@ -453,11 +453,68 @@ fn extract_error(status: &Value) -> String {
         .to_string()
 }
 
-fn short_error(e: &ureq::Error) -> String {
-    match e {
-        ureq::Error::Status(code, _) => format!("HTTP {code}"),
-        ureq::Error::Transport(t) => format!("连接失败：{t}"),
+/// 一次失败该不该重试。
+///
+/// 依据是代理的 `docs/usage.md`：`503` 是临时的基础设施状况，应当指数退避
+/// 重试；`400` / `401` / `404` 是请求本身有问题，「原样重试没有意义」。
+///
+/// **把这两类混在一起的代价不是白等几轮**，是把一个必然失败的请求包装成
+/// 「联系不上节点」，然后把排查引向网络。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Failure {
+    /// 退避重试还有意义：503、连接层抖动。
+    Retryable(String),
+    /// 重试没有意义：请求本身、鉴权、路径写错了。
+    Fatal(String),
+}
+
+impl Failure {
+    pub fn detail(&self) -> &str {
+        match self {
+            Failure::Retryable(d) | Failure::Fatal(d) => d,
+        }
     }
+
+    /// 代理报的是「一个健康节点都没有」，而不是「节点都在忙」。
+    ///
+    /// 两种都要退避重试，区别只在重试到顶之后报什么：前者是集群不可用
+    /// （`comfy_unavailable`，remedy 指向配置与恢复），后者是这次执行失败
+    /// （`comfy_failed`，remedy 指向 `retry_stage`）。
+    pub fn is_no_healthy_node(&self) -> bool {
+        self.detail().contains("no healthy node")
+    }
+}
+
+/// 把 ureq 的错误分类，**并且读出代理写在 body 里的原因**。
+///
+/// 代理自己生成的错误一律是 `{"error": "<具体原因>"}`。丢掉它就丢掉了区分
+/// 两种 503 的唯一依据（`no healthy node` vs `context deadline exceeded`），
+/// 报给人的也只剩一句「HTTP 503」，没有 remedy 能指的方向。
+///
+/// 节点自己返回的错误连状态码带 body 原样透传，不是这个形状——读不出来就
+/// 退回 `HTTP {code}`，不猜。
+fn classify(e: ureq::Error) -> Failure {
+    match e {
+        ureq::Error::Status(code, resp) => {
+            let reason = resp
+                .into_json::<Value>()
+                .ok()
+                .and_then(|v| v["error"].as_str().map(String::from))
+                .map(|r| format!("HTTP {code}：{r}"))
+                .unwrap_or_else(|| format!("HTTP {code}"));
+            // 未列出的状态码按可重试处理——保守的一侧是多试一次，
+            // 不是把一个可能能成的请求判死。
+            match code {
+                400 | 401 | 403 | 404 => Failure::Fatal(reason),
+                _ => Failure::Retryable(reason),
+            }
+        }
+        ureq::Error::Transport(t) => Failure::Retryable(format!("连接失败：{t}")),
+    }
+}
+
+fn short_error(e: ureq::Error) -> String {
+    classify(e).detail().to_string()
 }
 
 fn urlencode(s: &str) -> String {
@@ -604,6 +661,141 @@ mod tests {
             url: format!("http://127.0.0.1:{port}"),
             _handle: handle,
         }
+    }
+
+    /// 一个按脚本回状态码和 body 的假代理，并数清楚被打了几次。
+    ///
+    /// `script` 里每一项是 `(状态码, body)`，按顺序用；用完之后一直用最后一项。
+    /// 这是验「该不该重试」唯一诚实的办法——只断言最终错误码，分不清
+    /// 「重试了三次才放弃」和「一次都没试就放弃」。
+    struct ScriptedStub {
+        url: String,
+        hits: Arc<AtomicUsize>,
+        _handle: std::thread::JoinHandle<()>,
+    }
+
+    impl ScriptedStub {
+        /// 这个桩被打了几次。
+        fn hits(&self) -> usize {
+            self.hits.load(Ordering::SeqCst)
+        }
+    }
+
+    fn scripted_stub(script: Vec<(u16, String)>) -> ScriptedStub {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&hits);
+        let handle = std::thread::spawn(move || {
+            for stream in listener.incoming().take(64) {
+                let Ok(mut stream) = stream else { continue };
+                let n = counter.fetch_add(1, Ordering::SeqCst);
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                // 请求体要读掉，否则对端可能拿到 broken pipe 而不是我们写的响应。
+                let mut line = String::new();
+                let mut len = 0usize;
+                while reader.read_line(&mut line).is_ok() {
+                    let t = line.trim_end().to_string();
+                    if t.is_empty() {
+                        break;
+                    }
+                    if let Some(v) = t.to_ascii_lowercase().strip_prefix("content-length: ") {
+                        len = v.trim().parse().unwrap_or(0);
+                    }
+                    line.clear();
+                }
+                if len > 0 {
+                    let mut body = vec![0u8; len];
+                    use std::io::Read;
+                    let _ = reader.read_exact(&mut body);
+                }
+                let (code, body) = &script[n.min(script.len() - 1)];
+                let reason = if *code == 200 { "OK" } else { "Error" };
+                let resp = format!(
+                    "HTTP/1.1 {code} {reason}\r\nContent-Type: application/json\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(resp.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+        ScriptedStub {
+            url: format!("http://127.0.0.1:{port}"),
+            hits,
+            _handle: handle,
+        }
+    }
+
+    /// 代理把「请求本身不对」和「集群暂时忙不过来」分得很清楚，
+    /// 我们也得分清楚——**混起来的代价不是白等几轮**，是把一个必然失败的
+    /// 请求包装成「联系不上节点」，然后把排查引向网络。
+    #[test]
+    fn a_bad_request_is_fatal_and_a_busy_cluster_is_retryable() {
+        let cases: Vec<(u16, &str, bool, &str)> = vec![
+            (
+                400,
+                r#"{"error":"prompt is required"}"#,
+                false,
+                "prompt is required",
+            ),
+            (401, r#"{"error":"unauthorized"}"#, false, "unauthorized"),
+            (404, r#"{"error":"not found"}"#, false, "not found"),
+            (
+                503,
+                r#"{"error":"no healthy node"}"#,
+                true,
+                "no healthy node",
+            ),
+            (
+                503,
+                r#"{"error":"context deadline exceeded"}"#,
+                true,
+                "context deadline exceeded",
+            ),
+        ];
+        for (code, body, retryable, needle) in cases {
+            let s = scripted_stub(vec![(code, body.to_string())]);
+            let c = Comfy::new(s.url.clone(), None, 5, 1);
+            let e = c.get(&format!("{}/queue", s.url)).call().unwrap_err();
+            let f = classify(e);
+            assert_eq!(
+                matches!(f, Failure::Retryable(_)),
+                retryable,
+                "HTTP {code} 的可重试判断错了：{f:?}"
+            );
+            assert!(
+                f.detail().contains(needle),
+                "代理写在 body 里的原因被丢掉了：{f:?}"
+            );
+            // classify 是**纯分类**，这一层一次都不重试——重试是调用方的事
+            // （`submit` 在 S2 里做）。这条断言在那时会换成「重试了几次」。
+            assert_eq!(s.hits(), 1, "HTTP {code} 上不该有隐式重试");
+        }
+    }
+
+    /// 两种 503 都要重试，但重试到顶之后报的不是一回事。
+    #[test]
+    fn only_no_healthy_node_means_the_cluster_is_down() {
+        let busy = classify_body(503, r#"{"error":"context deadline exceeded"}"#);
+        let down = classify_body(503, r#"{"error":"no healthy node"}"#);
+        assert!(!busy.is_no_healthy_node(), "排队不是集群挂了：{busy:?}");
+        assert!(down.is_no_healthy_node(), "{down:?}");
+    }
+
+    /// 节点自己返回的错误是原样透传的，不是代理那个 `{"error":...}` 形状。
+    /// 读不出来就退回 `HTTP {code}`，不能 panic，也不能瞎猜一个原因。
+    #[test]
+    fn an_error_body_that_is_not_the_proxy_shape_falls_back_to_the_status_code() {
+        let f = classify_body(400, "<html>node said no</html>");
+        assert_eq!(f, Failure::Fatal("HTTP 400".into()));
+    }
+
+    fn classify_body(code: u16, body: &str) -> Failure {
+        let s = scripted_stub(vec![(code, body.to_string())]);
+        let c = Comfy::new(s.url.clone(), None, 5, 1);
+        classify(c.get(&format!("{}/queue", s.url)).call().unwrap_err())
     }
 
     #[test]
