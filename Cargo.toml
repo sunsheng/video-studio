@@ -9,6 +9,7 @@ members = [
     "crates/studio-comfy",
     "crates/studio-pipeline",
     "crates/studiod",
+    "crates/studio-rollout",
     "crates/studio-cli",
     "crates/studio-skill-eval",
 ]
