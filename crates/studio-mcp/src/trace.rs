@@ -30,7 +30,43 @@ pub struct TraceRecord {
     pub remedy_present: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub waiting_on: Option<String>,
+    /// 这次调用有没有把 `stage` 打回草稿，也就是**触发了一次修订**。
+    ///
+    /// 修订有两条路：在确认门上选 revise 类选项（走 `studio.answer`），
+    /// 或者用自然语言提意见（走 `studio.revise`）。**前一条更常用**，
+    /// 而只按工具名认的话它完全看不见——见 issue #17。
+    ///
+    /// 所以这一列由控制面记下事实，不让报告去猜：调用前后各看一眼该阶段的
+    /// 状态，从非草稿变成草稿就是一次修订。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revised: Option<bool>,
     pub duration_ms: u64,
+}
+
+/// 每次修订到下一次成功 `submit_stage` 之间用了几次调用——理想值是 1
+/// （紧接着就重新提交）。前身项目那次事故是 18。
+///
+/// **判据是 [`TraceRecord::revised`]，不是工具名。** 按工具名认会漏掉门上
+/// 点 revise 那条路，而那条是更常用的——漏报的后果是「修订往返一次过」
+/// 这一栏永远显示通过，因为它压根没看见修订（issue #17）。
+///
+/// 放在这里是因为端到端报告（`studio-cli`）和 Skill 评估
+/// （`studio-skill-eval`）都要用它。各写一份的话，某一天有人改了其中一份，
+/// 两边的结论就会不一致而没人发现。
+pub fn revise_round_trips(records: &[TraceRecord]) -> Vec<usize> {
+    let mut out = Vec::new();
+    let mut pending: Option<usize> = None;
+    for (i, r) in records.iter().enumerate() {
+        if r.revised == Some(true) {
+            pending = Some(i);
+        } else if let Some(start) = pending {
+            if r.tool == "studio.submit_stage" && r.ok {
+                out.push(i - start);
+                pending = None;
+            }
+        }
+    }
+    out
 }
 
 pub struct Trace {
@@ -92,6 +128,7 @@ mod tests {
             error_code: None,
             remedy_present: None,
             waiting_on: Some("user".into()),
+            revised: Some(false),
             duration_ms: 7,
         });
         t.append(&TraceRecord {
@@ -103,6 +140,7 @@ mod tests {
             error_code: Some("gate_pending".into()),
             remedy_present: Some(true),
             waiting_on: None,
+            revised: None,
             duration_ms: 1,
         });
         let back = Trace::read(d.path());

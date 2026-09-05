@@ -585,6 +585,7 @@ mod tests {
                 error_code: None,
                 remedy_present: None,
                 waiting_on: Some((*waiting).into()),
+                revised: None,
                 duration_ms: 12,
             });
         }

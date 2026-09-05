@@ -111,7 +111,7 @@ pub fn build_with(bundle: &Path, rollout: Option<Rollout>) -> Report {
         }
     }
 
-    let revise_round_trips = measure_revise_round_trips(&records);
+    let revise_round_trips = studio_mcp::trace::revise_round_trips(&records);
     let stages_reached: Vec<String> = StageId::all()
         .filter(|s| calls_by_stage.contains_key(s.as_str()))
         .map(|s| s.as_str().to_string())
@@ -285,22 +285,6 @@ pub fn human_ms(ms: i64) -> String {
 /// 从每次 `studio.revise` 数到下一次成功的 `studio.submit_stage`。
 ///
 /// 前身项目在这里花了 18 次调用；健康的实现应该是 1 次（紧接着就提交）。
-fn measure_revise_round_trips(records: &[TraceRecord]) -> Vec<usize> {
-    let mut out = Vec::new();
-    let mut pending: Option<usize> = None;
-    for (i, r) in records.iter().enumerate() {
-        if r.tool == "studio.revise" && r.ok {
-            pending = Some(i);
-        } else if let Some(start) = pending {
-            if r.tool == "studio.submit_stage" && r.ok {
-                out.push(i - start);
-                pending = None;
-            }
-        }
-    }
-    out
-}
-
 pub fn render(r: &Report) -> String {
     let mut s = String::new();
     s.push_str(&format!("端到端报告 · {}\n\n", r.generated_at));
@@ -395,6 +379,18 @@ mod tests {
         code: Option<&str>,
         remedy: Option<bool>,
     ) -> TraceRecord {
+        rec_revised(tool, stage, ok, code, remedy, None)
+    }
+
+    /// 带上「这次调用把阶段打回了草稿没有」。修订的判据是它，不是工具名。
+    fn rec_revised(
+        tool: &str,
+        stage: Option<&str>,
+        ok: bool,
+        code: Option<&str>,
+        remedy: Option<bool>,
+        revised: Option<bool>,
+    ) -> TraceRecord {
         TraceRecord {
             at: "2026-09-03T00:00:00.000Z".into(),
             tool: tool.into(),
@@ -406,6 +402,7 @@ mod tests {
             error_code: code.map(String::from),
             remedy_present: remedy,
             waiting_on: None,
+            revised,
             duration_ms: 1,
         }
     }
@@ -481,7 +478,14 @@ mod tests {
     fn a_one_pass_revise_is_measured_as_one_call() {
         let d = bundle_with(vec![
             rec("studio.submit_stage", Some("script"), true, None, None),
-            rec("studio.revise", Some("script"), true, None, None),
+            rec_revised(
+                "studio.revise",
+                Some("script"),
+                true,
+                None,
+                None,
+                Some(true),
+            ),
             rec("studio.submit_stage", Some("script"), true, None, None),
         ]);
         let r = build(d.path());
@@ -495,12 +499,69 @@ mod tests {
         );
     }
 
+    /// **issue #17**：门上点 revise 走的是 `studio.answer`，不是 `studio.revise`。
+    /// 以前只认工具名，于是这条更常用的路径被系统性漏报——「修订往返一次过」
+    /// 那一栏永远显示通过，因为它压根没看见修订。
+    #[test]
+    fn a_revise_chosen_at_the_gate_is_counted_too() {
+        let d = bundle_with(vec![
+            rec("studio.submit_stage", Some("script"), true, None, None),
+            // 门上选了 revise：工具名是 answer，但阶段被打回了草稿
+            rec_revised(
+                "studio.answer",
+                Some("script"),
+                true,
+                None,
+                None,
+                Some(true),
+            ),
+            rec("studio.submit_stage", Some("script"), true, None, None),
+            // 这次确认通过，没有打回
+            rec_revised(
+                "studio.answer",
+                Some("script"),
+                true,
+                None,
+                None,
+                Some(false),
+            ),
+        ]);
+        let r = build(d.path());
+        assert_eq!(r.revise_round_trips, vec![1], "门上那次修订要被数进来");
+    }
+
+    /// 反过来：确认通过的 answer 不是修订，不能误报。
+    #[test]
+    fn an_approving_answer_is_not_a_revision() {
+        let d = bundle_with(vec![
+            rec("studio.submit_stage", Some("script"), true, None, None),
+            rec_revised(
+                "studio.answer",
+                Some("script"),
+                true,
+                None,
+                None,
+                Some(false),
+            ),
+            rec("studio.submit_stage", Some("storyboard"), true, None, None),
+        ]);
+        let r = build(d.path());
+        assert!(r.revise_round_trips.is_empty(), "确认通过不是修订");
+    }
+
     /// 前身项目那种「改一次要绕十几步」的形状必须被判为未过。
     #[test]
     fn a_long_detour_after_revise_fails() {
         let mut rs = vec![
             rec("studio.submit_stage", Some("script"), true, None, None),
-            rec("studio.revise", Some("script"), true, None, None),
+            rec_revised(
+                "studio.revise",
+                Some("script"),
+                true,
+                None,
+                None,
+                Some(true),
+            ),
         ];
         for _ in 0..5 {
             rs.push(rec("studio.status", None, true, None, None));

@@ -8,6 +8,7 @@ use crate::trace::{now, Trace, TraceRecord};
 use serde_json::{json, Value};
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
+use studio_core::state::StageState;
 use studio_core::{Confirmation, Outputs, StageId, StudioError};
 use studio_engine::Project;
 
@@ -147,9 +148,15 @@ impl Server {
             .and_then(StageId::parse)
             .map(|s| s.capability().as_str().to_string());
 
+        // 修订会把阶段打回草稿。调用前后各看一眼，从非草稿变成草稿就是一次
+        // 修订——**记事实，不让报告按工具名去猜**（issue #17）。
+        let state_before = self.stage_state(acted_stage.as_deref());
+
         let started = std::time::Instant::now();
         let outcome = self.dispatch(&name, &args);
         let elapsed = started.elapsed().as_millis() as u64;
+
+        let revised = self.became_draft(acted_stage.as_deref(), state_before);
 
         let (payload, is_error, rec) = match outcome {
             Ok(v) => {
@@ -168,6 +175,7 @@ impl Server {
                     error_code: None,
                     remedy_present: None,
                     waiting_on: waiting,
+                    revised,
                     duration_ms: elapsed,
                 };
                 (v, false, rec)
@@ -195,6 +203,8 @@ impl Server {
                     error_code: Some(e.code().to_string()),
                     remedy_present: Some(!e.remedy().trim().is_empty()),
                     waiting_on: None,
+                    // 调用失败没改动状态，谈不上修订。
+                    revised: None,
                     duration_ms: elapsed,
                 };
                 (body, true, rec)
@@ -216,6 +226,21 @@ impl Server {
     }
 
     /// 这次调用作用在哪个阶段：显式给了 stage 就用它，否则就是当前阶段。
+    /// 某个阶段当前的状态。读不到就返回 None——那说明这次调用本来也不作用在
+    /// 某个具体阶段上（比如 `studio.list`），不该因此报出一次修订。
+    fn stage_state(&self, stage: Option<&str>) -> Option<StageState> {
+        let stage = StageId::parse(stage?)?;
+        let p = self.project.as_ref()?;
+        p.store().load_stage(stage).ok().map(|l| l.state())
+    }
+
+    /// 这次调用有没有把该阶段从非草稿打回草稿。
+    fn became_draft(&self, stage: Option<&str>, before: Option<StageState>) -> Option<bool> {
+        let before = before?;
+        let after = self.stage_state(stage)?;
+        Some(before != StageState::Draft && after == StageState::Draft)
+    }
+
     fn acted_stage(&self, args: &Value) -> Option<String> {
         if let Some(s) = args.get("stage").and_then(|v| v.as_str()) {
             return Some(s.to_string());

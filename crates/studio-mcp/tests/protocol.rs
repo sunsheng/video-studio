@@ -305,6 +305,81 @@ fn choosing_the_revise_option_over_mcp_sends_the_stage_back() {
     assert_eq!(env["waiting_on"], "agent");
 }
 
+/// **issue #17**：门上点 revise 走的是 `studio.answer`，留痕必须把它记成一次
+/// 修订——不然端到端报告里「修订往返」那一栏永远显示通过，因为它按工具名
+/// 去认，压根看不见这条更常用的路径。
+#[test]
+fn a_revision_triggered_at_the_gate_is_recorded_as_one() {
+    let mut h = Harness::new();
+    h.advance(StageId::Idea);
+    let (env, _) = h.submit(StageId::Selection);
+    let qid = env["pending_question"]["question_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    h.call(
+        "studio.answer",
+        json!({ "question_id": qid, "answer": "revise" }),
+    );
+    // 重新提交并这次确认通过
+    let (env, _) = h.submit(StageId::Selection);
+    let q = &env["pending_question"];
+    let qid = q["question_id"].as_str().unwrap().to_string();
+    let approve = q["options"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["outcome"] == "approve")
+        .expect("门上应当有通过选项")["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (_, err) = h.call(
+        "studio.answer",
+        json!({ "question_id": qid, "answer": approve }),
+    );
+    assert!(!err, "确认通过不该失败");
+
+    let records = studio_mcp::trace::Trace::read(&h.root);
+    let answers: Vec<&studio_mcp::trace::TraceRecord> = records
+        .iter()
+        .filter(|r| r.tool == "studio.answer")
+        .collect();
+    assert_eq!(answers.len(), 2);
+    assert_eq!(
+        answers[0].revised,
+        Some(true),
+        "门上选 revise 要记成一次修订"
+    );
+    assert_eq!(
+        answers[1].revised,
+        Some(false),
+        "确认通过不是修订，不能误报"
+    );
+
+    // 报告据此算出「一次修订，紧接着就重新提交」= 1 次调用。
+    assert_eq!(studio_mcp::trace::revise_round_trips(&records), vec![1]);
+}
+
+/// `studio.revise`（自然语言提意见那条路）同样记成修订——判据是阶段被打回，
+/// 不是工具名，所以两条路自动都覆盖到。
+#[test]
+fn a_revision_via_the_revise_tool_is_recorded_too() {
+    let mut h = Harness::new();
+    h.advance(StageId::Idea);
+    let (_, err) = h.call(
+        "studio.revise",
+        json!({ "stage": "idea", "message": "重来一版，钩子再前置" }),
+    );
+    assert!(!err, "revise 不该失败");
+    let records = studio_mcp::trace::Trace::read(&h.root);
+    let r = records
+        .iter()
+        .rfind(|r| r.tool == "studio.revise")
+        .expect("应当有一条 revise 留痕");
+    assert_eq!(r.revised, Some(true));
+}
+
 #[test]
 fn retry_stage_tool_rejects_a_non_deterministic_stage_over_mcp() {
     let mut h = Harness::new();

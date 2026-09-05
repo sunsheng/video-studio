@@ -154,8 +154,16 @@ studio-cli exec report --html ~/e2e/exec.html -o ~/e2e/exec.json
 |---|---|
 | 每条阻塞都带补救路径 | 所有失败调用的 `remedy_present` 都为 true |
 | 状态未被外部改动 | 没有出现过 `state_drift` |
-| 修订往返一次过 | 每次 `revise` 到下一次成功 `submit_stage` ≤ 2 步 |
+| 修订往返一次过 | 每次**修订**到下一次成功 `submit_stage` ≤ 2 步 |
 | 提交 ComfyUI 前六阶段全部走到 | idea → prompt_pack 都在 `calls_by_stage` 里 |
+
+**「修订」按事实认，不按工具名认。** 修订有两条路——在确认门上选 revise 类
+选项（走 `studio.answer`），或者用自然语言提意见（走 `studio.revise`）——
+而**前一条更常用**。留痕里 `revised: true` 那一列由控制面在调用前后各看一眼
+阶段状态记下来，两条路都覆盖到。
+
+早先这里只认 `studio.revise` 这个工具名，于是门上那条被系统性漏报，
+「修订往返一次过」永远显示通过（issue #17）。现在不会了。
 
 `revise_round_trips` 是最能说明问题的一列。理想值是 `[1]`：修订之后紧接着就
 重新提交。前身项目那次的形状是 18，报告会判它未过。
