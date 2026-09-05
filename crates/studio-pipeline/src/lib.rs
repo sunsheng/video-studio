@@ -1750,6 +1750,40 @@ mod real_baselines {
         }
     }
 
+    /// 拿**仓库里真实的** `multiref_edit` 展开一条两张参考的链。
+    #[test]
+    fn the_real_card_baseline_expands_a_reference_chain() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/workflows");
+        let w = Workflow::load(&dir, "flux2_dev/multiref_edit").unwrap();
+        assert_eq!(w.max_references(), 10, "FLUX.2 的参考上限是 10");
+
+        let mut p = Map::new();
+        p.insert("positive".into(), json!("侧面"));
+        let g = w
+            .apply_with_refs(&p, &["C01_front_full.png".into(), "C01_profile.png".into()])
+            .unwrap();
+        assert_eq!(
+            g["ref1_load"]["inputs"]["image"],
+            json!("C01_front_full.png")
+        );
+        assert_eq!(g["ref2_load"]["inputs"]["image"], json!("C01_profile.png"));
+        // 链外的 vae 不能被改名，改了就断了
+        assert_eq!(g["ref2_encode"]["inputs"]["vae"], json!(["vae", 0]));
+        // 一环扣一环，最后接回采样器
+        assert_eq!(
+            g["ref1_link"]["inputs"]["conditioning"],
+            json!(["guidance", 0])
+        );
+        assert_eq!(
+            g["ref2_link"]["inputs"]["conditioning"],
+            json!(["ref1_link", 0])
+        );
+        assert_eq!(
+            g["guider"]["inputs"]["conditioning"],
+            json!(["ref2_link", 0])
+        );
+    }
+
     /// 卡片基线也不该出现在 Agent 看得见的能力面里——它不吃 `length_frames`，
     /// 写进某一镜没有意义。
     #[test]

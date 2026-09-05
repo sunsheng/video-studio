@@ -30,6 +30,35 @@ pub struct Workflow {
     /// 超到交付规格用的，写进某一镜没有任何意义（它连 `positive` 和
     /// `length_frames` 都不吃）。这类基线标 `role` 为别的值，能力面就不收它。
     role: String,
+    /// 可变数量的参考图怎么挂。没有就是这份基线不吃参考。
+    chain: Option<ReferenceChain>,
+}
+
+/// **链式**可变槽位：每挂一张参考就插一段小节点链，`conditioning` 一环扣一环。
+///
+/// FLUX.2 的多参考就是这个形状——一张参考对应
+/// `LoadImage → VAEEncode → ReferenceLatent`，后一环的 `conditioning` 接前一环
+/// 的输出，最后一环接回采样器。
+///
+/// 跟 `minimax_h3` 那边 `COMFY_AUTOGROW_V3` 的**平铺编号**
+/// （`"ref_images.ref_image_1": [...]`）并列：同样是「数量由内容决定」，
+/// 但节点侧的建模方式不同，所以展开代码也是两份。硬要合成一份反而要发明
+/// 一个两边都不像的中间形态。
+#[derive(Debug, Clone)]
+pub struct ReferenceChain {
+    /// 每张参考复制一份的节点模板，键是链内的短名（`load` / `encode` / `link`）。
+    nodes: Map<String, Value>,
+    /// 素材文件名写到哪：`<链内短名>.inputs.<输入名>`。
+    asset: String,
+    /// 上一环的输出接到哪：同上形状。
+    chain_in: String,
+    /// 本环往下传的输出，形如 `["link", 0]`，第一项是链内短名。
+    chain_out: Value,
+    /// 链条第一环的 `conditioning` 从哪来。
+    head: Value,
+    /// 链条最后一环接到图里的哪个输入。**没有参考时 `head` 直接接这里。**
+    tail: String,
+    max: usize,
 }
 
 impl Workflow {
@@ -95,6 +124,10 @@ impl Workflow {
             .and_then(|s| s.as_str())
             .unwrap_or("shot")
             .to_string();
+        let chain = meta
+            .get("reference_chain")
+            .map(|c| ReferenceChain::parse(c, name))
+            .transpose()?;
         Ok(Workflow {
             graph: v,
             bindings,
@@ -103,7 +136,78 @@ impl Workflow {
             source,
             unavailable_reason,
             role,
+            chain,
         })
+    }
+
+    /// 这份基线最多挂几张参考图。不吃参考的返回 0。
+    pub fn max_references(&self) -> usize {
+        self.chain.as_ref().map(|c| c.max).unwrap_or(0)
+    }
+
+    /// 挂上 `refs` 张参考图之后的图。
+    ///
+    /// 参考数由内容决定，所以它不走 [`Workflow::apply`] 那条固定路径——
+    /// 每张参考复制一段节点链，`conditioning` 一环扣一环，最后接回采样器。
+    ///
+    /// **确定性**：node id 是 `ref<序号>_<链内短名>`，序号从 1 起按 `refs`
+    /// 的顺序给。同一份输入展开两次逐字节相同，`retry_stage` 靠这条。
+    pub fn apply_with_refs(&self, params: &Map<String, Value>, refs: &[String]) -> Result<Value> {
+        let mut graph = self.apply(params)?;
+        let Some(chain) = &self.chain else {
+            if refs.is_empty() {
+                return Ok(graph);
+            }
+            return Err(self.broken(format!(
+                "这份基线不吃参考图，却给了 {} 张——它没有 _studio.reference_chain",
+                refs.len()
+            )));
+        };
+        if refs.len() > chain.max {
+            return Err(StudioError::SchemaViolation {
+                stage: studio_core::stage::StageId::VisualAssets,
+                violations: vec![studio_core::Violation::new(
+                    format!("{}.reference_chain", self.name),
+                    format!("最多挂 {} 张参考，给了 {}", chain.max, refs.len()),
+                )],
+            });
+        }
+
+        let mut cond = chain.head.clone();
+        for (i, asset) in refs.iter().enumerate() {
+            let n = i + 1;
+            // 链内短名 → 这一环在图里的真实 node id
+            let ids: std::collections::BTreeMap<String, String> = chain
+                .nodes
+                .keys()
+                .map(|k| (k.clone(), format!("ref{n}_{k}")))
+                .collect();
+            for (short, node) in &chain.nodes {
+                let mut node = node.clone();
+                // 链内互引按真实 id 改写；引到链外的节点（vae 之类）原样留着
+                if let Some(inputs) = node.get_mut("inputs").and_then(|i| i.as_object_mut()) {
+                    for v in inputs.values_mut() {
+                        if let Some(id) = wire_target(v) {
+                            if let Some(mapped) = ids.get(id) {
+                                v[0] = Value::from(mapped.clone());
+                            }
+                        }
+                    }
+                }
+                graph[&ids[short]] = node;
+            }
+            self.write_at(
+                &mut graph,
+                &chain.rename(&chain.asset, &ids)?,
+                asset.clone().into(),
+            )?;
+            self.write_at(&mut graph, &chain.rename(&chain.chain_in, &ids)?, cond)?;
+            let (short, slot) = chain.out_parts(&self.name)?;
+            cond = Value::Array(vec![Value::from(ids[&short].clone()), slot]);
+        }
+        // 一张参考都没有时，head 直接接到 tail——链条整个不存在，不是留个空壳。
+        self.write_at(&mut graph, &chain.tail, cond)?;
+        Ok(graph)
     }
 
     /// Agent 能不能在提示词包里点名这份基线。见 [`Workflow::role`] 字段的说明。
@@ -206,6 +310,85 @@ impl Workflow {
         StudioError::ModelContractViolation {
             detail: format!("基线 {} 有问题：{detail}", self.name),
         }
+    }
+}
+
+/// `["节点id", 槽位]` 这种连线的节点名，不是连线就返回 None。
+fn wire_target(v: &Value) -> Option<&str> {
+    let a = v.as_array()?;
+    (a.len() == 2).then(|| a[0].as_str())?
+}
+
+impl ReferenceChain {
+    fn parse(v: &Value, name: &str) -> Result<ReferenceChain> {
+        let bad = |what: &str| StudioError::ModelContractViolation {
+            detail: format!("基线 {name} 的 reference_chain 缺 {what}"),
+        };
+        Ok(ReferenceChain {
+            nodes: v
+                .get("nodes")
+                .and_then(|n| n.as_object())
+                .cloned()
+                .ok_or_else(|| bad("nodes"))?,
+            asset: v
+                .get("asset")
+                .and_then(|s| s.as_str())
+                .ok_or_else(|| bad("asset"))?
+                .to_string(),
+            chain_in: v
+                .get("chain_in")
+                .and_then(|s| s.as_str())
+                .ok_or_else(|| bad("chain_in"))?
+                .to_string(),
+            chain_out: v
+                .get("chain_out")
+                .cloned()
+                .ok_or_else(|| bad("chain_out"))?,
+            head: v.get("head").cloned().ok_or_else(|| bad("head"))?,
+            tail: v
+                .get("tail")
+                .and_then(|s| s.as_str())
+                .ok_or_else(|| bad("tail"))?
+                .to_string(),
+            max: v.get("max").and_then(|m| m.as_u64()).unwrap_or(1) as usize,
+        })
+    }
+
+    /// `load.inputs.image` → `ref1_load.inputs.image`
+    fn rename(
+        &self,
+        path: &str,
+        ids: &std::collections::BTreeMap<String, String>,
+    ) -> Result<String> {
+        let (short, rest) =
+            path.split_once('.')
+                .ok_or_else(|| StudioError::ModelContractViolation {
+                    detail: format!(
+                        "reference_chain 的路径 {path} 应当形如 <链内短名>.inputs.<输入名>"
+                    ),
+                })?;
+        let id = ids
+            .get(short)
+            .ok_or_else(|| StudioError::ModelContractViolation {
+                detail: format!("reference_chain 的路径 {path} 指向链里没有的节点 {short}"),
+            })?;
+        Ok(format!("{id}.{rest}"))
+    }
+
+    fn out_parts(&self, name: &str) -> Result<(String, Value)> {
+        let a = self
+            .chain_out
+            .as_array()
+            .filter(|a| a.len() == 2)
+            .ok_or_else(|| StudioError::ModelContractViolation {
+                detail: format!("基线 {name} 的 reference_chain.chain_out 应当形如 [\"link\", 0]"),
+            })?;
+        let short = a[0]
+            .as_str()
+            .ok_or_else(|| StudioError::ModelContractViolation {
+                detail: format!("基线 {name} 的 chain_out 第一项应当是链内短名"),
+            })?;
+        Ok((short.to_string(), a[1].clone()))
     }
 }
 
@@ -329,6 +512,116 @@ mod tests {
         p.insert("seed".into(), json!(1));
         let e = w.apply(&p).unwrap_err();
         assert!(e.message().contains("应当形如"), "{}", e.message());
+    }
+
+    /// 链式可变槽位：挂 N 张参考就插 N 段，`conditioning` 一环扣一环。
+    fn chained() -> String {
+        json!({
+            "_studio": {
+                "bindings": { "positive": ["pos.inputs.text"] },
+                "bindings_verified": true,
+                "reference_chain": {
+                    "nodes": {
+                        "load":   { "class_type": "LoadImage", "inputs": { "image": "" } },
+                        "encode": { "class_type": "VAEEncode",
+                                    "inputs": { "pixels": ["load", 0], "vae": ["vae", 0] } },
+                        "link":   { "class_type": "ReferenceLatent",
+                                    "inputs": { "conditioning": null, "latent": ["encode", 0] } }
+                    },
+                    "asset": "load.inputs.image",
+                    "chain_in": "link.inputs.conditioning",
+                    "chain_out": ["link", 0],
+                    "head": ["guidance", 0],
+                    "tail": "guider.inputs.conditioning",
+                    "max": 3
+                }
+            },
+            "vae": { "class_type": "VAELoader", "inputs": { "vae_name": "v.safetensors" } },
+            "pos": { "class_type": "CLIPTextEncode", "inputs": { "text": "" } },
+            "guidance": { "class_type": "FluxGuidance", "inputs": { "conditioning": ["pos", 0] } },
+            "guider": { "class_type": "BasicGuider", "inputs": { "conditioning": ["guidance", 0] } }
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn references_expand_into_a_chain() {
+        let w = Workflow::parse(&chained(), "flux2_dev/multiref_edit").unwrap();
+        assert_eq!(w.max_references(), 3);
+        let g = w
+            .apply_with_refs(&Map::new(), &["a.png".into(), "b.png".into()])
+            .unwrap();
+
+        // 素材落到各自那一环的 LoadImage 上
+        assert_eq!(g["ref1_load"]["inputs"]["image"], json!("a.png"));
+        assert_eq!(g["ref2_load"]["inputs"]["image"], json!("b.png"));
+        // 链内互引改了名，链外的 vae 原样留着
+        assert_eq!(
+            g["ref1_encode"]["inputs"]["pixels"],
+            json!(["ref1_load", 0])
+        );
+        assert_eq!(g["ref1_encode"]["inputs"]["vae"], json!(["vae", 0]));
+        // 一环扣一环：第一环接 head，第二环接第一环，最后一环接 tail
+        assert_eq!(
+            g["ref1_link"]["inputs"]["conditioning"],
+            json!(["guidance", 0])
+        );
+        assert_eq!(
+            g["ref2_link"]["inputs"]["conditioning"],
+            json!(["ref1_link", 0])
+        );
+        assert_eq!(
+            g["guider"]["inputs"]["conditioning"],
+            json!(["ref2_link", 0])
+        );
+    }
+
+    /// 一张参考都没有时链条整个不存在，head 直接接 tail——不留空壳。
+    #[test]
+    fn no_references_means_no_chain_at_all() {
+        let w = Workflow::parse(&chained(), "b").unwrap();
+        let g = w.apply_with_refs(&Map::new(), &[]).unwrap();
+        assert_eq!(
+            g["guider"]["inputs"]["conditioning"],
+            json!(["guidance", 0])
+        );
+        assert!(g.as_object().unwrap().keys().all(|k| !k.starts_with("ref")));
+    }
+
+    /// `retry_stage` 要能原样重跑，所以展开必须是确定性的。
+    #[test]
+    fn chain_expansion_is_deterministic() {
+        let w = Workflow::parse(&chained(), "b").unwrap();
+        let refs = [
+            "a.png".to_string(),
+            "b.png".to_string(),
+            "c.png".to_string(),
+        ];
+        let once = w.apply_with_refs(&Map::new(), &refs).unwrap();
+        let twice = w.apply_with_refs(&Map::new(), &refs).unwrap();
+        assert_eq!(
+            serde_json::to_string(&once).unwrap(),
+            serde_json::to_string(&twice).unwrap()
+        );
+    }
+
+    #[test]
+    fn too_many_references_are_rejected_with_the_limit_named() {
+        let w = Workflow::parse(&chained(), "b").unwrap();
+        let refs: Vec<String> = (0..4).map(|i| format!("{i}.png")).collect();
+        let e = w.apply_with_refs(&Map::new(), &refs).unwrap_err();
+        assert_eq!(e.code(), "schema_violation");
+        assert!(e.message().contains("最多挂 3 张"), "{}", e.message());
+    }
+
+    /// 不吃参考的基线给了参考图要报错，不能默默丢掉。
+    #[test]
+    fn a_baseline_without_a_chain_refuses_references() {
+        let w = Workflow::parse(&baseline(), "minimax_h3/t2v").unwrap();
+        assert_eq!(w.max_references(), 0);
+        w.apply_with_refs(&params(), &[]).unwrap();
+        let e = w.apply_with_refs(&params(), &["a.png".into()]).unwrap_err();
+        assert!(e.message().contains("不吃参考图"), "{}", e.message());
     }
 
     #[test]

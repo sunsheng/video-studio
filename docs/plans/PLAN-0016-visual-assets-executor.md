@@ -25,14 +25,21 @@
 
 ## S2 参考链展开
 
-`studio-core` 里加 `reference_chain` 的确定性展开：给 N 个参考文件名，
-按模板节点复制 N 段 `LoadImage → VAEEncode → ReferenceLatent`，
-`conditioning` 从 `head` 串到 `tail`。
+`reference_chain` 的确定性展开：给 N 个参考文件名，按模板节点复制 N 段
+`LoadImage → VAEEncode → ReferenceLatent`，`conditioning` 从 `head` 串到 `tail`。
 
 跟 AUTOGROW 的平铺编号并列，是第二种可变槽位形态。node id 规则沿用
 `ref{n}_<原名>`，确定性由测试钉住（展开两次逐字节相同）。
 
-**提交点 2**：`feat(core): 参考链槽位展开`
+> **落点改了**（实现时才看清）：SPEC §3.1 说放 `studio-core`，但
+> `reference_chain` 是**整图基线**的元数据，而 `Workflow` 住在
+> `studio-pipeline`。放 `studio-core` 就得把 `Workflow` 也搬过去，
+> 或者在两个 crate 之间拆一半。所以展开写在 `studio-pipeline::workflow`，
+> 只复用 `studio_core::assembly::split_target` 那一条路径规则。
+> 片段库那边的 AUTOGROW 展开仍在 `studio-core`——两种形态本来就属于
+> 两种基线形状。
+
+**提交点 2**：`feat(pipeline): 参考链槽位展开`
 
 ---
 
