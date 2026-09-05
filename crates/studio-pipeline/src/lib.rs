@@ -116,31 +116,63 @@ fn delivery_dims(aspect: &str, src_w: i64, src_h: i64) -> (i64, i64) {
     if src_w <= 0 || src_h <= 0 {
         return (DELIVERY_SHORT_EDGE, DELIVERY_SHORT_EDGE);
     }
-    let src_short = src_w.min(src_h);
-    let short = src_short.max(DELIVERY_SHORT_EDGE);
-
+    let short = src_w.min(src_h).max(DELIVERY_SHORT_EDGE);
     // `W:H` 解析得出来才用它，否则按素材自己的比例走。
-    let ratio = aspect
-        .split_once(':')
-        .and_then(|(a, b)| Some((a.trim().parse::<f64>().ok()?, b.trim().parse::<f64>().ok()?)))
-        .filter(|(a, b)| *a > 0.0 && *b > 0.0);
-    let (rw, rh) = match ratio {
-        Some(v) => v,
-        None => return scale_to_short_edge(src_w, src_h, short),
-    };
+    match ratio_dims(aspect, short, 2) {
+        Some(d) => d,
+        None => scale_to_short_edge(src_w, src_h, short),
+    }
+}
 
-    let (mut w, mut h) = if rw <= rh {
-        (short, (short as f64 * rh / rw).round() as i64)
+/// 卡片生成的两条基线，见 `assets/workflows/flux2_dev/README.md`。
+const CARD_T2I: &str = "flux2_dev/t2i";
+const CARD_MULTIREF: &str = "flux2_dev/multiref_edit";
+
+/// 由卡与视图的名字定出的 seed。
+///
+/// **不用随机数**：`retry_stage` 要能原样重跑，随机 seed 会让重跑出来的卡片
+/// 跟前面已定稿的对不上。同一张卡的不同视图 seed 不同——同一个 seed 配不同
+/// 提示词反而容易出同一个姿势。
+fn stable_seed(card_id: &str, view: &str) -> i64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in card_id
+        .bytes()
+        .chain(b".".iter().copied())
+        .chain(view.bytes())
+    {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x1000_0000_01b3);
+    }
+    (h % 1_000_000_007) as i64
+}
+
+/// 卡片的短边。卡片是喂给 R2V 的参考素材，跟成片的原生画布同一档就够——
+/// 再大也会被 `ref_image_size: "match"` 缩回去。
+const CARD_SHORT_EDGE: i64 = 768;
+
+/// 一张卡片视图要出多大。`aspect` 解析不出来就退成方图——卡片宁可方，
+/// 也不要按一个猜出来的比例出成横竖不分的东西。
+fn card_dims(aspect: &str) -> (i64, i64) {
+    ratio_dims(aspect, CARD_SHORT_EDGE, 16).unwrap_or((CARD_SHORT_EDGE, CARD_SHORT_EDGE))
+}
+
+/// 按 `W:H` 算短边为 `short` 的宽高，两边向下取到 `grid` 的倍数。
+///
+/// `grid` 是 2（视频编码要偶数）或 16（扩散模型的画布网格）。解析不出
+/// `W:H` 返回 `None`，由调用方决定退到哪里去——**不在这里瞎猜一个比例**。
+fn ratio_dims(aspect: &str, short: i64, grid: i64) -> Option<(i64, i64)> {
+    let (a, b) = aspect.split_once(':')?;
+    let (rw, rh) = (a.trim().parse::<f64>().ok()?, b.trim().parse::<f64>().ok()?);
+    if rw <= 0.0 || rh <= 0.0 {
+        return None;
+    }
+    let long = (short as f64 * rw.max(rh) / rw.min(rh)).round() as i64;
+    let snap = |v: i64| (v / grid).max(1) * grid;
+    Some(if rw <= rh {
+        (snap(short), snap(long))
     } else {
-        ((short as f64 * rw / rh).round() as i64, short)
-    };
-    if w % 2 != 0 {
-        w += 1;
-    }
-    if h % 2 != 0 {
-        h += 1;
-    }
-    (w, h)
+        (snap(long), snap(short))
+    })
 }
 
 pub struct Pipeline {
@@ -165,6 +197,7 @@ impl Pipeline {
 impl StageExecutor for Pipeline {
     fn execute(&self, stage: StageId, ctx: &ExecContext<'_>) -> Result<Outputs> {
         match stage {
+            StageId::VisualAssets => self.visual_assets(ctx),
             StageId::Preview => self.preview(ctx),
             StageId::Render => self.render(ctx),
             StageId::Post => self.post(ctx),
@@ -178,8 +211,41 @@ impl StageExecutor for Pipeline {
     /// preview 执行完不直接判过，用这份文案挂起等确认；确认后才轮到
     /// 花钱的正式渲染。revise 一律退回 prompt_pack——preview 自己不产出
     /// 独立内容，问题只可能出在 prompt_pack 决定的内容上。
+    /// `visual_assets` 的计划里还有没生成的视图，**并且这台机器出得了卡片**，
+    /// 才轮到控制面。
+    ///
+    /// 判据放在这里而不是引擎里：「执行过没有」只有产物自己说得清。
+    /// 已经 `ready` / `failed` 的不再重跑——`retry_stage` 之后接着做剩下的，
+    /// 不会把前面几分钟的 GPU 时间白扔。
+    ///
+    /// **没有卡片基线时退回「只提交计划」**，跟以前一样。这不是静默降级：
+    /// 「计划能提交」和「图能生出来」本来就是两件事，`studio-cli doctor`
+    /// 的「卡片生成基线」那一项专门把它说清楚（它有意不是 Fail 级）。
+    /// 硬要在没有后端的机器上阻塞，前九个阶段就全都走不了了。
+    fn needs_execution(&self, stage: StageId, outputs: &Outputs) -> bool {
+        stage == StageId::VisualAssets
+            && self.card_backend_ready()
+            && outputs[stage.output_key()]["assets"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .flat_map(|c| c["views"].as_array().into_iter().flatten())
+                .any(|v| !matches!(v["status"].as_str(), Some("ready") | Some("failed")))
+    }
+
     fn gate_confirmation(&self, stage: StageId) -> Option<Confirmation> {
         match stage {
+            StageId::VisualAssets => Some(Confirmation {
+                prompt: "卡片已经生成，落在 media/assets/ 下。\
+                         打开看一眼：同一张卡的几个视图是不是同一个人/同一处场景？\
+                         身份漂了就退回重出，别带着漂移往下走——后面每一镜都拿它当参考。"
+                    .to_string(),
+                selection_type: SelectionType::Single,
+                options: vec![
+                    AnswerOption::new("approve", "卡片对，继续"),
+                    AnswerOption::revise("revise", "卡片不对，退回重出"),
+                ],
+            }),
             StageId::Preview => Some(Confirmation {
                 prompt: "480p 预览已生成，构图与内容是否符合预期？确认后开始正式 1080p 渲染。"
                     .to_string(),
@@ -681,6 +747,13 @@ impl Pipeline {
         Ok(out.graph)
     }
 
+    /// 卡片的两条基线在不在、核验过没有。
+    fn card_backend_ready(&self) -> bool {
+        [CARD_T2I, CARD_MULTIREF]
+            .iter()
+            .all(|n| Workflow::load(&self.baselines, n).is_ok_and(|w| w.is_verified()))
+    }
+
     /// 这个系列的片段库，没有就说明它走整图基线。
     fn fragment_set(&self, family: &str) -> Option<FragmentSet> {
         let set = load_fragment_set(&self.baselines.join(family).join("fragments"))?;
@@ -762,6 +835,273 @@ impl Pipeline {
                 })
             }
         })
+    }
+
+    /// 把资产计划里的每个视图真的生成出来。
+    ///
+    /// **卡与卡之间互不依赖 → 可以并发；卡内视图必须串行**——第 N 个视图要拿
+    /// 前面已定稿的当参考图（累积锁定），前面没出来就没得挂。
+    ///
+    /// 一个视图失败只把它自己标 `failed` 并附原因，同卡后面的视图继续跑：
+    /// 一张没出来不该让前面几分钟的 GPU 时间白扔。整份计划一个都没成才让
+    /// 阶段红——那多半是 ComfyUI 或基线出了问题，不是内容问题。
+    fn visual_assets(&self, ctx: &ExecContext<'_>) -> Result<Outputs> {
+        let mut plan = need(
+            &ctx.inputs,
+            StageId::VisualAssets.output_key(),
+            StageId::VisualAssets,
+        )?
+        .clone();
+
+        let t2i = ctx
+            .step("load_card_baseline")
+            .with("workflow", json!(CARD_T2I))
+            .done(Workflow::load(&self.baselines, CARD_T2I).and_then(|w| {
+                w.require_verified()?;
+                Ok(w)
+            }))?;
+        let multiref = ctx
+            .step("load_card_baseline")
+            .with("workflow", json!(CARD_MULTIREF))
+            .done(
+                Workflow::load(&self.baselines, CARD_MULTIREF).and_then(|w| {
+                    w.require_verified()?;
+                    Ok(w)
+                }),
+            )?;
+
+        let comfy = Comfy::from_settings(ctx.settings);
+        comfy.ensure_reachable()?;
+
+        let cards = plan["assets"]
+            .as_array()
+            .ok_or_else(|| StudioError::internal("资产计划里没有 assets"))?
+            .clone();
+        let total: usize = cards
+            .iter()
+            .map(|c| c["views"].as_array().map(|v| v.len()).unwrap_or(0))
+            .sum();
+        ctx.say(format!("生成 {} 张卡、{total} 个视图", cards.len()));
+
+        // 每张卡的结果：视图下标 → 回填好的那个视图
+        let done: Mutex<BTreeMap<usize, Vec<Value>>> = Mutex::new(BTreeMap::new());
+        let queue: Mutex<VecDeque<usize>> = Mutex::new((0..cards.len()).collect());
+        let failure: Mutex<Option<StudioError>> = Mutex::new(None);
+        let workers = ctx.settings.comfy_concurrency().min(cards.len().max(1));
+
+        std::thread::scope(|scope| {
+            for _ in 0..workers {
+                let (queue, done, failure, comfy, cards) =
+                    (&queue, &done, &failure, &comfy, &cards);
+                let (t2i, multiref) = (&t2i, &multiref);
+                scope.spawn(move || loop {
+                    if ctx.is_cancelled() || failure.lock().unwrap().is_some() {
+                        return;
+                    }
+                    let Some(i) = queue.lock().unwrap().pop_front() else {
+                        return;
+                    };
+                    match self.generate_card(ctx, comfy, t2i, multiref, &cards[i]) {
+                        Ok(views) => {
+                            done.lock().unwrap().insert(i, views);
+                        }
+                        Err(e) => {
+                            let mut f = failure.lock().unwrap();
+                            if f.is_none() {
+                                *f = Some(e);
+                            }
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+
+        if let Some(e) = failure.into_inner().unwrap() {
+            return Err(e);
+        }
+        if ctx.is_cancelled() {
+            return Err(StudioError::internal("卡片生成被中断"));
+        }
+
+        let mut done = done.into_inner().unwrap();
+        let mut ready = 0usize;
+        let mut failed = 0usize;
+        for (i, card) in plan["assets"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .enumerate()
+        {
+            if let Some(views) = done.remove(&i) {
+                for v in &views {
+                    match v["status"].as_str() {
+                        Some("ready") => ready += 1,
+                        _ => failed += 1,
+                    }
+                }
+                card["views"] = Value::Array(views);
+            }
+        }
+        if ready == 0 {
+            return Err(StudioError::internal(format!(
+                "{total} 个视图一个都没生成出来——多半是 ComfyUI 或卡片基线的问题，\
+                 不是内容问题。看 .studio/exec.jsonl 里 card_view 那几步的错误"
+            )));
+        }
+        ctx.say(format!(
+            "卡片生成完成：{ready} 个视图出来了，{failed} 个失败"
+        ));
+
+        let mut out = Outputs::new();
+        out.insert(StageId::VisualAssets.output_key().to_string(), plan);
+        Ok(out)
+    }
+
+    /// 一张卡：主视图先出，其余按顺序拿前面已定稿的当参考。
+    fn generate_card(
+        &self,
+        ctx: &ExecContext<'_>,
+        comfy: &Comfy,
+        t2i: &Workflow,
+        multiref: &Workflow,
+        card: &Value,
+    ) -> Result<Vec<Value>> {
+        let card_id = card["asset_id"].as_str().unwrap_or("card").to_string();
+        let identity = card["identity_prompt"].as_str().unwrap_or_default();
+        let views = card["views"].as_array().cloned().unwrap_or_default();
+
+        // 视图名 → 已经生成好的那张图在 ComfyUI 那侧的文件名
+        let mut uploaded: BTreeMap<String, String> = BTreeMap::new();
+        let mut out = Vec::with_capacity(views.len());
+
+        for view in views {
+            let mut view = view;
+            let name = view["view"].as_str().unwrap_or("view").to_string();
+            // 已经出过的不重跑——retry_stage 之后接着做剩下的。
+            if view["status"].as_str() == Some("ready") {
+                if let Some(p) = view["path"].as_str() {
+                    if let Ok(local) = ctx.bundle.resolve(p) {
+                        if let Ok(bytes) = std::fs::read(&local) {
+                            if let Ok(remote) =
+                                comfy.upload_image(&format!("{card_id}_{name}.png"), &bytes)
+                            {
+                                uploaded.insert(name.clone(), remote);
+                            }
+                        }
+                    }
+                }
+                out.push(view);
+                continue;
+            }
+
+            let refs: Vec<String> = view["derived_from"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|d| d.as_str())
+                .filter_map(|d| uploaded.get(d).cloned())
+                .collect();
+            let (w, h) = card_dims(view["aspect"].as_str().unwrap_or("9:16"));
+            let prompt = view["prompt"].as_str().unwrap_or(identity).to_string();
+            let seed = stable_seed(&card_id, &name);
+
+            let mut params = Map::new();
+            params.insert("positive".into(), json!(prompt));
+            params.insert("width".into(), json!(w));
+            params.insert("height".into(), json!(h));
+            params.insert("seed".into(), json!(seed));
+            params.insert(
+                "output_prefix".into(),
+                json!(format!("studio/cards/{card_id}/{name}")),
+            );
+
+            let (wf, backend) = if refs.is_empty() {
+                (t2i, CARD_T2I)
+            } else {
+                (multiref, CARD_MULTIREF)
+            };
+            let attempt = self.generate_view(
+                ctx,
+                comfy,
+                wf,
+                &params,
+                &refs,
+                &card_id,
+                &name,
+                (w, h),
+                backend,
+            );
+            match attempt {
+                Ok(rel) => {
+                    if let Ok(local) = ctx.bundle.resolve(&rel) {
+                        if let Ok(bytes) = std::fs::read(&local) {
+                            if let Ok(remote) =
+                                comfy.upload_image(&format!("{card_id}_{name}.png"), &bytes)
+                            {
+                                uploaded.insert(name.clone(), remote);
+                            }
+                        }
+                    }
+                    view["status"] = json!("ready");
+                    view["path"] = json!(rel);
+                    view["provenance"] = json!({
+                        "backend": backend,
+                        "width": w, "height": h, "seed": seed,
+                        "references": view["derived_from"].clone(),
+                    });
+                }
+                Err(e) => {
+                    // 这一张没出来，同卡后面的继续——它们照样能拿更前面的当参考。
+                    ctx.say(format!("{card_id}.{name} 没生成出来：{}", e.message()));
+                    view["status"] = json!("failed");
+                    view["provenance"] = json!({ "backend": backend, "error": e.message() });
+                }
+            }
+            out.push(view);
+        }
+        Ok(out)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn generate_view(
+        &self,
+        ctx: &ExecContext<'_>,
+        comfy: &Comfy,
+        wf: &Workflow,
+        params: &Map<String, Value>,
+        refs: &[String],
+        card_id: &str,
+        view: &str,
+        dims: (i64, i64),
+        backend: &str,
+    ) -> Result<String> {
+        let graph = wf.apply_with_refs(params, refs)?;
+        let sub = ctx
+            .progress_and_step(
+                format!("生成 {card_id}.{view}（{} 张参考）", refs.len()),
+                "card_view",
+            )
+            .shot(format!("{card_id}.{view}"))
+            .node(comfy.node())
+            .with("backend", json!(backend))
+            .with("references", json!(refs.len()))
+            .with("size", json!(format!("{}x{}", dims.0, dims.1)))
+            .done(comfy.submit(&graph, "video-studio"))?;
+
+        let files = comfy.wait(&sub)?;
+        let first = files.first().ok_or_else(|| StudioError::ComfyFailed {
+            node: comfy.node().to_string(),
+            detail: format!("{card_id}.{view} 执行完成但没有产出文件"),
+        })?;
+        let rel = format!("media/assets/{card_id}/{view}.png");
+        let dest = ctx.bundle.resolve(&rel)?;
+        ctx.step("card_download")
+            .shot(format!("{card_id}.{view}"))
+            .prompt(&sub.prompt_id)
+            .with("path", json!(rel))
+            .done(comfy.download(first, &dest))?;
+        Ok(rel)
     }
 
     fn post(&self, ctx: &ExecContext<'_>) -> Result<Outputs> {
