@@ -24,6 +24,12 @@ pub struct Workflow {
     source: Option<String>,
     /// 明确标注为不可用时的原因。没写就是「还没核验」。
     unavailable_reason: Option<String>,
+    /// 这份基线是干什么用的。缺省是 `shot`——Agent 可以在提示词包里点名它。
+    ///
+    /// 不是所有基线都该让 Agent 选：`seedvr2/upscale` 是 `post` 内部把成片
+    /// 超到交付规格用的，写进某一镜没有任何意义（它连 `positive` 和
+    /// `length_frames` 都不吃）。这类基线标 `role` 为别的值，能力面就不收它。
+    role: String,
 }
 
 impl Workflow {
@@ -84,6 +90,11 @@ impl Workflow {
             .get("unavailable_reason")
             .and_then(|s| s.as_str())
             .map(String::from);
+        let role = meta
+            .get("role")
+            .and_then(|s| s.as_str())
+            .unwrap_or("shot")
+            .to_string();
         Ok(Workflow {
             graph: v,
             bindings,
@@ -91,7 +102,13 @@ impl Workflow {
             verified,
             source,
             unavailable_reason,
+            role,
         })
+    }
+
+    /// Agent 能不能在提示词包里点名这份基线。见 [`Workflow::role`] 字段的说明。
+    pub fn is_shot_baseline(&self) -> bool {
+        self.role == "shot"
     }
 
     pub fn name(&self) -> &str {

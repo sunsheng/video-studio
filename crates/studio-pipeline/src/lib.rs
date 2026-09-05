@@ -168,6 +168,11 @@ impl StageExecutor for Pipeline {
                 let Ok(wf) = Workflow::parse(&text, &name) else {
                     continue;
                 };
+                // 不是给镜头选的基线不进能力面——`seedvr2/upscale` 是 `post`
+                // 内部用的，让 Agent 看见它只会让它写进某一镜然后跑出个空文件名。
+                if !wf.is_shot_baseline() {
+                    continue;
+                }
                 out.push(WorkflowCapability {
                     params: wf.parameters(),
                     verified: wf.is_verified(),
@@ -1268,6 +1273,54 @@ mod real_baselines {
                 "{head}：低步数下调度器档位是成败关键，overlay 必须显式写死"
             );
         }
+    }
+
+    /// 成片超分的基线：真读仓库里那一份，五条绑定都要指到存在的节点上。
+    ///
+    /// `width` / `height` 绑的是**带点的输入名**（`resize_type.width`）——
+    /// 动态组合框的子输入就长这样。`check()` 过不去就说明路径规则又收窄了。
+    #[test]
+    fn the_upscale_baseline_is_sound_and_verified() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/workflows");
+        let w = Workflow::load(&dir, "seedvr2/upscale").expect("超分基线应当读得出来");
+        w.check().expect("每条绑定都要指到存在的节点上");
+        w.require_verified()
+            .expect("这份基线真机跑过并人眼看过，应当是已核验");
+
+        let mut p = Map::new();
+        p.insert("filename".into(), json!("sh01.mp4"));
+        p.insert("width".into(), json!(1080));
+        p.insert("height".into(), json!(1920));
+        p.insert("seed".into(), json!(7));
+        p.insert("output_prefix".into(), json!("studio/up/sh01"));
+        let g = w.apply(&p).unwrap();
+
+        assert_eq!(g["load"]["inputs"]["file"], json!("sh01.mp4"));
+        assert_eq!(g["resize"]["inputs"]["resize_type.width"], json!(1080));
+        assert_eq!(g["resize"]["inputs"]["resize_type.height"], json!(1920));
+        assert_eq!(
+            g["resize"]["inputs"]["resize_type"],
+            json!("scale dimensions"),
+            "组合键本身不能被宽高覆盖掉"
+        );
+        // 一步采样的那几个数是模板原值，谁都不许改。
+        assert_eq!(g["sampler"]["inputs"]["steps"], json!(1));
+        assert_eq!(g["sampler"]["inputs"]["cfg"], json!(1));
+        assert_eq!(g["sampler"]["inputs"]["scheduler"], json!("simple"));
+        // 音轨从 GetVideoComponents 直接接到 CreateVideo，超分不能把声音丢了。
+        assert_eq!(g["create"]["inputs"]["audio"], json!(["comp", 1]));
+        assert_eq!(g["create"]["inputs"]["fps"], json!(["comp", 2]));
+    }
+
+    /// 超分基线不该出现在 Agent 看得见的能力面里。写进某一镜没有任何意义
+    /// ——它不吃 positive、不吃 length_frames，`filename` 还会是空的。
+    #[test]
+    fn the_upscale_baseline_is_not_offered_to_the_agent() {
+        let names = caps().verified_names();
+        assert!(
+            !names.iter().any(|n| n.starts_with("seedvr2/")),
+            "超分基线漏进了可选基线列表：{names:?}"
+        );
     }
 
     /// 能力面对账的数据源换了，规则没换：这个系列一样不吃 negative。
