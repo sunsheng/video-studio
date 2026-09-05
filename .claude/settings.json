@@ -1,7 +1,10 @@
 {
   "permissions": {
     "allow": [
-      "mcp__github__*"
+      "mcp__github__*",
+      "mcp__Claude_Code_Remote__subscribe_pr_activity",
+      "mcp__Claude_Code_Remote__unsubscribe_pr_activity",
+      "mcp__Claude_Code_Remote__delete_trigger"
     ]
   }
 }
